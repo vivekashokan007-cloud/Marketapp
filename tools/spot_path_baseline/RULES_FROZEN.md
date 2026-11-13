@@ -419,3 +419,81 @@ those rows have their nearest exit 5–65 minutes off target because the capture
 Per-index scoring is extracted into `score_index(ex, ix, hist, hist_dates, session)`, importable
 so the **full replay** can be exercised in tests — including a synthetic export with two
 acquisitions in one minute, and the same export with its input order reversed.
+
+---
+
+## Addendum 7 — R4 corrections (13 Nov 2026, contract 2.4)
+
+One defect, and it was **active order dependence**, not latent.
+
+### The defect
+
+Addendum 6 detected a disagreeing repeat of a `(contract, acquisition)` key, counted it, and
+**kept the first record**. "First" depends on input order, so one injected conflicting quote
+moved persistence CRPS between two branches while the conflict count stayed at 1. Measured on
+the real 12 November export with a 25-point injected disagreement:
+
+| branch | PERSIST CRPS |
+|---|---:|
+| keep record A (forward scan) | **47.9111** |
+| keep record B (reversed scan) | **48.0107** |
+| spread decided purely by scan direction | **0.0996** |
+
+### The rule
+
+| rule | value |
+|---|---|
+| grouping | records are grouped by `(instrument_key, acquisition_id)` **before any admission gate** |
+| comparison | `quote_signature` — a JSON signature over **every field scoring can read**: slot, bid, ask, bid_qty, ask_qty, iv value, iv status, identity_verified, identity_disagreements |
+| conflict | signatures differ → the **entire key is excluded**, from entry selection, exit selection **and** the parity calculation. Counted as `rej_conflicting_duplicate_contract_acquisition`. |
+| identical repeat | collapses to **one observation**, counted as `collapsed_identical_quote_repeats` — a collapse, not an exclusion; the row still scores and scores identically to a run without the repeat |
+| fail closed | a null bid against a real one is a **conflict**, not a reason to prefer the real one: we cannot tell which record is authoritative |
+
+### Envelopes, same rule
+
+Envelopes are grouped by `acquisition_id` first and compared with `envelope_signature` over
+slot, `acquisition_response_ms` and `quote_event_clock_verified`. A conflicting acquisition id is
+excluded (`rej_conflicting_envelope_acquisition_id`), and **every quote depending on it is
+excluded with it** (`rej_quote_depends_on_excluded_acquisition`). Identical envelope repeats
+collapse (`collapsed_identical_envelope_repeats`).
+
+### Consequences that must stay visible
+
+Excluding a leg can take its parity group below `MIN_FWD_STRIKES`, which then shows as
+`fwd_rej_too_few_strikes_in_group` or `rej_no_forward_in_entry_acquisition_group`. Excluding one
+acquisition's record for a contract can make entry selection fall through to a **later**
+acquisition for that contract-minute — correct and deterministic under the earliest-cutoff rule,
+and visible in `selected_entry_acquisitions`.
+
+### Verification on 2026-11-12
+
+Clean replay **unchanged**: no model moved by more than 1e-12 from Addendum 6, and
+forward-vs-reversed input is **identical**. With the conflict injected, 2.4 returns **48.0083 in
+both orders on 250 rows** — landing on neither keep-first branch, because it excludes the key.
+
+### Model-history protocol — pinned, with a rolling variant specified in advance
+
+The **primary comparison uses the pinned 11-session history** (`spots_20261021_20261104.jsonl`,
+2026-10-21 … 2026-11-04). This is a **fixed-model** comparison: the same model is applied to each
+fresh session.
+
+One correction to an earlier claim of mine. I previously wrote that three fresh sessions sharing
+one pool "would not be independent evidence". That was overstated. A shared pool makes the
+**model identical** across sessions, which is exactly what a fixed-model test intends; the
+sessions remain independent observations of whether that fixed model beats persistence. The real
+limitation is narrower and still worth stating: the pool's window ends 2026-11-04, so the model is
+trained on a window that is progressively staler than each scored session. That bounds
+generalisation; it does not inflate significance.
+
+A **rolling-history variant is specified here, before any fresh session is scored**, and is not
+used for the primary comparison:
+
+| rule | value |
+|---|---|
+| name | `E0_ROLL`, reported beside `E0_FWD`, never replacing it |
+| pool | for a session dated D, the **11 most recent** trading sessions strictly before D that have a complete minute grid for both the entry and target minutes |
+| size | fixed at 11 to match the pinned pool, so pinned and rolling differ only in **recency**, not in sample size |
+| refusal | fewer than `MIN_TRAIN` usable sessions → the row is refused and counted, exactly as for the pinned pool |
+| comparison | pinned and rolling are compared **only on matched rows** |
+| decision rule | unchanged: support requires ΔCRPS < 0 **and** ΔMAE < 0 |
+| precondition | a spot-history file actually covering those sessions. Until one exists, `E0_ROLL` is **not scored**, and its absence is reported rather than silently skipped. |

@@ -1,6 +1,6 @@
 """60-minute premium repricing comparison.
 
-CONTRACT_VERSION 2.3 -- review round R3 corrections applied on top of 2.2.
+CONTRACT_VERSION 2.4 -- review round R4 corrections applied on top of 2.3.
 
 Correction history, oldest first.
 
@@ -59,6 +59,23 @@ Correction history, oldest first.
               unchanged.  Fixed because a partial second acquisition two seconds later is
               enough to trigger it.
 
+--- 2.4 ----------------------------------------------------------------------------------
+  CONFLICTS   ACTIVE ORDER DEPENDENCE.  2.3 detected a disagreeing repeat of a (contract,
+              acquisition) key, counted it, and KEPT THE FIRST record.  "First" depends on
+              input order, so one injected conflicting BANKNIFTY quote moved persistence
+              CRPS between 47.91 and 48.20 depending on the direction of the scan, while
+              the conflict count stayed at 1.
+              2.4 groups records by key BEFORE any admission, compares a signature over
+              every field scoring can read, and EXCLUDES the entire key when they disagree
+              -- so it reaches neither entry selection, exit selection nor the parity
+              calculation.  Identical repeats collapse to one observation and are counted
+              separately as a collapse, not an exclusion.  The same rule applies to
+              acquisition ENVELOPES: a conflicting acquisition_id is excluded, and every
+              quote depending on it is excluded with it
+              (`rej_quote_depends_on_excluded_acquisition`).
+              Fail closed: a null bid against a real one is a conflict, not a reason to
+              prefer the real one, because we cannot tell which record is authoritative.
+
 Expiry timestamp assumption: 15:30 IST on each contract's own expiry date.  Targets at or
 after expiry are rejected.
 
@@ -87,7 +104,7 @@ import os
 import statistics
 import sys
 
-CONTRACT_VERSION = '2.3'
+CONTRACT_VERSION = '2.4'
 HORIZON_MIN = 60
 HORIZON_TOL_S = 5.0
 WINDOW_MIN, MIN_RETURNS = 60, 6
@@ -254,6 +271,37 @@ def implied_forwards(quotes, pinned, acq_id, index_name, reasons=None):
     return ok
 
 
+def quote_signature(r):
+    """Every field of a quote record that scoring can read.
+
+    Two records for the same (contract, acquisition) are a CONFLICT unless this is identical.
+    A null bid against a real one is a conflict, not a reason to prefer the real one: we
+    cannot tell which record is authoritative, so the key is excluded (fail closed).
+    """
+    bbo = r.get('bbo') or {}
+    iv = ((r.get('iv') or {}).get('iv_greeks_raw') or {})
+    idn = r.get('identity') or {}
+    return json.dumps({
+        'slot': r.get('slot'),
+        'bid': (bbo.get('bid_raw') or {}).get('raw'),
+        'ask': (bbo.get('ask_raw') or {}).get('raw'),
+        'bid_qty': (bbo.get('bid_qty_raw') or {}).get('raw'),
+        'ask_qty': (bbo.get('ask_qty_raw') or {}).get('raw'),
+        'iv': iv.get('raw'), 'iv_status': iv.get('status'),
+        'identity_verified': idn.get('identity_verified'),
+        'identity_disagreements': idn.get('identity_disagreements'),
+    }, sort_keys=True, default=str)
+
+
+def envelope_signature(e):
+    """Every field of an envelope that scoring can read: slot and the two clocks."""
+    cl = e.get('clocks') or {}
+    return json.dumps({'slot': e.get('slot'),
+                       'acquisition_response_ms': cl.get('acquisition_response_ms'),
+                       'quote_event_clock_verified': cl.get('quote_event_clock_verified')},
+                      sort_keys=True, default=str)
+
+
 def spot_timeline(ex, ix):
     """(availability_instant, asof_minute, value, availability_flag), sorted, deterministic.
 
@@ -329,30 +377,60 @@ def score_index(ex, ix, hist, hist_dates, session):
     pins = find_pinned(p) or []
     pc = {c['instrument_key']: c for c in pins}
 
-    env, recv = {}, {}
-    for e in sorted(p.get('slot_envelopes') or [],
-                    key=lambda z: (str(z.get('slot')), str(z.get('acquisition_id')))):
+    # ---- envelopes: group by acquisition_id FIRST, so a conflict excludes the whole id ----
+    # Admitting the first of two disagreeing records and counting the rest made the result
+    # depend on input order.  Disagreement means we cannot tell which record is authoritative,
+    # so the key is excluded entirely; identical repeats collapse to one observation.
+    env_raw = collections.defaultdict(list)
+    for e in p.get('slot_envelopes') or []:
         aid = e.get('acquisition_id')
-        ms = (e.get('clocks') or {}).get('acquisition_response_ms')
         if aid is None:
             cov['rej_envelope_without_acquisition_id'] += 1
             continue
-        if aid in env:
-            cov['rej_envelope_duplicate_acquisition_id'] += 1
+        env_raw[aid].append(e)
+
+    env, recv, excluded_acq = {}, {}, {}
+    for aid in sorted(env_raw, key=str):
+        group = env_raw[aid]
+        if len({envelope_signature(e) for e in group}) > 1:
+            cov['rej_conflicting_envelope_acquisition_id'] += 1
+            excluded_acq[aid] = 'conflicting_envelope'
             continue
+        if len(group) > 1:
+            cov['collapsed_identical_envelope_repeats'] += len(group) - 1
+        e = group[0]
         if not e.get('slot'):
             cov['rej_envelope_without_slot'] += 1
+            excluded_acq[aid] = 'envelope_without_slot'
+            continue
+        ms = (e.get('clocks') or {}).get('acquisition_response_ms')
+        if not ms:
+            cov['rej_envelope_without_receipt_clock'] += 1
+            excluded_acq[aid] = 'envelope_without_receipt_clock'
             continue
         env[aid] = e
-        if ms:
-            recv[aid] = datetime.datetime.fromtimestamp(ms / 1000.0, tz=IST)
+        recv[aid] = datetime.datetime.fromtimestamp(ms / 1000.0, tz=IST)
 
-    # ---- quotes keyed by (contract, acquisition): one snapshot, no minute collapsing ----
+    # ---- quotes keyed by (contract, acquisition), conflicts resolved BEFORE admission ----
+    # Grouping first means a conflicting key never reaches entry selection, exit selection or
+    # the parity calculation, in either input order.
+    rec_raw = collections.defaultdict(list)
+    for r in p['records']:
+        rec_raw[(r.get('instrument_key'), r.get('acquisition_id'))].append(r)
+
     q = {}
-    for r in sorted(p['records'], key=lambda z: (str(z.get('slot')),
-                                                 str(z.get('acquisition_id')),
-                                                 str(z.get('instrument_key')))):
+    for key in sorted(rec_raw, key=lambda z: (str(z[0]), str(z[1]))):
+        group = rec_raw[key]
+        if len({quote_signature(r) for r in group}) > 1:
+            cov['rej_conflicting_duplicate_contract_acquisition'] += 1
+            continue
+        if len(group) > 1:
+            cov['collapsed_identical_quote_repeats'] += len(group) - 1
+        r = group[0]
         aid = r.get('acquisition_id')
+        if aid in excluded_acq:
+            cov['rej_quote_depends_on_excluded_acquisition'] += 1
+            continue
         e = env.get(aid)
         if e is None:
             cov['rej_envelope_unresolved'] += 1
@@ -360,22 +438,11 @@ def score_index(ex, ix, hist, hist_dates, session):
         if e.get('slot') != r.get('slot'):
             cov['rej_envelope_slot_mismatch'] += 1
             continue
-        if aid not in recv:
-            cov['rej_envelope_without_receipt_clock'] += 1
-            continue
         if r['instrument_key'] not in pc:
             cov['rej_no_contract_identity'] += 1
             continue
-        key = (r['instrument_key'], aid)
         b = (r['bbo'].get('bid_raw') or {}).get('raw')
         k = (r['bbo'].get('ask_raw') or {}).get('raw')
-        if key in q:
-            prev = q[key]
-            if prev['bid'] != b or prev['ask'] != k:
-                cov['rej_conflicting_duplicate_contract_acquisition'] += 1
-            else:
-                cov['rej_duplicate_contract_acquisition'] += 1
-            continue
         idn = r.get('identity') or {}
         if idn.get('identity_verified') is not True:
             cov['rej_identity_unverified'] += 1

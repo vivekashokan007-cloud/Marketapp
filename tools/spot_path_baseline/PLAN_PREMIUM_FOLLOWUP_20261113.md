@@ -1,9 +1,25 @@
 # Frozen plan — premium repricing research check
 
-**Dated 13 November 2026 IST. Revision R3, frozen before any fresh session is scored.**
+**Dated 13 November 2026 IST. Revision R4, frozen before any fresh session is scored.**
 
 R2 supersedes R1, which superseded the plan first written earlier today. Changes are recorded
 here rather than quietly edited away.
+
+**New in R4**, after review found one further defect:
+
+- A **conflicting** `(contract, acquisition)` key is now **excluded entirely** rather than
+  resolved first-wins. R3 counted the conflict and kept the first record, so scan direction
+  decided the score (47.9111 against 48.0107 on the real export with one injected disagreement).
+  Identical repeats collapse to one observation. The same rule applies to acquisition envelopes,
+  and every quote depending on an excluded envelope is excluded with it.
+- **Model history is pinned** for the fixed-model comparison, and a rolling variant (`E0_ROLL`)
+  is specified in `RULES_FROZEN.md` Addendum 7 **before** any fresh scoring, to be reported
+  beside the primary rather than replacing it.
+- I withdraw an overstatement of my own: I said three sessions sharing one pool "would not be
+  independent evidence". A shared pool makes the **model** identical across sessions, which is
+  what a fixed-model test intends; the sessions remain independent observations. The real
+  limitation is that the pool ends 2026-11-04, so the model is trained on a progressively staler
+  window — that bounds generalisation without inflating significance.
 
 **New in R3**, after review found one further defect:
 
@@ -50,7 +66,7 @@ harness, so it cannot also confirm the conclusions it produced.
 
 ## 1 · What is frozen
 
-Everything in `RULES_FROZEN.md` Addenda 3 to 6: the ACT/365 calendar clock with entry at the
+Everything in `RULES_FROZEN.md` Addenda 3 to 7: the ACT/365 calendar clock with entry at the
 **envelope receipt instant**, the forecast clock at the **planned target** (entry receipt +
 60 min), a 15:30 IST per-contract expiry timestamp, and the scoring quote admitted only when the
 actual exit receipt falls within **± 5 s** of that target; the parity forward
@@ -65,10 +81,10 @@ oracle diagnostics; the denominator set; and every proxy label.
 
 | item | identity |
 |---|---|
-| harness | `tools/spot_path_baseline/premium_repricing_v2.py`, `CONTRACT_VERSION = 2.3` |
-| focused tests | `tools/spot_path_baseline/test_repricing_fixes.py`, 63 checks, all passing |
-| rules | `RULES_FROZEN.md`, Addenda 3, 4, 5 and 6 |
-| spot history | `spots_20261021_20261104.jsonl`, sha256 `f6f29ed8fd6e1290f3d0f59e9be2cdd36f236b945409aebb2a73edffd499d186` |
+| harness | `tools/spot_path_baseline/premium_repricing_v2.py`, `CONTRACT_VERSION = 2.4` |
+| focused tests | `tools/spot_path_baseline/test_repricing_fixes.py`, 86 checks, all passing |
+| rules | `RULES_FROZEN.md`, Addenda 3 to 7 |
+| spot history | **pinned** `spots_20261021_20261104.jsonl`, sha256 `f6f29ed8fd6e1290f3d0f59e9be2cdd36f236b945409aebb2a73edffd499d186`, 11 sessions 2026-10-21 … 2026-11-04 — used for the fixed-model comparison |
 | development session | `mr_session_evidence_2026-11-12.json`, sha256 `5f399accefabd0dd3f1f1f3bb829bb71fd6ae56a309dfc92db5ac18e6d3444cb` |
 
 No constant, model, gate, metric or denominator in that set may change for the research check.
@@ -178,7 +194,22 @@ zero records for both indices through 12:38 IST while the authority spot path ra
 (41 records, 09:15–12:35, all with `receipt_ts`). An export in that state is recorded as **not
 eligible, for a stated data reason**, and does not consume one of the three session slots.
 
-## 10 · Return format
+## 10 · The 13 November session
+
+The midday export (`created_at` 12:38:37 IST) showed **zero premium records for either index**
+with `capture_enabled: true` and `premium.state: NO_PREMIUM_DATA`, while the authority spot path
+ran normally (41 records, 09:15–12:35, all carrying `receipt_ts`), and
+`concurrent_capture_write_detected: false`.
+
+When the **completed** export is available it is checked against §9 first. If premium capture is
+still empty, the report states: `premium.state`, `has_data`, `capture_enabled`,
+`concurrent_capture_write_detected`, each index's `premium.indices[ix].state`, the presence of
+`records` / `slot_envelopes` / `pinned_contracts`, and the last authority spot `asof` and
+`receipt_ts` — i.e. **where the evidence stops**. An empty session is **not eligible** and does
+**not** consume one of the three slots. Only eligible sessions count toward the three-session
+research check.
+
+## 11 · Return format
 
 Commit, patch against its stated base, checksum manifest, replay commands, rule and input
 hashes, per-session tables by index with CRPS, MAE, coverage and exclusion counts, the

@@ -418,6 +418,140 @@ check('D11 no nominal-minute keyed quote or forward index remains in the code',
 check('D11 the forward is looked up by the entry acquisition id',
       "fwd_by_acq.get(e['aid'])" in src2)
 
+
+# -- D12: a conflicting key is EXCLUDED, not resolved first-wins --------------------------
+# R3 counted the conflict and kept the first record, so one injected conflicting quote moved
+# persistence CRPS between 47.91 and 48.20 with the scan direction.  Reproduce that shape:
+# inject a disagreeing duplicate, then assert both orders agree AND the key is gone.
+
+def _with_conflict(field_path, newval, partial=False):
+    ex = _mk_export(partial)
+    recs = ex['premium']['indices']['NF']['records']
+    orig = [r for r in recs if r['instrument_key'] == 'ce0' and r['slot'] == '09:20'
+            and r['acquisition_id'] == 'A1'][0]
+    dup = json.loads(json.dumps(orig))
+    tgt = dup
+    for k in field_path[:-1]:
+        tgt = tgt[k]
+    tgt[field_path[-1]] = newval
+    recs.append(dup)
+    return ex
+
+
+for lbl, path, val in (
+        ('bid', ['bbo', 'bid_raw', 'raw'], 555.0),
+        ('ask', ['bbo', 'ask_raw', 'raw'], 777.0),
+        ('bid_qty', ['bbo', 'bid_qty_raw', 'raw'], 999),
+        ('iv', ['iv', 'iv_greeks_raw', 'raw'], 44.0),
+        ('iv_status', ['iv', 'iv_greeks_raw', 'status'], 'ABSENT'),
+        ('identity', ['identity', 'identity_verified'], False),
+        ('null bid vs real', ['bbo', 'bid_raw', 'raw'], None),
+        ('slot', ['slot'], '09:25')):
+    exf = _with_conflict(path, val)
+    exr = M.reverse_input(_with_conflict(path, val))
+    sf, rf, _c, _l = M.score_index(exf, 'NF', _hist, _hd, '2026-11-13')
+    sr, rr, _c2, _l2 = M.score_index(exr, 'NF', _hist, _hd, '2026-11-13')
+    # the CONFLICTING KEY is ('ce0','A1'); ce0 also exists under A2, so entry selection
+    # legitimately falls through to A2.  What must never happen is A1's ce0 being used.
+    check('D12 conflicting %-16s -> the conflicting key is excluded' % lbl,
+          sf['coverage'].get('rej_conflicting_duplicate_contract_acquisition') == 1
+          and not any(r['ikey'] == 'ce0' and r['entry_aid'] == 'A1' for r in rf),
+          'conflicts=%s ce0-from-A1 rows=%d'
+          % (sf['coverage'].get('rej_conflicting_duplicate_contract_acquisition'),
+             sum(1 for r in rf if r['ikey'] == 'ce0' and r['entry_aid'] == 'A1')))
+    check('D12 conflicting %-16s -> both orders identical' % lbl,
+          json.dumps(sf['models'], sort_keys=True) == json.dumps(sr['models'], sort_keys=True)
+          and sf['coverage'] == sr['coverage']
+          and sf['selected_entry_acquisitions'] == sr['selected_entry_acquisitions'])
+
+# A conflicting key must not reach the parity calculation of its own acquisition either.
+ex_p = _with_conflict(['bbo', 'bid_raw', 'raw'], 555.0, partial=False)
+s_p, r_p, _c, _l = M.score_index(ex_p, 'NF', _hist, _hd, '2026-11-13')
+check('D12 an excluded key cannot contribute to its acquisition parity group',
+      all(not (r['entry_aid'] == 'A1' and r['ikey'] == 'ce0') for r in r_p)
+      and all(abs(r['fwd'] - 25200.0) > 1e-9 or r['entry_aid'] != 'A1'
+              or r['ikey'] != 'ce0' for r in r_p if 'fwd' in r))
+
+# Excluding one leg can take its parity group below two strikes -- that must be visible.
+ex_c = _with_conflict(['bbo', 'bid_raw', 'raw'], 555.0)
+s_c, r_c, _c, _l = M.score_index(ex_c, 'NF', _hist, _hd, '2026-11-13')
+check('D12 losing a leg to a conflict is reflected in the parity gate',
+      s_c['coverage'].get('fwd_rej_too_few_strikes_in_group', 0) >= 1
+      or s_c['coverage'].get('rej_no_forward_in_entry_acquisition_group', 0) >= 1,
+      'too_few=%s no_fwd=%s' % (s_c['coverage'].get('fwd_rej_too_few_strikes_in_group'),
+                                s_c['coverage'].get('rej_no_forward_in_entry_acquisition_group')))
+
+# An IDENTICAL repeat is not a conflict: it collapses to one observation and still scores.
+ex_id = _mk_export(True)
+_recs = ex_id['premium']['indices']['NF']['records']
+_orig = [r for r in _recs if r['instrument_key'] == 'ce0' and r['slot'] == '09:20'
+         and r['acquisition_id'] == 'A1'][0]
+_recs.append(json.loads(json.dumps(_orig)))
+s_i, r_i, _c, _l = M.score_index(ex_id, 'NF', _hist, _hd, '2026-11-13')
+check('D12 an identical repeat collapses to one observation',
+      s_i['coverage'].get('collapsed_identical_quote_repeats') == 1
+      and s_i['coverage'].get('rej_conflicting_duplicate_contract_acquisition') is None,
+      'collapsed=%s' % s_i['coverage'].get('collapsed_identical_quote_repeats'))
+check('D12 a collapsed repeat still scores its row',
+      any(r['ikey'] == 'ce0' for r in r_i))
+check('D12 a collapse leaves scores equal to the no-repeat run',
+      json.dumps(s_i['models'], sort_keys=True) == json.dumps(s1['models'], sort_keys=True))
+
+# Conflicting ENVELOPES: the acquisition and every quote depending on it are excluded.
+for lbl, key, val in (('slot', 'slot', '09:25'),
+                      ('receipt clock', 'clocks', {'acquisition_response_ms': 1.0,
+                                                   'quote_event_clock_verified': False}),
+                      ('event flag', 'clocks', {'acquisition_response_ms':
+                                                (M.ist('2026-11-13', 560)
+                                                 + datetime.timedelta(seconds=5.0)).timestamp()
+                                                * 1000.0,
+                                                'quote_event_clock_verified': True})):
+    exf = _mk_export(True)
+    envs = exf['premium']['indices']['NF']['slot_envelopes']
+    a1 = [e for e in envs if e['acquisition_id'] == 'A1'][0]
+    bad = json.loads(json.dumps(a1))
+    bad[key] = val
+    envs.append(bad)
+    exr = M.reverse_input(json.loads(json.dumps(exf)))
+    sf, rf, _c, _l = M.score_index(exf, 'NF', _hist, _hd, '2026-11-13')
+    sr, rr, _c2, _l2 = M.score_index(exr, 'NF', _hist, _hd, '2026-11-13')
+    check('D12 conflicting envelope (%s) excludes the acquisition' % lbl,
+          sf['coverage'].get('rej_conflicting_envelope_acquisition_id') == 1
+          and sf['coverage'].get('rej_quote_depends_on_excluded_acquisition', 0) >= 1,
+          'conf=%s dependent=%s'
+          % (sf['coverage'].get('rej_conflicting_envelope_acquisition_id'),
+             sf['coverage'].get('rej_quote_depends_on_excluded_acquisition')))
+    check('D12 conflicting envelope (%s) gives no A1 entry' % lbl,
+          'A1' not in sf['selected_entry_acquisitions'],
+          'selected=%s' % sf['selected_entry_acquisitions'])
+    check('D12 conflicting envelope (%s) is order independent' % lbl,
+          json.dumps(sf['models'], sort_keys=True) == json.dumps(sr['models'], sort_keys=True)
+          and sf['coverage'] == sr['coverage'])
+
+ex_ei = _mk_export(True)
+_envs = ex_ei['premium']['indices']['NF']['slot_envelopes']
+_envs.append(json.loads(json.dumps([e for e in _envs if e['acquisition_id'] == 'A1'][0])))
+s_ei, _r, _c, _l = M.score_index(ex_ei, 'NF', _hist, _hd, '2026-11-13')
+check('D12 an identical envelope repeat collapses',
+      s_ei['coverage'].get('collapsed_identical_envelope_repeats') == 1
+      and s_ei['coverage'].get('rej_conflicting_envelope_acquisition_id') is None,
+      'collapsed=%s' % s_ei['coverage'].get('collapsed_identical_envelope_repeats'))
+check('D12 an identical envelope repeat leaves scores unchanged',
+      json.dumps(s_ei['models'], sort_keys=True) == json.dumps(s1['models'], sort_keys=True))
+
+src3 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                         'premium_repricing_v2.py')).read()
+_code3 = src3.split('"""', 2)[-1]
+check('D12 conflicts are grouped before admission, not resolved first-wins',
+      'rec_raw = collections.defaultdict(list)' in _code3
+      and 'quote_signature' in _code3 and 'envelope_signature' in _code3)
+check('D12 no first-wins keep remains for a duplicate key',
+      'if key in q:' not in _code3)
+check('D12 the quote signature covers every scored field',
+      all(f in _code3.split('def quote_signature')[1].split('def ')[0]
+          for f in ('bid', 'ask', 'bid_qty', 'ask_qty', 'iv', 'iv_status',
+                    'identity_verified', 'identity_disagreements', 'slot')))
+
 print()
 if FAIL:
     print('%d FAILED: %s' % (len(FAIL), ', '.join(FAIL)))
