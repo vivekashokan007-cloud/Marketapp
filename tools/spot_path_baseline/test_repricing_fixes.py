@@ -6,7 +6,9 @@ regression in them would be silent without these tests.  That is precisely why t
 
   python3 -I tools/spot_path_baseline/test_repricing_fixes.py
 """
+import collections
 import datetime
+import json
 import math
 import sys
 import os
@@ -43,8 +45,8 @@ pins = {c['instrument_key']: c for c in [
     contract('ce2', 'CE', 25100, '2026-11-17'),
     contract('pe2', 'PE', 25100, '2026-11-24'),
 ]}
-qs = {('ce1', 560, 'A1'): quote(300.0), ('pe1', 560, 'A1'): quote(100.0),
-      ('ce2', 560, 'A1'): quote(250.0), ('pe2', 560, 'A1'): quote(150.0)}
+qs = {('ce1', 'A1'): quote(300.0), ('pe1', 'A1'): quote(100.0),
+      ('ce2', 'A1'): quote(250.0), ('pe2', 'A1'): quote(150.0)}
 g = M.implied_forwards(qs, pins, 'A1', 'NF')
 check('D1 cross-expiry legs are not paired', g == {}, 'groups=%s' % sorted(g))
 
@@ -73,23 +75,23 @@ check('D1 cross-underlying legs are not paired', g == {}, 'groups=%s' % sorted(g
 
 
 # -- D2: a single pair must not pass the dispersion gate vacuously -----------------------
-one = {('ce1', 560, 'A1'): quote(300.0), ('pe1', 560, 'A1'): quote(100.0)}
+one = {('ce1', 'A1'): quote(300.0), ('pe1', 'A1'): quote(100.0)}
 g = M.implied_forwards(one, pins_ok, 'A1', 'NF')
 check('D2 one strike is refused despite zero dispersion', g == {}, 'groups=%s' % sorted(g))
 check('D2 MIN_FWD_STRIKES is at least 2', M.MIN_FWD_STRIKES >= 2,
       'value=%d' % M.MIN_FWD_STRIKES)
 
 # A genuinely inconsistent book (dispersion above the gate) is still refused.
-bad = {('ce1', 560, 'A1'): quote(300.0), ('pe1', 560, 'A1'): quote(100.0),
-       ('ce2', 560, 'A1'): quote(250.0), ('pe2', 560, 'A1'): quote(10.0)}
+bad = {('ce1', 'A1'): quote(300.0), ('pe1', 'A1'): quote(100.0),
+       ('ce2', 'A1'): quote(250.0), ('pe2', 'A1'): quote(10.0)}
 g = M.implied_forwards(bad, pins_ok, 'A1', 'NF')
 check('D2 dispersion gate still refuses an inconsistent book', g == {},
       'groups=%s' % sorted(g))
 
 # Legs from a different envelope are not borrowed.
 other = dict(one)
-other[('ce2', 560, 'B9')] = quote(250.0, aid='B9')
-other[('pe2', 560, 'B9')] = quote(150.0, aid='B9')
+other[('ce2', 'B9')] = quote(250.0, aid='B9')
+other[('pe2', 'B9')] = quote(150.0, aid='B9')
 g = M.implied_forwards(other, pins_ok, 'A1', 'NF')
 check('D2 pairs are not borrowed across envelopes', g == {}, 'groups=%s' % sorted(g))
 
@@ -175,8 +177,8 @@ pins_two_exp = {c['instrument_key']: c for c in [
     contract('b_ce', 'CE', 25100, '2026-11-24'),
     contract('b_pe', 'PE', 25100, '2026-11-24'),
 ]}
-q_two_exp = {('a_ce', 560, 'A1'): quote(300.0), ('a_pe', 560, 'A1'): quote(100.0),
-             ('b_ce', 560, 'A1'): quote(250.0), ('b_pe', 560, 'A1'): quote(150.0)}
+q_two_exp = {('a_ce', 'A1'): quote(300.0), ('a_pe', 'A1'): quote(100.0),
+             ('b_ce', 'A1'): quote(250.0), ('b_pe', 'A1'): quote(150.0)}
 g = M.implied_forwards(q_two_exp, pins_two_exp, 'A1', 'NF')
 check('D8 one strike in each of two expiries yields no forward', g == {},
       'groups=%s' % sorted(g))
@@ -192,10 +194,10 @@ pins_mixed = {c['instrument_key']: c for c in [
     contract('b_pe', 'PE', 25200, '2026-11-24'),
 ]}
 q_mixed = dict(q_two_exp)
-q_mixed[('c_ce', 560, 'A1')] = quote(250.0)
-q_mixed[('c_pe', 560, 'A1')] = quote(150.0)
-q_mixed[('b_ce', 560, 'A1')] = quote(260.0)
-q_mixed[('b_pe', 560, 'A1')] = quote(140.0)
+q_mixed[('c_ce', 'A1')] = quote(250.0)
+q_mixed[('c_pe', 'A1')] = quote(150.0)
+q_mixed[('b_ce', 'A1')] = quote(260.0)
+q_mixed[('b_pe', 'A1')] = quote(140.0)
 g = M.implied_forwards(q_mixed, pins_mixed, 'A1', 'NF')
 check('D8 only the group with two strikes qualifies',
       set(g) == {('NF', '2026-11-17')}, 'groups=%s' % sorted(g))
@@ -216,10 +218,10 @@ pins_far = {c['instrument_key']: c for c in [
     contract('e_ce', 'CE', 26100, '2026-12-29'),
     contract('e_pe', 'PE', 26100, '2026-12-29'),
 ]}
-q_far = {('a_ce', 560, 'A1'): quote(300.0), ('a_pe', 560, 'A1'): quote(100.0),
-         ('c_ce', 560, 'A1'): quote(250.0), ('c_pe', 560, 'A1'): quote(150.0),
-         ('d_ce', 560, 'A1'): quote(900.0), ('d_pe', 560, 'A1'): quote(100.0),
-         ('e_ce', 560, 'A1'): quote(850.0), ('e_pe', 560, 'A1'): quote(150.0)}
+q_far = {('a_ce', 'A1'): quote(300.0), ('a_pe', 'A1'): quote(100.0),
+         ('c_ce', 'A1'): quote(250.0), ('c_pe', 'A1'): quote(150.0),
+         ('d_ce', 'A1'): quote(900.0), ('d_pe', 'A1'): quote(100.0),
+         ('e_ce', 'A1'): quote(850.0), ('e_pe', 'A1'): quote(150.0)}
 g = M.implied_forwards(q_far, pins_far, 'A1', 'NF')
 check('D8 a distant second expiry does not refuse the first group',
       set(g) == {('NF', '2026-11-17'), ('NF', '2026-12-29')}, 'groups=%s' % sorted(g))
@@ -276,7 +278,145 @@ src2 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
 check('D10 T1 is computed from the target, not the exit cutoff',
       'T1 = tte(target' in src2 and 'T1 = tte(x[' not in src2)
 check('D10 the exit receipt is used for the tolerance test',
-      "dev = (x['cutoff'] - target)" in src2)
+      "dev = (best['cutoff'] - target).total_seconds()" in src2
+      and 'abs(dev) <= tol_s' in src2)
+
+
+# -- D11: one acquisition per forecast; deterministic selection; order independence -------
+# Build a minimal full replay: two acquisitions share nominal minute 09:20.  A1 is complete
+# and earlier; A2 arrives 2 s later.  The forward implied by A2 differs from A1's, so if the
+# earlier forecast could reach the later acquisition's forward the score would change.
+
+def _mk_export(a2_partial, session='2026-11-13'):
+    def rec(ikey, slot, aid, bid, ask, iv=18.0):
+        return {'instrument_key': ikey, 'slot': slot, 'acquisition_id': aid,
+                'identity': {'identity_verified': True, 'identity_disagreements': []},
+                'bbo': {'bid_raw': {'raw': bid}, 'ask_raw': {'raw': ask},
+                        'bid_qty_raw': {'raw': 500}, 'ask_qty_raw': {'raw': 500}},
+                'iv': {'iv_greeks_raw': {'raw': iv, 'status': 'PRESENT_VALID'}}}
+
+    def envp(slot, aid, secs):
+        base = M.ist(session, M.mins(slot))
+        return {'acquisition_id': aid, 'slot': slot,
+                'clocks': {'acquisition_response_ms':
+                           (base + datetime.timedelta(seconds=secs)).timestamp() * 1000.0,
+                           'quote_event_clock_verified': False}}
+
+    pins = [contract('ce0', 'CE', 25000, '2026-11-17'),
+            contract('pe0', 'PE', 25000, '2026-11-17'),
+            contract('ce1', 'CE', 25100, '2026-11-17'),
+            contract('pe1', 'PE', 25100, '2026-11-17')]
+    # A1 at 09:20 +5s  -> parity F = 25000 + 300 - 100 = 25200 on both strikes
+    recs = [rec('ce0', '09:20', 'A1', 299, 301), rec('pe0', '09:20', 'A1', 99, 101),
+            rec('ce1', '09:20', 'A1', 249, 251), rec('pe1', '09:20', 'A1', 149, 151)]
+    envs = [envp('09:20', 'A1', 5.0), envp('09:20', 'A2', 7.0), envp('10:20', 'A3', 5.0)]
+    # A2 at 09:20 +7s -> would imply F = 25400, i.e. 200 points away from A1's
+    recs += [rec('ce0', '09:20', 'A2', 499, 501), rec('pe0', '09:20', 'A2', 99, 101)]
+    if not a2_partial:
+        recs += [rec('ce1', '09:20', 'A2', 449, 451), rec('pe1', '09:20', 'A2', 149, 151)]
+    # exit acquisition exactly 3600 s after A1's cutoff
+    recs += [rec('ce0', '10:20', 'A3', 309, 311), rec('pe0', '10:20', 'A3', 95, 97),
+             rec('ce1', '10:20', 'A3', 259, 261), rec('pe1', '10:20', 'A3', 145, 147)]
+    hist_recs = []
+    for mi, val in ((555, 25180.0), (560, 25200.0), (620, 25240.0)):
+        base = M.ist(session, mi)
+        hist_recs.append({'spot': {'value': val,
+                                   'asof': base.isoformat()},
+                          'receipt_ts': (base + datetime.timedelta(seconds=2.4)).isoformat(),
+                          'availability': 'AVAILABLE'})
+    return {'manifest': {'session_date_used': session},
+            'premium': {'indices': {'NF': {'state': 'OK', 'records': recs,
+                                           'slot_envelopes': envs,
+                                           'pinned_contracts': pins}}},
+            'parts': {'authority_doc': {'history': {'NF': hist_recs}}}}
+
+
+_hist = collections.defaultdict(dict)
+for _i, _d in enumerate(['2026-11-%02d' % n for n in (2, 3, 4, 5, 6, 9)]):
+    for _m, _v in ((555, 25100.0), (560, 25100.0), (620, 25100.0 * (1 + 0.001 * (_i - 2)))):
+        _hist[_d][_m] = {'NF': _v, 'BNF': _v * 2}
+_hd = sorted(_hist)
+
+ex_partial = _mk_export(True)
+s1, rows1, _c1, _l1 = M.score_index(ex_partial, 'NF', _hist, _hd, '2026-11-13')
+check('D11 two acquisitions in one minute are detected',
+      s1['coverage'].get('contract_minutes_with_multiple_acquisitions') == 2
+      and s1['coverage'].get('slots_with_multiple_acquisitions') == 1,
+      'cm=%s slots=%s' % (s1['coverage'].get('contract_minutes_with_multiple_acquisitions'),
+                          s1['coverage'].get('slots_with_multiple_acquisitions')))
+check('D11 the earlier acquisition is selected as entry',
+      s1['selected_entry_acquisitions'] == ['A1'],
+      'selected=%s' % s1['selected_entry_acquisitions'])
+check('D11 the entry uses its own acquisition forward',
+      all(abs(r['fwd'] - 25200.0) < 1e-9 for r in rows1 if 'fwd' in r),
+      'forwards=%s' % sorted({round(r['fwd'], 2) for r in rows1 if 'fwd' in r}))
+check('D11 a partial later acquisition yields no forward of its own',
+      s1['coverage'].get('fwd_rej_too_few_strikes_in_group', 0) >= 1,
+      'rej=%s' % s1['coverage'].get('fwd_rej_too_few_strikes_in_group'))
+
+# Now the later acquisition is COMPLETE, with a forward 200 points away.  The earlier
+# forecast must still use 25200, not 25400.
+ex_both = _mk_export(False)
+s2, rows2, _c2, _l2 = M.score_index(ex_both, 'NF', _hist, _hd, '2026-11-13')
+check('D11 a complete later acquisition does not displace the earlier entry',
+      s2['selected_entry_acquisitions'] == ['A1'],
+      'selected=%s' % s2['selected_entry_acquisitions'])
+check('D11 the earlier forecast cannot reach the later forward',
+      all(abs(r['fwd'] - 25200.0) < 1e-9 for r in rows2 if 'fwd' in r),
+      'forwards=%s' % sorted({round(r['fwd'], 2) for r in rows2 if 'fwd' in r}))
+check('D11 the later forward really would have differed',
+      abs(M.implied_forwards({('ce0', 'A2'): {'mid': 500.0}, ('pe0', 'A2'): {'mid': 100.0},
+                              ('ce1', 'A2'): {'mid': 450.0}, ('pe1', 'A2'): {'mid': 150.0}},
+                             {c['instrument_key']: c for c in ex_both['premium']['indices']
+                              ['NF']['pinned_contracts']},
+                             'A2', 'NF')[('NF', '2026-11-17')]['F'] - 25400.0) < 1e-9)
+
+# Order independence on the full replay, for both shapes.
+for lbl, mk in (('partial', True), ('complete', False)):
+    fwd_ex, rev_ex = _mk_export(mk), M.reverse_input(_mk_export(mk))
+    sf, rf, _cf, _lf = M.score_index(fwd_ex, 'NF', _hist, _hd, '2026-11-13')
+    sr, rr, _cr, _lr = M.score_index(rev_ex, 'NF', _hist, _hd, '2026-11-13')
+    check('D11 reversing input leaves selected acquisitions identical (%s)' % lbl,
+          sf['selected_entry_acquisitions'] == sr['selected_entry_acquisitions'],
+          '%s vs %s' % (sf['selected_entry_acquisitions'], sr['selected_entry_acquisitions']))
+    check('D11 reversing input leaves scores identical (%s)' % lbl,
+          json.dumps(sf['models'], sort_keys=True) == json.dumps(sr['models'], sort_keys=True))
+    check('D11 reversing input leaves coverage identical (%s)' % lbl,
+          sf['coverage'] == sr['coverage'])
+    check('D11 reversing input leaves the chosen exit identical (%s)' % lbl,
+          [r['exit_aid'] for r in rf] == [r['exit_aid'] for r in rr])
+
+# Exit selection is driven by the target, and refuses when nothing is near enough.
+entry = {'cutoff': M.ist('2026-11-13', 560), 'aid': 'A1'}
+tgt = entry['cutoff'] + datetime.timedelta(minutes=60)
+near = {'cutoff': tgt + datetime.timedelta(seconds=1.0), 'aid': 'Z9'}
+far = {'cutoff': tgt + datetime.timedelta(seconds=90), 'aid': 'A0'}
+got, dev = M.select_exit([far, near], tgt, M.HORIZON_TOL_S)
+check('D11 the exit nearest the planned target is chosen',
+      got is near and abs(dev - 1.0) < 1e-6, 'dev=%s' % dev)
+got, dev = M.select_exit([far], tgt, M.HORIZON_TOL_S)
+check('D11 an exit outside tolerance is refused and its deviation reported',
+      got is None and abs(dev - 90.0) < 1e-6, 'dev=%s' % dev)
+tie_a = {'cutoff': tgt + datetime.timedelta(seconds=2), 'aid': 'B'}
+tie_b = {'cutoff': tgt + datetime.timedelta(seconds=2), 'aid': 'A'}
+check('D11 exit ties break on the smallest acquisition_id',
+      M.select_exit([tie_a, tie_b], tgt, M.HORIZON_TOL_S)[0] is tie_b)
+e_a = {'cutoff': M.ist('2026-11-13', 560), 'aid': 'B'}
+e_b = {'cutoff': M.ist('2026-11-13', 560), 'aid': 'A'}
+check('D11 entry ties break on the smallest acquisition_id',
+      M.select_entry([e_a, e_b]) is e_b)
+check('D11 entry selection prefers the earliest cutoff',
+      M.select_entry([{'cutoff': M.ist('2026-11-13', 561), 'aid': 'A'},
+                      {'cutoff': M.ist('2026-11-13', 560), 'aid': 'Z'}])['aid'] == 'Z')
+src2 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                         'premium_repricing_v2.py')).read()
+# search the CODE, not the module docstring, which names the removed structures on purpose
+_code = src2.split('"""', 2)[-1]
+check('D11 no nominal-minute keyed quote or forward index remains in the code',
+      'by_minute' not in _code and 'lookup' not in _code,
+      'docstring mentions are expected and excluded')
+check('D11 the forward is looked up by the entry acquisition id',
+      "fwd_by_acq.get(e['aid'])" in src2)
 
 print()
 if FAIL:

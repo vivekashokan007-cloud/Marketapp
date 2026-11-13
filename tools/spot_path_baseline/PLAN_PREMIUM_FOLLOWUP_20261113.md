@@ -1,9 +1,22 @@
 # Frozen plan — premium repricing research check
 
-**Dated 13 November 2026 IST. Revision R2, frozen before any fresh session is scored.**
+**Dated 13 November 2026 IST. Revision R3, frozen before any fresh session is scored.**
 
 R2 supersedes R1, which superseded the plan first written earlier today. Changes are recorded
 here rather than quietly edited away.
+
+**New in R3**, after review found one further defect:
+
+- A forward belongs to **one acquisition**. R2 indexed quotes and forwards by nominal minute
+  through overwriting comprehensions, so where two acquisitions shared a minute a contract could
+  be priced from the earlier one while taking its forward from the later one — and reversing the
+  input changed the scores. A contract now uses only the forward of **its own entry acquisition**
+  and its own (underlying, expiry) group, with the exclusion counted when that exact group has
+  none.
+- **Entry and exit selection are documented and deterministic.** Entry: earliest cutoff, tie →
+  smallest `acquisition_id`, reading only cutoffs and ids. Exit: exact same contract, nearest
+  cutoff to the planned target, tie → earliest cutoff then smallest id, admitted only within
+  ± 5 s. Order independence is asserted by `--reverse-input` and verified on 12 November.
 
 **New in R2**, after review found two further defects:
 
@@ -37,7 +50,7 @@ harness, so it cannot also confirm the conclusions it produced.
 
 ## 1 · What is frozen
 
-Everything in `RULES_FROZEN.md` Addenda 3, 4 and 5: the ACT/365 calendar clock with entry at the
+Everything in `RULES_FROZEN.md` Addenda 3 to 6: the ACT/365 calendar clock with entry at the
 **envelope receipt instant**, the forecast clock at the **planned target** (entry receipt +
 60 min), a 15:30 IST per-contract expiry timestamp, and the scoring quote admitted only when the
 actual exit receipt falls within **± 5 s** of that target; the parity forward
@@ -52,9 +65,9 @@ oracle diagnostics; the denominator set; and every proxy label.
 
 | item | identity |
 |---|---|
-| harness | `tools/spot_path_baseline/premium_repricing_v2.py`, `CONTRACT_VERSION = 2.2` |
-| focused tests | `tools/spot_path_baseline/test_repricing_fixes.py`, 50 checks, all passing |
-| rules | `RULES_FROZEN.md`, Addenda 3, 4 and 5 |
+| harness | `tools/spot_path_baseline/premium_repricing_v2.py`, `CONTRACT_VERSION = 2.3` |
+| focused tests | `tools/spot_path_baseline/test_repricing_fixes.py`, 63 checks, all passing |
+| rules | `RULES_FROZEN.md`, Addenda 3, 4, 5 and 6 |
 | spot history | `spots_20261021_20261104.jsonl`, sha256 `f6f29ed8fd6e1290f3d0f59e9be2cdd36f236b945409aebb2a73edffd499d186` |
 | development session | `mr_session_evidence_2026-11-12.json`, sha256 `5f399accefabd0dd3f1f1f3bb829bb71fd6ae56a309dfc92db5ac18e6d3444cb` |
 
@@ -151,7 +164,21 @@ parity forward is refused and `E0_FWD` cannot be scored.
 Plus a spot-history file covering **at least 5 prior sessions** at the same minute grid as the
 session's slots, in the frozen `{d, t, nf, bnf}` JSONL form.
 
-## 9 · Return format
+## 9 · Session eligibility precondition, added in R3
+
+A session is **not eligible** unless its export actually carries premium capture. Checked before
+anything else, and reported:
+
+- `premium.state` must not be `NO_PREMIUM_DATA`, and `premium.has_data` must be true;
+- each index's `premium.indices[ix].state` must not be `NO_PREMIUM_DATA_FOR_THIS_INDEX`;
+- `records`, `slot_envelopes` and `pinned_contracts` must all be present for that index.
+
+`capture_enabled: true` is **not** sufficient — on 2026-11-13 capture was enabled and produced
+zero records for both indices through 12:38 IST while the authority spot path ran normally
+(41 records, 09:15–12:35, all with `receipt_ts`). An export in that state is recorded as **not
+eligible, for a stated data reason**, and does not consume one of the three session slots.
+
+## 10 · Return format
 
 Commit, patch against its stated base, checksum manifest, replay commands, rule and input
 hashes, per-session tables by index with CRPS, MAE, coverage and exclusion counts, the

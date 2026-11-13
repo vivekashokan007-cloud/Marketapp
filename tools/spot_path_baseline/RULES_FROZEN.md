@@ -350,3 +350,72 @@ The reported basis compares the parity forward with the **contemporaneous (reali
 the same minute, so it knowingly uses a reading that was not available at the cutoff. It is a
 **market diagnostic only**: it enters no model, no gate and no eligibility decision, and its
 sign alone never makes a session ineligible.
+
+---
+
+## Addendum 6 — R3 corrections (13 Nov 2026, contract 2.3)
+
+One further defect, found on review. **Latent on 12 November**, so the replay is unchanged, but
+a partial second acquisition two seconds later is enough to trigger it.
+
+### The defect
+
+Quotes and forwards were indexed by **nominal minute** through overwriting dict comprehensions.
+When two acquisitions shared a nominal minute the survivor was whichever record happened to come
+last, so a contract could be priced from the **earlier** acquisition's quote while taking its
+forward from the **later** one — look-ahead, and order-dependent: reversing the input records
+changed the scores.
+
+### Forward scope
+
+| rule | value |
+|---|---|
+| key | **(acquisition_id, underlying, expiry)** — a forward belongs to one acquisition |
+| use | a contract may use **only the forward of its own entry acquisition** and its own group |
+| minimum | **≥ 2 distinct strikes** with a complete pair **inside that exact group** |
+| dispersion | ≤ 25 points, computed inside that exact group |
+| refusal | `rej_no_forward_in_entry_acquisition_group` — counted, never substituted from elsewhere |
+
+### Entry selection — documented and deterministic
+
+Among the acquisitions carrying a contract at one nominal minute, the one with the **earliest
+cutoff** is selected; ties break on the **lexicographically smallest `acquisition_id`**.
+
+The key reads only the cutoff and the id, both known at the cutoff itself, so the choice cannot
+depend on anything observed later. The rule deliberately does **not** prefer an acquisition that
+happens to carry a valid forward: that would let the outcome select the input. If the selected
+acquisition's group has no valid forward, `E0_FWD` is excluded for that row and counted.
+
+### Exit selection — documented and deterministic
+
+Among quotes for the **exact same contract**, the one whose cutoff is **nearest the planned
+target** (entry cutoff + 60 min) is selected; ties break on **earliest cutoff**, then
+**smallest `acquisition_id`**; it is admitted only when `|deviation| ≤ 5 s`. Exit selection no
+longer references a nominal minute at all. Refusals are counted as
+`rej_no_exit_quote_within_tolerance`, and the **nearest available deviation** is reported so a
+refusal can be told from an absence.
+
+### Duplicates and order independence
+
+A quote is keyed by **(instrument_key, acquisition_id)**. A repeat of that key is counted as
+`rej_duplicate_contract_acquisition`, or as
+`rej_conflicting_duplicate_contract_acquisition` when the repeated record's bid or ask differs.
+Counts of `acquisitions`, `slots_with_multiple_acquisitions` and
+`contract_minutes_with_multiple_acquisitions` are reported every session.
+
+Every iteration is over a **sorted** sequence. `--reverse-input` reverses record, envelope and
+authority-history order; the output must be byte-identical. Verified on 2026-11-12: **identical**.
+
+### Latency on 2026-11-12
+
+**0** slots carry more than one acquisition and **0** contract-minutes appear under more than one
+acquisition (53 acquisitions / 53 slots for NF, 54 / 54 for BNF), so every figure is unchanged.
+One rename: `rej_missing_exit_contract_minute` → `rej_no_exit_quote_within_tolerance`, same count
+(72 per index), now accompanied by the nearest-deviation range (−3901 to −299 s), which shows
+those rows have their nearest exit 5–65 minutes off target because the capture ends at 13:40/13:45.
+
+### Testability
+
+Per-index scoring is extracted into `score_index(ex, ix, hist, hist_dates, session)`, importable
+so the **full replay** can be exercised in tests — including a synthetic export with two
+acquisitions in one minute, and the same export with its input order reversed.
