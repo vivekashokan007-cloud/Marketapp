@@ -60,10 +60,19 @@ class PremiumCapacityRolloverTest {
      * a 16 MiB ceiling would make this suite minutes long for no extra coverage. The admission
      * path itself is exercised by the real writes each test then performs.
      */
-    private fun fillLeaving(root: File, targetHeadroom: Long) {
-        root.mkdirs()
-        val want = evidenceBudget() - targetHeadroom
-        File(root, "retained_prior_sessions.bin").writeBytes(ByteArray(want.toInt()))
+    private fun fillLeaving(root: File, targetHeadroom: Long) =
+        sparseFill(File(root.also { it.mkdirs() }, "retained_prior_sessions.bin"),
+            evidenceBudget() - targetHeadroom)
+
+    /**
+     * Fill a file to `bytes` without materialising it: the store measures with `File.length()`,
+     * so a sparse file fills it exactly while costing no real disk. With a 1 GiB budget a real
+     * allocation per test fills the build machine instead — which is how this helper was first
+     * written, and what it reported.
+     */
+    private fun sparseFill(f: File, bytes: Long) {
+        f.parentFile?.mkdirs()
+        java.io.RandomAccessFile(f, "rw").use { it.setLength(bytes) }
     }
 
     private fun observeFirstSlot(store: PremiumCaptureStore, snapId: String, index: String)
@@ -110,8 +119,7 @@ class PremiumCapacityRolloverTest {
     fun theNextSessionCapturesAtTheOldCeiling() {
         val root = Files.createTempDirectory("premcap-rollover").toFile()
         root.mkdirs()
-        File(root, "retained_prior_sessions.bin")
-            .writeBytes(ByteArray(4_177_185))          // the 12 November root total, exactly
+        sparseFill(File(root, "retained_prior_sessions.bin"), 4_177_185L)  // the 12 Nov total
         val store = PremiumCaptureStore(root)
         for ((snapId, index) in listOf("mon_0920_entry_NF" to "NF", "mon_0920_entry_BNF" to "BNF")) {
             val r = observeFirstSlot(store, snapId, index)
@@ -236,7 +244,7 @@ class PremiumCapacityRolloverTest {
         val filesDir = Files.createTempDirectory("premcap-three").toFile()
         val root = PremiumCaptureControl.root(filesDir)
         root.mkdirs()
-        File(root, "retained_prior_sessions.bin").writeBytes(ByteArray(4_177_185))
+        sparseFill(File(root, "retained_prior_sessions.bin"), 4_177_185L)
 
         val dates = listOf("2026-11-16", "2026-11-17", "2026-11-18")
         for (date in dates) {
@@ -274,6 +282,101 @@ class PremiumCapacityRolloverTest {
         val store = PremiumCaptureStore(root)
         assertTrue("the three sessions must fit under the budget",
             store.globalBytes() <= evidenceBudget())
+    }
+
+
+    // ───────────────── the 1 GiB pilot budget, and what makes it usable ─────────────────
+
+    /**
+     * The ceiling is PERMISSION TO GROW, not an allocation: an empty store occupies nothing and
+     * the budget is reported, not reserved.
+     */
+    @Test
+    fun theBudgetIsNotAllocatedUpFront() {
+        val root = Files.createTempDirectory("premcap-alloc").toFile()
+        root.mkdirs()
+        val store = PremiumCaptureStore(root)
+        assertEquals(0L, store.globalBytes())
+        val cap = store.capacitySnapshot()
+        assertEquals(1024L * 1024 * 1024, cap.getLong("max_bytes_global"))
+        assertEquals("PERMISSION_TO_GROW_ON_DEMAND_NOT_AN_ALLOCATION", cap.getString("budget_is"))
+        assertEquals(0L, cap.getLong("global_bytes"))
+        assertTrue("an empty store must occupy no space on disk",
+            (root.listFiles()?.size ?: 0) == 0)
+    }
+
+    /**
+     * FAILS WITHOUT THE SPLIT ACCOUNTING. Admission walked every retained file on every write:
+     * measured on this code at 11.7 ms for 1,000 files and 395.6 ms for 120,000, against 828
+     * writes in a capture day. The cached subtree total makes the per-write cost flat, and this
+     * pins the property rather than the timing: the total must be correct after many writes
+     * WITHOUT the exact walk having been consulted.
+     */
+    @Test
+    fun theRootTotalIsCorrectWithoutWalkingTheTreePerWrite() {
+        val root = Files.createTempDirectory("premcap-fast").toFile()
+        root.mkdirs()
+        val store = PremiumCaptureStore(root)
+        PremiumCaptureStore.forgetCachedBytesForTest()
+        for (i in 0 until 400)
+            store.put("NF", "2026-10-19", "k$i", JSONObject().put("n", i).put("p", "y".repeat(200)))
+        assertEquals("the incremental total must match an exact walk",
+            store.globalBytes(), store.globalBytesFast())
+        assertEquals("and reconciliation must find no drift", 0L, store.reconcileTreeBytes())
+    }
+
+    /**
+     * A write by anything OTHER than the store lands in the root's own files, which are measured
+     * fresh every time rather than cached — so the total cannot go stale behind a control write.
+     */
+    @Test
+    fun aWriteOutsideTheStoreIsStillCounted() {
+        val root = Files.createTempDirectory("premcap-outside").toFile()
+        root.mkdirs()
+        val store = PremiumCaptureStore(root)
+        store.put("NF", "2026-10-19", "seed", JSONObject().put("a", 1))
+        val before = store.globalBytesFast()
+        File(root, "control_meta.json").writeText("x".repeat(5_000))
+        assertEquals("the external file must be visible immediately",
+            before + 5_000L, store.globalBytesFast())
+        assertEquals(store.globalBytes(), store.globalBytesFast())
+    }
+
+    /** A status refresh must never trigger the seeding walk. */
+    @Test
+    fun aStatusRefreshNeverBlocksOnTheSeedingWalk() {
+        val root = Files.createTempDirectory("premcap-seed").toFile()
+        root.mkdirs()
+        val store = PremiumCaptureStore(root)
+        PremiumCaptureStore.forgetCachedBytesForTest()
+        assertNull("unseeded must read as unknown, not as a walk",
+            store.globalBytesFastIfSeeded())
+        store.put("NF", "2026-10-19", "k", JSONObject().put("a", 1))
+        assertNotNull("after a capture write it is known",
+            store.globalBytesFastIfSeeded())
+    }
+
+    /**
+     * The device is the stricter gate and names itself. A root whose free space cannot be read
+     * (0 = unknown, which is what a missing path returns) must NOT be treated as full.
+     */
+    @Test
+    fun theDeviceGateIsSeparateFromTheAppBudget() {
+        assertTrue("the floor must be a real reserve",
+            PremiumCaptureStore.MIN_FREE_DEVICE_BYTES >= 64L * 1024 * 1024)
+        assertTrue("and far below the app budget",
+            PremiumCaptureStore.MIN_FREE_DEVICE_BYTES < PremiumCaptureStore.MAX_BYTES_GLOBAL)
+        val root = Files.createTempDirectory("premcap-dev").toFile()
+        root.mkdirs()
+        val cap = PremiumCaptureStore(root).capacitySnapshot()
+        assertTrue("free space must be reported beside the budget", cap.has("device_free_bytes"))
+        assertTrue(cap.getLong("device_free_bytes") > 0L)
+        assertFalse(cap.getBoolean("device_low_space"))
+        // a path that does not exist reports 0 free, which is UNKNOWN and must not refuse
+        val missing = PremiumCaptureStore(File("/proc/nonexistent-premium-capture-xyz"))
+        val r = missing.put("NF", "S", "k", JSONObject().put("a", 1))
+        assertEquals("an unreadable root is an IO failure, not a low-space refusal",
+            PremiumCaptureStore.REFUSED_IO, r.status)
     }
 
     // ───────────────── the last in-window outcome must survive the day ─────────────────

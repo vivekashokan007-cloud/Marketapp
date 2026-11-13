@@ -41,6 +41,19 @@ class PremiumCaptureTest {
         throw AssertionError("fixture snapshot $id not found")
     }
 
+    /**
+     * Fill a file to `bytes` WITHOUT materialising it in memory.
+     *
+     * These fixtures used to allocate a ByteArray of the whole global cap, which was fine at the
+     * first-delivery 4 MiB but allocates a gigabyte once the pilot budget is 1 GiB. The store
+     * measures with `File.length()`, so a sparse file of the right length fills the store
+     * exactly as before and every assertion is unchanged.
+     */
+    private fun fillFile(f: File, bytes: Long) {
+        f.parentFile?.mkdirs()
+        java.io.RandomAccessFile(f, "rw").use { it.setLength(bytes) }
+    }
+
     private fun tmpStore(): PremiumCaptureStore =
         PremiumCaptureStore(Files.createTempDirectory("premcap").toFile())
 
@@ -223,7 +236,7 @@ class PremiumCaptureTest {
         // fill the store to its global cap with a non-json filler, which the byte walk counts
         val filler = File(root, "filler.bin")
         filler.parentFile?.mkdirs()
-        filler.writeBytes(ByteArray(PremiumCaptureStore.MAX_BYTES_GLOBAL.toInt()) { 0x61 })
+        fillFile(filler, PremiumCaptureStore.MAX_BYTES_GLOBAL)
         assertTrue(store.globalBytes() >= PremiumCaptureStore.MAX_BYTES_GLOBAL)
         val cohort = PremiumObservationContract.stampHash(JSONObject().put("cohort_id", "x"))
         val r = store.putCohort("NF", "S", cohort)
@@ -2285,8 +2298,7 @@ class PremiumCaptureTest {
         PremiumCaptureControl.setEnabled(fd, true)
         val root = PremiumCaptureControl.root(fd)
         root.mkdirs()
-        File(root, "filler.bin").writeBytes(
-            ByteArray(PremiumCaptureStore.MAX_BYTES_GLOBAL.toInt()))
+        fillFile(File(root, "filler.bin"), PremiumCaptureStore.MAX_BYTES_GLOBAL)
         // measured BEFORE the run: this root is deliberately filled past the cap by the test
         // itself, so the property to assert is that capture adds NOTHING, not that the total
         // happens to sit under the limit. CI rejected the absolute form and was right to:
@@ -2375,7 +2387,7 @@ class PremiumCaptureTest {
         // fill to just inside the global cap but past the evidence budget
         val fill = PremiumCaptureStore.MAX_BYTES_GLOBAL -
             PremiumCaptureStore.CONTROL_RESERVE_BYTES / 2
-        File(root, "filler.bin").writeBytes(ByteArray(fill.toInt()))
+        fillFile(File(root, "filler.bin"), fill)
         val store = PremiumCaptureStore(root)
         val w = store.putLotAuthority("NF", "2026-10-19", JSONObject().put("a", 1))
         assertEquals("evidence must be refused once only the reserve is left",
@@ -3416,8 +3428,8 @@ class PremiumCaptureTest {
 
         // now fill the root so the NEXT attempt's summary is refused, and check the refusal is
         // reported rather than replaced by an unrelated success
-        File(PremiumCaptureControl.root(fd), "filler.bin").writeBytes(
-            ByteArray((PremiumCaptureStore.MAX_BYTES_GLOBAL).toInt()))
+        fillFile(File(PremiumCaptureControl.root(fd), "filler.bin"),
+            PremiumCaptureStore.MAX_BYTES_GLOBAL)
         val refused = session.observeSlot(
             index = "NF", sessionDate = "2026-10-19",
             rawChain = rawFixture("mon_0920_entry_NF").getJSONObject("raw"),

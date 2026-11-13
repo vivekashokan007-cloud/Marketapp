@@ -820,7 +820,7 @@ class PremiumCaptureSession(private val store: PremiumCaptureStore) {
                 .put("corrupt_files",
                     recRead.corrupt.size + envRead.corrupt.size + conRead.corrupt.size)
                 .put("session_bytes", store.sessionBytes(index, sessionDate))
-                .put("global_bytes", store.globalBytes())
+                .put("global_bytes", store.globalBytesFast())
                 .put("orphan_temp_files", store.orphanTempFiles(index, sessionDate).size))
             .put("slot_envelopes", envArr)
             .put("records", recArr)

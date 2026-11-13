@@ -499,7 +499,9 @@ object PremiumCaptureControl {
             st.lastRunSnapshot = JSONObject(o.toString())
                 .put("durably_recorded", w.persisted)
                 .put("write_status", w.status)
-            st.globalBytesSnapshot = runCatching { store.globalBytes() }.getOrElse { -1L }
+            // -1 means not yet known: never block a status refresh on the seeding walk
+            st.globalBytesSnapshot =
+                runCatching { store.globalBytesFastIfSeeded() ?: -1L }.getOrElse { -1L }
         }
     }
 
@@ -612,7 +614,7 @@ object PremiumCaptureControl {
     fun status(filesDir: File): JSONObject {
         val store = PremiumCaptureStore(root(filesDir))
         val enabled = isEnabled(filesDir)
-        val global = if (root(filesDir).exists()) store.globalBytes() else 0L
+        val global = if (root(filesDir).exists()) (store.globalBytesFastIfSeeded() ?: -1L) else 0L
         return JSONObject()
             .put("control_version", CONTROL_VERSION)
             .put("enabled", enabled)

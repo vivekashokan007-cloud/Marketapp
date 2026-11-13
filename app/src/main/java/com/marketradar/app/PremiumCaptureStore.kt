@@ -54,7 +54,15 @@ class PremiumCaptureStore(val root: File) {
         const val MAX_ENVELOPES_PER_INDEX_SESSION = 78
         const val MAX_CONFLICTS_PER_INDEX_SESSION = 32
         const val MAX_COHORTS_PER_INDEX_SESSION = 1
-        const val MAX_BYTES_PER_INDEX_SESSION = 1L * 1024 * 1024          // 1 MiB
+        /**
+         * MEASURED. 12 November used 587,848 B (NF) and 597,363 B (BNF) over 53/54 captured
+         * slots; scaled to the full 69-slot window that is about 764 KB, and the conflict
+         * archive cap adds up to 64 KiB, leaving only ~20% head-room under the former 1 MiB
+         * bound. Doubled so a long or retried day cannot hit the very failure mode this change
+         * exists to remove. The per-session bound REMAINS: outcome, envelope and conflict
+         * counts are unchanged, and they are what actually bounds a session.
+         */
+        const val MAX_BYTES_PER_INDEX_SESSION = 2L * 1024 * 1024          // 2 MiB
         /** Held back INSIDE the per-session cap so a final/refusal summary can always be written. */
         const val SUMMARY_RESERVE_BYTES = 16L * 1024                      // 16 KiB
         /**
@@ -81,6 +89,21 @@ class PremiumCaptureStore(val root: File) {
          */
         const val DIAGNOSTIC_RESERVE_BYTES = 128L * 1024                 // 128 KiB
         /**
+         * The store must never be the reason the DEVICE runs out of room. Evidence is refused
+         * while fewer than this many bytes would remain on the filesystem, whatever the app
+         * budget allows, and the refusal names the device rather than the cap. Paper and every
+         * other surface are untouched by it: this gate only refuses a premium evidence write.
+         */
+        const val MIN_FREE_DEVICE_BYTES = 256L * 1024 * 1024              // 256 MiB
+        /**
+         * Within this distance of the evidence budget, admission stops trusting the incremental
+         * byte total and re-measures the tree exactly. Far from the ceiling a cached total is
+         * enough and a full walk is unaffordable; near it, correctness outranks the walk's cost.
+         * Also bounds any drift the cache could accumulate from control-file writes, which do
+         * not go through this class.
+         */
+        const val EXACT_RECHECK_MARGIN_BYTES = 4L * 1024 * 1024           // 4 MiB
+        /**
          * MEASURED, not proposed. The 4 MiB first-delivery cap was explicitly
          * "PROPOSED_INITIAL_IMPLEMENTATION_CAPS_NOT_MEASURED_TYPICAL_PAYLOADS", and measurement
          * showed it holds only about three and a half two-index sessions. Nothing is ever
@@ -100,11 +123,17 @@ class PremiumCaptureStore(val root: File) {
          *     ---------------------------------------------
          *     required                        9,301,857 B  ~= 8.87 MiB
          *
-         * 16 MiB leaves about 80% margin over that requirement and is negligible on the device.
-         * Raising a bound is preferred here over deleting or moving evidence: every retained
-         * file stays exactly where it is, and the change is one constant.
+         * The pilot budget is 1 GiB: a ceiling that is PERMISSION TO GROW ON DEMAND, not an
+         * allocation. Only actual writes consume it, nothing is pre-reserved, and the device's
+         * own free space is a separate and stricter gate ([MIN_FREE_DEVICE_BYTES]), so a large
+         * app budget can never be the reason the phone runs out of room.
+         *
+         * At this size the store can hold months of retained sessions, which is why admission
+         * no longer walks the whole tree per write: see [treeBytes] and
+         * [EXACT_RECHECK_MARGIN_BYTES]. Nothing is deleted or migrated for this pilot; every
+         * retained file stays exactly where it is.
          */
-        const val MAX_BYTES_GLOBAL = 16L * 1024 * 1024                    // 16 MiB
+        const val MAX_BYTES_GLOBAL = 1024L * 1024 * 1024                  // 1 GiB
         const val MAX_BYTES_PER_RECORD = 2L * 1024                        // 2 KiB
 
         // write outcomes
@@ -119,6 +148,8 @@ class PremiumCaptureStore(val root: File) {
         const val REFUSED_COHORT_CAP = "REFUSED_COHORT_CAP"
         const val REFUSED_SESSION_BYTES = "REFUSED_SESSION_BYTE_CAP"
         const val REFUSED_GLOBAL_BYTES = "REFUSED_GLOBAL_BYTE_CAP"
+        /** The DEVICE is out of room, which is not the same as the app budget being spent. */
+        const val REFUSED_DEVICE_LOW_SPACE = "REFUSED_DEVICE_LOW_SPACE"
         const val REFUSED_IO = "REFUSED_IO_FAILURE"
 
         // kinds, for the one admission gate
@@ -185,6 +216,40 @@ class PremiumCaptureStore(val root: File) {
             return synchronized(GENERATIONS) {
                 GENERATIONS.getOrPut(key) { java.util.concurrent.atomic.AtomicLong(0L) }
             }
+        }
+
+        /**
+         * Incremental root byte total, per store root.
+         *
+         * WHY THIS EXISTS. Admission measured the root by WALKING EVERY RETAINED FILE, on every
+         * write, and both status paths did the same on every refresh. Measured on this code:
+         * 11.7 ms at 1,000 retained files, 227 ms at 60,000, 360 ms at 120,000 — and a capture
+         * day is 828 writes, so a year of retention would have put minutes of tree-walking on
+         * the poll thread per day and frozen the About screen for as long. At a 4 MiB ceiling
+         * the tree never grew enough to matter; at 1 GiB it decides whether capture works at
+         * all.
+         *
+         * The total is seeded once per root by a single exact walk and then adjusted by the
+         * exact delta of each write, under the same lock that serialises the writes. It is a
+         * CACHE, not the authority: [globalBytes] still measures, admission re-measures within
+         * [EXACT_RECHECK_MARGIN_BYTES] of the ceiling, and control files — which this class
+         * does not write — can only drift it by at most [CONTROL_RESERVE_BYTES], which is
+         * already excluded from the evidence budget.
+         */
+        private val TREE_BYTES = HashMap<String, java.util.concurrent.atomic.AtomicLong>()
+
+        private fun treeBytesFor(root: File, measure: () -> Long)
+                : java.util.concurrent.atomic.AtomicLong {
+            val key = runCatching { root.canonicalPath }.getOrElse { root.absolutePath }
+            synchronized(TREE_BYTES) { TREE_BYTES[key] }?.let { return it }
+            // measured OUTSIDE the map lock: the walk can be slow and must not block other roots
+            val seeded = java.util.concurrent.atomic.AtomicLong(measure())
+            return synchronized(TREE_BYTES) { TREE_BYTES.getOrPut(key) { seeded } }
+        }
+
+        /** Test and recovery hook: drop the cached totals so the next read re-measures. */
+        fun forgetCachedBytesForTest() {
+            synchronized(TREE_BYTES) { TREE_BYTES.clear() }
         }
 
         private fun rootKey(root: File) =
@@ -258,7 +323,76 @@ class PremiumCaptureStore(val root: File) {
         dir.listFiles()?.count { it.isFile && it.name.endsWith(".json") } ?: 0
 
     fun sessionBytes(index: String, session: String) = bytesOf(sessionDir(index, session))
+
+    /** EXACT root total, by walking the tree. The authority, and the reconciliation source. */
     fun globalBytes() = bytesOf(root)
+
+    /**
+     * Bytes of the files sitting DIRECTLY in the root. This class never writes there —
+     * [sessionDir] puts everything under `root/<index>/<session>/` — but
+     * [PremiumCaptureControl] keeps its meta and last-run files there, so they are measured
+     * fresh on every call rather than cached. It is a handful of small files, so the listing is
+     * cheap and the total stays exact no matter who wrote them.
+     */
+    private fun rootImmediateBytes(): Long =
+        root.listFiles()?.asSequence()?.filter { it.isFile }?.sumOf { it.length() } ?: 0L
+
+    /** The store-owned subtree: everything under `root/<index>/...`, seeded by one walk. */
+    private fun subtreeBytesSeed(): Long =
+        root.listFiles()?.asSequence()?.filter { it.isDirectory }?.sumOf { bytesOf(it) } ?: 0L
+
+    /**
+     * The root total without walking the tree: the cached store-owned subtree plus a fresh
+     * reading of the root's own files.
+     *
+     * Splitting it this way is what makes the cache SOUND rather than merely fast. Everything
+     * the cache tracks is written by this class under its own lock, so the deltas are exact;
+     * everything written by anyone else lands in the root's immediate files, which are measured
+     * every time. A control write — or a test's filler — therefore cannot leave the total
+     * stale, which an earlier whole-root cache did: the module's own full-store tests kept
+     * admitting writes because the cache had been seeded before their filler appeared.
+     */
+    fun globalBytesFast(): Long =
+        treeBytesFor(root) { subtreeBytesSeed() }.get() + rootImmediateBytes()
+
+    /**
+     * The same total, but ONLY if the subtree cache is already seeded; null otherwise.
+     *
+     * The seeding walk is one-off per process but is O(retained files) — measured on this code
+     * at 12 ms for 1,000 files, 396 ms for 120,000 and 869 ms for 250,000. The capture path can
+     * afford it on its background thread, and must, because admission needs a number. A status
+     * refresh must not: the About screen would block for exactly that long on the first open
+     * after launch. Status callers therefore use this and render "unknown" rather than waiting,
+     * and the value appears as soon as the first capture write has seeded it.
+     */
+    fun globalBytesFastIfSeeded(): Long? {
+        val key = runCatching { root.canonicalPath }.getOrElse { root.absolutePath }
+        val cell = synchronized(TREE_BYTES) { TREE_BYTES[key] } ?: return null
+        return cell.get() + rootImmediateBytes()
+    }
+
+    /** Apply the exact delta of a completed write to the cached subtree total. */
+    private fun addTreeBytes(delta: Long) {
+        if (delta != 0L) treeBytesFor(root) { subtreeBytesSeed() }.addAndGet(delta)
+    }
+
+    /**
+     * Re-measure the tree and adopt the exact value, returning the drift that was corrected.
+     * Called by admission whenever the cached total is within [EXACT_RECHECK_MARGIN_BYTES] of
+     * the ceiling, so a drifted cache can never admit a write past the cap.
+     */
+    fun reconcileTreeBytes(): Long {
+        val exact = subtreeBytesSeed()
+        val cell = treeBytesFor(root) { exact }
+        val drift = exact - cell.getAndSet(exact)
+        if (drift != 0L) driftCorrectedBytes += kotlin.math.abs(drift)
+        return drift
+    }
+
+    /** Bytes of drift corrected by reconciliation in this process, for the diagnostics. */
+    @Volatile
+    var driftCorrectedBytes: Long = 0L
+        private set
 
     /**
      * Bounded capacity view, for the status surface and for an export of a session that wrote
@@ -266,16 +400,24 @@ class PremiumCaptureStore(val root: File) {
      * at its ceiling — which is exactly when it is needed.
      */
     fun capacitySnapshot(): JSONObject {
-        val g = globalBytes()
+        val g = globalBytesFast()
         val evidenceBudget = MAX_BYTES_GLOBAL - CONTROL_RESERVE_BYTES - DIAGNOSTIC_RESERVE_BYTES
+        val free = runCatching { root.usableSpace }.getOrDefault(-1L)
         return JSONObject()
             .put("global_bytes", g)
+            .put("global_bytes_source", "INCREMENTAL_CACHE_RECONCILED_NEAR_THE_CEILING")
             .put("max_bytes_global", MAX_BYTES_GLOBAL)
             .put("control_reserve_bytes", CONTROL_RESERVE_BYTES)
             .put("diagnostic_reserve_bytes", DIAGNOSTIC_RESERVE_BYTES)
             .put("evidence_budget_bytes", evidenceBudget)
             .put("evidence_remaining_bytes", (evidenceBudget - g).coerceAtLeast(0L))
             .put("evidence_at_ceiling", g >= evidenceBudget)
+            .put("budget_is", "PERMISSION_TO_GROW_ON_DEMAND_NOT_AN_ALLOCATION")
+            // the device, reported beside the app budget so a refusal can name the right one
+            .put("device_free_bytes", free)
+            .put("min_free_device_bytes", MIN_FREE_DEVICE_BYTES)
+            .put("device_low_space", free in 0 until MIN_FREE_DEVICE_BYTES)
+            .put("drift_corrected_bytes", driftCorrectedBytes)
             .put("retention_deletion", "NONE_IN_THIS_DELIVERY")
     }
 
@@ -354,7 +496,26 @@ class PremiumCaptureStore(val root: File) {
         // nothing else may.
         val globalBudget = if (kind == KIND_SUMMARY) MAX_BYTES_GLOBAL - CONTROL_RESERVE_BYTES
         else MAX_BYTES_GLOBAL - CONTROL_RESERVE_BYTES - DIAGNOSTIC_RESERVE_BYTES
-        val global0 = globalBytes()
+        // The DEVICE is the stricter gate, and it is checked first: a 1 GiB app budget is
+        // permission to grow, never a claim on space the phone does not have. `usableSpace` is
+        // a single stat call, so this costs nothing per write.
+        // `File.getUsableSpace()` returns 0 for a path that does not exist, which is UNKNOWN and
+        // not "full": the module's own aCaptureFailureCannotPropagateOutOfTheStore uses a root
+        // under /proc, and an early draft of this gate turned its genuine IO failure into a
+        // low-space refusal. A non-positive reading therefore leaves this gate out of the way
+        // and lets the real failure surface; the app budget below still applies.
+        val free = runCatching { root.usableSpace }.getOrDefault(0L)
+        if (free > 0L && free - finalBytes < MIN_FREE_DEVICE_BYTES)
+            return WriteResult(REFUSED_DEVICE_LOW_SPACE, finalBytes,
+                "$kind needs $finalBytes B but the device has $free B free and " +
+                    "$MIN_FREE_DEVICE_BYTES B must remain; the app budget is not the limit here")
+        // Cached total far from the ceiling, exact re-measure near it, so a drifted cache can
+        // never admit past the cap. See TREE_BYTES for why the walk cannot run on every write.
+        var global0 = globalBytesFast()
+        if (global0 + finalBytes > globalBudget - EXACT_RECHECK_MARGIN_BYTES) {
+            reconcileTreeBytes()
+            global0 = globalBytesFast()
+        }
         if (global0 + finalBytes > globalBudget)
             return WriteResult(REFUSED_GLOBAL_BYTES, finalBytes,
                 "$kind would take the store to ${global0 + finalBytes} B against " +
@@ -559,6 +720,9 @@ class PremiumCaptureStore(val root: File) {
                                   replace: Boolean): WriteResult {
         // odd BEFORE the first observable change, even in `finally` even on failure
         beginMutation(root)
+        // measured before the write so a replacement's delta is exact
+        val before = if (dest.isFile) dest.length() else 0L
+        var settled: WriteResult? = null
         return try {
             if (!dir.exists() && !dir.mkdirs() && !dir.exists())
                 return WriteResult(REFUSED_IO, size, "cannot create ${dir.name}")
@@ -580,14 +744,14 @@ class PremiumCaptureStore(val root: File) {
                 }
                 if (!tmp.renameTo(dest)) { tmp.delete(); return WriteResult(REFUSED_IO, size, "replace failed") }
                 mutationPhaseHookForTest?.invoke("after_rename")
-                return WriteResult(REPLACED, size)
+                return WriteResult(REPLACED, size).also { settled = it }
             }
             if (!tmp.renameTo(dest)) {
                 tmp.delete()
                 return WriteResult(REFUSED_IO, size, "rename failed")
             }
             mutationPhaseHookForTest?.invoke("after_rename")
-            WriteResult(WRITTEN, size)
+            WriteResult(WRITTEN, size).also { settled = it }
         } catch (e: SecurityException) {
             WriteResult(REFUSED_IO, size, "permission: ${e.javaClass.simpleName}")
         } catch (e: Exception) {
@@ -598,6 +762,13 @@ class PremiumCaptureStore(val root: File) {
             // created and removed a temp file and so still changed directory and orphan-temp
             // accounting; it must register as a completed mutation rather than leave the root
             // permanently marked in progress.
+            // The cached root total follows the bytes that actually settled: a new file adds
+            // its size, a replacement adds only the difference, and a duplicate, a refusal or a
+            // thrown failure leaves it alone because the temp file was removed.
+            settled?.let { r ->
+                if (r.status == WRITTEN) addTreeBytes(size)
+                else if (r.status == REPLACED) addTreeBytes(size - before)
+            }
             endMutation(root)
         }
     }
