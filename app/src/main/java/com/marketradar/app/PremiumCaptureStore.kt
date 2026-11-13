@@ -152,6 +152,10 @@ class PremiumCaptureStore(val root: File) {
         const val REFUSED_DEVICE_LOW_SPACE = "REFUSED_DEVICE_LOW_SPACE"
         const val REFUSED_IO = "REFUSED_IO_FAILURE"
 
+        /** Control-reserve file of last resort; see [recordDiagnosticFailure]. */
+        const val DIAGNOSTIC_FAILURES = "diagnostic_failures.json"
+        const val MAX_DIAGNOSTIC_FAILURES = 8
+
         // kinds, for the one admission gate
         const val KIND_RECORD = "record"
         const val KIND_ENVELOPE = "envelope"
@@ -211,6 +215,85 @@ class PremiumCaptureStore(val root: File) {
         @Volatile
         internal var writeRefusalInjectorForTest: ((String) -> String?)? = null
 
+        /**
+         * Device free space, for tests only. The real reading is a filesystem fact no test can
+         * set, and a low-space refusal that cannot be exercised deterministically is a claim,
+         * not a proof. Null means read the real volume.
+         */
+        @Volatile
+        internal var freeBytesForTest: (() -> Long)? = null
+
+
+        /**
+         * THE evidence-headroom calculation. One function, used by admission, by the About
+         * screen and by every export, so the phone cannot display room that admission will not
+         * honour.
+         *
+         * Both reserves are deducted here and nowhere else. Four separate expressions existed
+         * before this: admission deducted the control reserve AND the diagnostic reserve, while
+         * `collectionState`, `statusFast` and `status` each deducted only the control reserve —
+         * so the status could report 100 KiB "remaining" for evidence that admission would
+         * refuse, and the store read as collecting normally while it had already stopped.
+         */
+        fun evidenceBudgetBytes(): Long =
+            MAX_BYTES_GLOBAL - CONTROL_RESERVE_BYTES - DIAGNOSTIC_RESERVE_BYTES
+
+        /**
+         * Remaining evidence bytes, or **null when the total is not known**.
+         *
+         * Null is not zero and not "full": an unmeasured store is an unknown store, and the
+         * callers render it as unknown. Returning 0 here would have read as a full store.
+         */
+        fun evidenceRemainingBytes(globalBytes: Long): Long? =
+            if (globalBytes < 0L) null
+            else (evidenceBudgetBytes() - globalBytes).coerceAtLeast(0L)
+
+        const val CAUSE_APP_CAP = "APP_EVIDENCE_BUDGET_EXHAUSTED"
+        const val CAUSE_DEVICE = "DEVICE_LOW_SPACE"
+        const val CAUSE_IO = "FILE_SYSTEM_IO_FAILURE"
+        const val CAUSE_SESSION_CAP = "PER_SESSION_BUDGET_EXHAUSTED"
+        const val CAUSE_OTHER = "OTHER_REFUSAL_SEE_STORE_STATUS"
+        const val CAUSE_NONE = "NO_REFUSAL_RECORDED"
+
+        /**
+         * Name the cause of a refusal from the reason recorded WHEN IT HAPPENED.
+         *
+         * A counter such as `refused_cohort_persist` says a cohort could not be stored. It cannot
+         * say whether the app evidence budget was spent, the phone was out of room, or the file
+         * system failed — three different operator actions — and a capacity reading taken hours
+         * later at export time cannot either, because by then the store may be far from any
+         * ceiling and the device may have been cleared. So the refusing write records its own
+         * store status in the summary, and this reads that back. Shared by the About screen and
+         * the exports so neither can classify a refusal differently from the other.
+         */
+        fun classifyRefusal(summary: JSONObject?): JSONObject {
+            val st = summary?.optString("last_refusal_store_status")
+                ?.takeIf { it.isNotBlank() && it != "null" }
+            val slotStatus = summary?.optString("last_refusal_status")
+                ?.takeIf { it.isNotBlank() && it != "null" }
+            val cause = when {
+                st == null && slotStatus == null -> CAUSE_NONE
+                st == REFUSED_GLOBAL_BYTES -> CAUSE_APP_CAP
+                st == REFUSED_DEVICE_LOW_SPACE -> CAUSE_DEVICE
+                st == REFUSED_IO -> CAUSE_IO
+                st == REFUSED_SESSION_BYTES -> CAUSE_SESSION_CAP
+                st != null -> CAUSE_OTHER
+                else -> CAUSE_OTHER
+            }
+            val o = JSONObject()
+                .put("cause", cause)
+                .put("classified_from",
+                    if (cause == CAUSE_NONE) "NOTHING_RECORDED"
+                    else "DURABLE_REASON_RECORDED_AT_THE_TIME_OF_THE_REFUSAL")
+            if (cause == CAUSE_NONE) return o
+            return o.put("store_status", st ?: JSONObject.NULL)
+                .put("slot_status", slotStatus ?: JSONObject.NULL)
+                .put("counter", summary?.opt("last_refusal_counter") ?: JSONObject.NULL)
+                .put("detail", summary?.opt("last_refusal_detail") ?: JSONObject.NULL)
+                .put("slot", summary?.opt("last_refusal_slot") ?: JSONObject.NULL)
+                .put("recorded_at_ms", summary?.opt("last_refusal_at_ms") ?: JSONObject.NULL)
+        }
+
         private fun generationFor(root: File): java.util.concurrent.atomic.AtomicLong {
             val key = runCatching { root.canonicalPath }.getOrElse { root.absolutePath }
             return synchronized(GENERATIONS) {
@@ -237,6 +320,24 @@ class PremiumCaptureStore(val root: File) {
          * already excluded from the evidence budget.
          */
         private val TREE_BYTES = HashMap<String, java.util.concurrent.atomic.AtomicLong>()
+
+        /**
+         * Last measured bytes of the root's own control files, per root. Display only: the
+         * admission path always measures them freshly. See [globalBytesInMemory].
+         */
+        private val CONTROL_BYTES = HashMap<String, Long>()
+
+        /**
+         * The mutation generation at which each root was last reconciled exactly.
+         *
+         * Without this, a store sitting AT capacity reconciles on every refused write: the
+         * cached total is near the ceiling by definition, so the near-ceiling re-measure fires
+         * every time, and a full-store poll would walk the whole tree once per contract per
+         * slot. A refusal happens inside admission and never reaches [atomicWriteLocked], so it
+         * cannot change the generation — if the generation has not moved since the last exact
+         * measurement, the cached total is still exact and there is nothing to re-measure.
+         */
+        private val RECONCILED_AT = HashMap<String, Long>()
 
         private fun treeBytesFor(root: File, measure: () -> Long)
                 : java.util.concurrent.atomic.AtomicLong {
@@ -325,21 +426,13 @@ class PremiumCaptureStore(val root: File) {
     fun sessionBytes(index: String, session: String) = bytesOf(sessionDir(index, session))
 
     /** EXACT root total, by walking the tree. The authority, and the reconciliation source. */
-    fun globalBytes() = bytesOf(root)
-
-    /**
-     * Bytes of the files sitting DIRECTLY in the root. This class never writes there —
-     * [sessionDir] puts everything under `root/<index>/<session>/` — but
-     * [PremiumCaptureControl] keeps its meta and last-run files there, so they are measured
-     * fresh on every call rather than cached. It is a handful of small files, so the listing is
-     * cheap and the total stays exact no matter who wrote them.
-     */
-    private fun rootImmediateBytes(): Long =
-        root.listFiles()?.asSequence()?.filter { it.isFile }?.sumOf { it.length() } ?: 0L
+    fun globalBytes(): Long { exactWalks++; return bytesOf(root) }
 
     /** The store-owned subtree: everything under `root/<index>/...`, seeded by one walk. */
-    private fun subtreeBytesSeed(): Long =
-        root.listFiles()?.asSequence()?.filter { it.isDirectory }?.sumOf { bytesOf(it) } ?: 0L
+    private fun subtreeBytesSeed(): Long {
+        exactWalks++
+        return root.listFiles()?.asSequence()?.filter { it.isDirectory }?.sumOf { bytesOf(it) } ?: 0L
+    }
 
     /**
      * The root total without walking the tree: the cached store-owned subtree plus a fresh
@@ -353,7 +446,7 @@ class PremiumCaptureStore(val root: File) {
      * admitting writes because the cache had been seeded before their filler appeared.
      */
     fun globalBytesFast(): Long =
-        treeBytesFor(root) { subtreeBytesSeed() }.get() + rootImmediateBytes()
+        treeBytesFor(root) { subtreeBytesSeed() }.get() + controlBytes()
 
     /**
      * The same total, but ONLY if the subtree cache is already seeded; null otherwise.
@@ -368,7 +461,34 @@ class PremiumCaptureStore(val root: File) {
     fun globalBytesFastIfSeeded(): Long? {
         val key = runCatching { root.canonicalPath }.getOrElse { root.absolutePath }
         val cell = synchronized(TREE_BYTES) { TREE_BYTES[key] } ?: return null
-        return cell.get() + rootImmediateBytes()
+        return cell.get() + controlBytes()
+    }
+
+    /**
+     * The root total from memory alone, or null if nothing has measured it yet — for the UI.
+     *
+     * [globalBytesFastIfSeeded] lists the root directory to measure control files freshly, which
+     * is a handful of stats rather than a tree walk but is still filesystem IO, and the status
+     * the About dialog reads must touch none: a stuck capture write would otherwise hold the
+     * dialog. This returns the cached subtree total plus the LAST MEASURED control total, which
+     * can lag by at most [CONTROL_RESERVE_BYTES] (16 KiB of a 1 GiB bound) and is refreshed by
+     * every admission and every control write. Display only — admission never uses it.
+     */
+    fun globalBytesInMemory(): Long? {
+        val key = runCatching { root.canonicalPath }.getOrElse { root.absolutePath }
+        val cell = synchronized(TREE_BYTES) { TREE_BYTES[key] } ?: return null
+        val ctl = synchronized(CONTROL_BYTES) { CONTROL_BYTES[key] } ?: return null
+        return cell.get() + ctl
+    }
+
+    /**
+     * Seed the byte cache on a background thread, so a headroom reading exists BEFORE the first
+     * capture of the day — the pre-open check — without the About screen paying for the walk.
+     * Idempotent and cheap once seeded.
+     */
+    fun seedByteCacheForStatus() {
+        if (!root.exists()) return
+        synchronized(lock) { globalBytesFast() }
     }
 
     /** Apply the exact delta of a completed write to the cached subtree total. */
@@ -381,6 +501,19 @@ class PremiumCaptureStore(val root: File) {
      * Called by admission whenever the cached total is within [EXACT_RECHECK_MARGIN_BYTES] of
      * the ceiling, so a drifted cache can never admit a write past the cap.
      */
+    /**
+     * Re-measure only if something has actually been written since the last exact measurement.
+     * Returns the drift corrected, or 0 when the cached total was already known to be exact.
+     */
+    private fun reconcileIfStale(): Long {
+        val key = runCatching { root.canonicalPath }.getOrElse { root.absolutePath }
+        val gen = generation()
+        synchronized(RECONCILED_AT) { if (RECONCILED_AT[key] == gen) return 0L }
+        val drift = reconcileTreeBytes()
+        synchronized(RECONCILED_AT) { RECONCILED_AT[key] = gen }
+        return drift
+    }
+
     fun reconcileTreeBytes(): Long {
         val exact = subtreeBytesSeed()
         val cell = treeBytesFor(root) { exact }
@@ -394,6 +527,11 @@ class PremiumCaptureStore(val root: File) {
     var driftCorrectedBytes: Long = 0L
         private set
 
+    /** Exact tree walks performed by this instance, for the scaling benchmark and its test. */
+    @Volatile
+    var exactWalks: Long = 0L
+        private set
+
     /**
      * Bounded capacity view, for the status surface and for an export of a session that wrote
      * nothing. Reads only directory sizes and constants, so it still answers when the store is
@@ -401,8 +539,8 @@ class PremiumCaptureStore(val root: File) {
      */
     fun capacitySnapshot(): JSONObject {
         val g = globalBytesFast()
-        val evidenceBudget = MAX_BYTES_GLOBAL - CONTROL_RESERVE_BYTES - DIAGNOSTIC_RESERVE_BYTES
-        val free = runCatching { root.usableSpace }.getOrDefault(-1L)
+        val evidenceBudget = evidenceBudgetBytes()
+        val free = deviceFreeBytes(-1L)
         return JSONObject()
             .put("global_bytes", g)
             .put("global_bytes_source", "INCREMENTAL_CACHE_RECONCILED_NEAR_THE_CEILING")
@@ -438,6 +576,16 @@ class PremiumCaptureStore(val root: File) {
         if (!f.isFile) return null
         return runCatching { JSONObject(f.readText()) }.getOrNull()
     }
+
+    /**
+     * Free bytes on the volume holding the store, or [absent] when it cannot be read.
+     *
+     * One reading for every caller — admission, the About status and the exports all deduct the
+     * same reserves from the same number, so the phone cannot show headroom that admission does
+     * not honour. `usableSpace` is a single stat call, so this costs nothing per write.
+     */
+    private fun deviceFreeBytes(absent: Long): Long =
+        freeBytesForTest?.let { return it() } ?: runCatching { root.usableSpace }.getOrDefault(absent)
 
     /** The current write generation for this root. Changes on every mutation, never decreases. */
     fun generation(): Long = generationFor(root).get()
@@ -495,7 +643,7 @@ class PremiumCaptureStore(val root: File) {
         // be written after evidence has been refused. A summary may use that second reserve;
         // nothing else may.
         val globalBudget = if (kind == KIND_SUMMARY) MAX_BYTES_GLOBAL - CONTROL_RESERVE_BYTES
-        else MAX_BYTES_GLOBAL - CONTROL_RESERVE_BYTES - DIAGNOSTIC_RESERVE_BYTES
+        else evidenceBudgetBytes()
         // The DEVICE is the stricter gate, and it is checked first: a 1 GiB app budget is
         // permission to grow, never a claim on space the phone does not have. `usableSpace` is
         // a single stat call, so this costs nothing per write.
@@ -504,7 +652,7 @@ class PremiumCaptureStore(val root: File) {
         // under /proc, and an early draft of this gate turned its genuine IO failure into a
         // low-space refusal. A non-positive reading therefore leaves this gate out of the way
         // and lets the real failure surface; the app budget below still applies.
-        val free = runCatching { root.usableSpace }.getOrDefault(0L)
+        val free = deviceFreeBytes(0L)
         if (free > 0L && free - finalBytes < MIN_FREE_DEVICE_BYTES)
             return WriteResult(REFUSED_DEVICE_LOW_SPACE, finalBytes,
                 "$kind needs $finalBytes B but the device has $free B free and " +
@@ -513,7 +661,7 @@ class PremiumCaptureStore(val root: File) {
         // never admit past the cap. See TREE_BYTES for why the walk cannot run on every write.
         var global0 = globalBytesFast()
         if (global0 + finalBytes > globalBudget - EXACT_RECHECK_MARGIN_BYTES) {
-            reconcileTreeBytes()
+            reconcileIfStale()
             global0 = globalBytesFast()
         }
         if (global0 + finalBytes > globalBudget)
@@ -660,7 +808,11 @@ class PremiumCaptureStore(val root: File) {
                 return WriteResult(REFUSED_GLOBAL_BYTES, size,
                     "control files would take ${control0 - replacing + size} B against the " +
                         "$CONTROL_RESERVE_BYTES B reserve; nothing is deleted to make room")
-            val global0 = globalBytes()
+            // the cached total, for the same reason admission uses it: recordRun() writes a
+            // control file after EVERY completed index job, so an exact walk here put the whole
+            // retained tree on the capture path once per job -- the one place the first
+            // benchmark missed, because it measured quote writes only.
+            val global0 = globalBytesFast()
             if (global0 - replacing + size > MAX_BYTES_GLOBAL)
                 return WriteResult(REFUSED_GLOBAL_BYTES, size,
                     "control $name would take the store to ${global0 - replacing + size} B " +
@@ -669,9 +821,55 @@ class PremiumCaptureStore(val root: File) {
         atomicWriteLocked(root, dest, payload, size, replace = true)
     }
 
+    /**
+     * Record that the DIAGNOSTIC write itself could not be saved.
+     *
+     * The summary carries the durable reason for a refused cohort. When the summary write is
+     * ALSO refused — the phone is out of physical room, so even the reserve cannot be used —
+     * there is nothing in the session subtree to read back, and an export would otherwise show
+     * `NOT_WRITTEN`, which reads as "no capture was attempted" rather than "the attempt and its
+     * record both failed". So the last resort is one small, replaced file in the control reserve,
+     * which is carved out separately and is the last space to go. If this fails too, the failure
+     * is genuinely only in the returned result, and [DiagnosticFailure.recorded] says so rather
+     * than pretending otherwise.
+     */
+    fun recordDiagnosticFailure(index: String, session: String, record: JSONObject): WriteResult {
+        val key = "$session/${index.uppercase()}"
+        val existing = readControlJson(DIAGNOSTIC_FAILURES)
+        val map = existing?.optJSONObject("failures") ?: JSONObject()
+        map.put(key, record)
+        // bounded: keep the most recent entries only, so this can never grow with the retention
+        while (map.length() > MAX_DIAGNOSTIC_FAILURES) {
+            val oldest = map.keys().asSequence().minByOrNull {
+                map.optJSONObject(it)?.optLong("at_ms", 0L) ?: 0L
+            } ?: break
+            map.remove(oldest)
+        }
+        return putControlFile(DIAGNOSTIC_FAILURES, JSONObject()
+            .put("store_version", STORE_VERSION)
+            .put("file_is", "LAST_RESORT_RECORD_THAT_A_DIAGNOSTIC_WRITE_WAS_REFUSED")
+            .put("max_entries", MAX_DIAGNOSTIC_FAILURES)
+            .put("failures", map))
+    }
+
+    /** The recorded diagnostic-write failure for this index/session, or null. */
+    fun readDiagnosticFailure(index: String, session: String): JSONObject? =
+        readControlJson(DIAGNOSTIC_FAILURES)?.optJSONObject("failures")
+            ?.optJSONObject("$session/${index.uppercase()}")
+
+    private fun readControlJson(name: String): JSONObject? {
+        val f = File(root, name)
+        if (!f.isFile) return null
+        return runCatching { JSONObject(f.readText()) }.getOrNull()
+    }
+
     /** Bytes currently held by control/status files at the root (not inside any session). */
-    fun controlBytes(): Long =
-        (root.listFiles()?.filter { it.isFile }?.sumOf { it.length() } ?: 0L)
+    fun controlBytes(): Long {
+        val n = root.listFiles()?.filter { it.isFile }?.sumOf { it.length() } ?: 0L
+        val key = runCatching { root.canonicalPath }.getOrElse { root.absolutePath }
+        synchronized(CONTROL_BYTES) { CONTROL_BYTES[key] = n }
+        return n
+    }
 
     fun readLotAuthority(index: String, session: String): JSONObject? {
         val f = lotAuthorityFile(index, session)
@@ -765,7 +963,10 @@ class PremiumCaptureStore(val root: File) {
             // The cached root total follows the bytes that actually settled: a new file adds
             // its size, a replacement adds only the difference, and a duplicate, a refusal or a
             // thrown failure leaves it alone because the temp file was removed.
-            settled?.let { r ->
+            // ONLY the store-owned subtree is cached. A control file is written straight into
+            // the root and is measured fresh by controlBytes() on every read, so adding it here
+            // as well would count the same bytes twice -- which an earlier version did.
+            if (dir != root) settled?.let { r ->
                 if (r.status == WRITTEN) addTreeBytes(size)
                 else if (r.status == REPLACED) addTreeBytes(size - before)
             }
@@ -818,7 +1019,16 @@ class PremiumCaptureStore(val root: File) {
      * conflict and corruption evidence therefore survived only in a returned `SlotResult` — that
      * is, in memory, until the process ended.
      */
-    fun bumpCounters(index: String, session: String, deltas: Map<String, Long>): WriteResult {
+    /**
+     * @param fields bounded scalar facts merged into the summary beside the counters, so the
+     *   EXACT reason a write was refused is durable at the moment it happened. A counter such
+     *   as `refused_cohort_persist` says a cohort could not be stored; it cannot say whether the
+     *   app budget was spent, the device was out of room, or the file system failed, and a
+     *   capacity reading taken later cannot either. Values are capped; keys are prefixed so
+     *   they can never collide with a counter.
+     */
+    fun bumpCounters(index: String, session: String, deltas: Map<String, Long>,
+                     fields: Map<String, Any?> = emptyMap()): WriteResult {
         return synchronized(lock) {
             if (deltas.isEmpty()) return WriteResult(DUPLICATE_NO_OP, 0)
             val existing = runCatching {
@@ -835,6 +1045,20 @@ class PremiumCaptureStore(val root: File) {
                 .put("index", index.uppercase())
                 .put("session_date", session)
                 .put("counters", counters)
+                .also { o ->
+                    // carried forward so the last recorded reason survives later updates
+                    existing?.keys()?.forEach { k ->
+                        if (k.startsWith("last_") && !o.has(k)) o.put(k, existing.get(k))
+                    }
+                    for ((k, v) in fields) {
+                        val key = if (k.startsWith("last_")) k else "last_$k"
+                        o.put(key, when (v) {
+                            null -> JSONObject.NULL
+                            is String -> if (v.length <= 240) v else v.take(240)
+                            else -> v
+                        })
+                    }
+                }
                 .put("counters_are", "DURABLE_ADMISSION_AND_INTEGRITY_ACCOUNTING")
                 .put("updates", (existing?.optLong("updates", 0L) ?: 0L) + 1L)
             val payload = summary.toString()

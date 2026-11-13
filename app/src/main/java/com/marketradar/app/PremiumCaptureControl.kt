@@ -188,6 +188,11 @@ object PremiumCaptureControl {
     /** Reads and validates the persisted control. Never touches `intent`. */
     private fun loadPersisted(filesDir: File) {
         val st = stateFor(filesDir)
+        // Seed the byte cache on this same background thread, so the headroom reading exists
+        // BEFORE the day's first capture — the pre-open check reads it, and the About screen
+        // never pays for the seeding walk on the main thread. Failure here is not fatal: the
+        // status renders unknown and the first capture write seeds it instead.
+        runCatching { PremiumCaptureStore(root(filesDir)).seedByteCacheForStatus() }
         val f = metaFile(filesDir)
         if (!f.isFile) {
             st.cachedFile = false
@@ -526,11 +531,10 @@ object PremiumCaptureControl {
     internal fun collectionState(enabled: Boolean, globalBytes: Long, last: JSONObject?,
                                  worker: JSONObject? = null): String {
         if (!enabled) return "OFF"
-        if (globalBytes >= 0L) {
-            val remaining = PremiumCaptureStore.MAX_BYTES_GLOBAL -
-                PremiumCaptureStore.CONTROL_RESERVE_BYTES - globalBytes
-            if (remaining <= 0L) return "ON_BUT_STOPPED_STORE_FULL"
-        }
+        // the ONE headroom calculation, so the state cannot say collecting while admission
+        // refuses: this used to deduct the control reserve only, and admission deducts both
+        if (PremiumCaptureStore.evidenceRemainingBytes(globalBytes) == 0L)
+            return "ON_BUT_STOPPED_STORE_FULL"
         // A REFUSED job never runs its closure, so it never records a run. Without this, a
         // successful last_run could keep showing ON_COLLECTING while every later poll was turned
         // away — the operator would see the last success, not the current state. A refusal newer
@@ -568,10 +572,13 @@ object PremiumCaptureControl {
         val worker = PremiumCaptureWorker.stats()
         val adm = admission(filesDir)
         val enabled = adm.optBoolean("admit", false)
-        val bytes = st.globalBytesSnapshot
-        val remaining = if (bytes < 0) -1L
-        else (PremiumCaptureStore.MAX_BYTES_GLOBAL -
-            PremiumCaptureStore.CONTROL_RESERVE_BYTES - bytes).coerceAtLeast(0L)
+        // Prefer the process-wide byte cache over this process's last recorded run, so the
+        // pre-open check has a number: the cache is seeded in the background at init, while
+        // `globalBytesSnapshot` stays -1 until the first capture of the day has already run.
+        // Neither reading touches the filesystem.
+        val bytes = runCatching { PremiumCaptureStore(root(filesDir)).globalBytesInMemory() }
+            .getOrNull() ?: st.globalBytesSnapshot
+        val remaining = PremiumCaptureStore.evidenceRemainingBytes(bytes)
         return JSONObject()
             .put("control_version", CONTROL_VERSION)
             .put("source", "IN_MEMORY_NO_FILESYSTEM_IO")
@@ -582,8 +589,15 @@ object PremiumCaptureControl {
             .put("collection_state", collectionState(enabled, bytes, st.lastRunSnapshot, worker))
             .put("global_bytes", bytes)
             .put("global_bytes_known", bytes >= 0)
-            .put("evidence_bytes_remaining", remaining)
+            // unknown is reported as unknown, never as a number: -1 for the old field name,
+            // null for the headroom itself, and `evidence_bytes_known` to read instead of
+            // comparing against a sentinel
+            .put("evidence_bytes_remaining", remaining ?: -1L)
+            .put("evidence_bytes_known", remaining != null)
+            .put("evidence_budget_bytes", PremiumCaptureStore.evidenceBudgetBytes())
+            .put("headroom_basis", "ONE_CALCULATION_BOTH_RESERVES_DEDUCTED")
             .put("control_reserve_bytes", PremiumCaptureStore.CONTROL_RESERVE_BYTES)
+            .put("diagnostic_reserve_bytes", PremiumCaptureStore.DIAGNOSTIC_RESERVE_BYTES)
             // EFFECTIVE intent and DURABLE state are reported separately, because they can
             // legitimately disagree while a save is pending or has failed — and an unknown
             // persisted state must not be displayed as a confirmed OFF.
@@ -636,8 +650,10 @@ object PremiumCaptureControl {
             .put("control_bytes", if (root(filesDir).exists()) store.controlBytes() else 0L)
             .put("control_reserve_bytes", PremiumCaptureStore.CONTROL_RESERVE_BYTES)
             .put("evidence_bytes_remaining",
-                (PremiumCaptureStore.MAX_BYTES_GLOBAL -
-                    PremiumCaptureStore.CONTROL_RESERVE_BYTES - global).coerceAtLeast(0L))
+                PremiumCaptureStore.evidenceRemainingBytes(global) ?: -1L)
+            .put("evidence_bytes_known", PremiumCaptureStore.evidenceRemainingBytes(global) != null)
+            .put("evidence_budget_bytes", PremiumCaptureStore.evidenceBudgetBytes())
+            .put("headroom_basis", "ONE_CALCULATION_BOTH_RESERVES_DEDUCTED")
             .put("worker", PremiumCaptureWorker.stats())
             .put("retention", JSONObject()
                 .put("basis", "MEASURED_PER_SLOT_BYTES_AT_THE_CURRENT_RECORD_SHAPE")

@@ -92,6 +92,13 @@ class PremiumCaptureSession(private val store: PremiumCaptureStore) {
          * result must still identify that failure accurately.
          */
         val summaryWrite: PremiumCaptureStore.WriteResult? = null,
+        /**
+         * The control-reserve record of last resort, attempted ONLY when [summaryWrite] itself
+         * failed. Null when the summary was persisted (nothing to escalate) — a non-persisted
+         * value here means the refusal could not be recorded durably anywhere, and this returned
+         * result is the only account of it.
+         */
+        val diagnosticWrite: PremiumCaptureStore.WriteResult? = null,
     )
 
     /**
@@ -136,10 +143,36 @@ class PremiumCaptureSession(private val store: PremiumCaptureStore) {
          */
         declaredSchedulerSlot: String? = null,
     ): SlotResult {
-        fun refuse(status: String, detail: String?, counter: String): SlotResult {
-            val sw = store.bumpCounters(index, sessionDate, mapOf("refused_$counter" to 1L))
+        fun refuse(status: String, detail: String?, counter: String,
+                   storeStatus: String? = null): SlotResult {
+            // The counter says WHAT failed; these fields say WHY, durably and at the time. An
+            // app-cap refusal, a low-device-space refusal and an I/O failure are three different
+            // operator actions, and a capacity reading taken afterwards cannot tell them apart.
+            val at = System.currentTimeMillis()
+            val slot = acquisitionHhmm ?: schedulerSlot
+            val sw = store.bumpCounters(index, sessionDate, mapOf("refused_$counter" to 1L),
+                mapOf("refusal_counter" to counter,
+                      "refusal_status" to status,
+                      "refusal_store_status" to storeStatus,
+                      "refusal_detail" to detail,
+                      "refusal_slot" to slot,
+                      "refusal_at_ms" to at))
+            // The diagnostic write is itself a write, and the device guard applies to it too. If
+            // even this bounded record cannot be saved, fall back to the control reserve so the
+            // export can say DIAGNOSTIC_WRITE_REFUSED instead of NOT_WRITTEN, which would read
+            // as "nothing was attempted".
+            val dw = if (sw.persisted) null else runCatching {
+                store.recordDiagnosticFailure(index, sessionDate, JSONObject()
+                    .put("at_ms", at)
+                    .put("slot", slot)
+                    .put("slot_status", status)
+                    .put("refusal_counter", counter)
+                    .put("refusal_store_status", storeStatus ?: JSONObject.NULL)
+                    .put("summary_write_status", sw.status)
+                    .put("summary_write_detail", sw.detail ?: JSONObject.NULL))
+            }.getOrNull()
             return SlotResult(status, null, null, 0, 0, 0, 0, emptyMap(), detail = detail,
-                summaryWrite = sw)
+                summaryWrite = sw, diagnosticWrite = dw)
         }
 
         val slotId = PremiumCaptureCohort.slotIdentity(schedulerSlot, acquisitionHhmm)
@@ -172,7 +205,8 @@ class PremiumCaptureSession(private val store: PremiumCaptureStore) {
                 return refuse(sel.status, sel.reason, "cohort_not_selected")
             val cr = store.putCohort(index, sessionDate, sel.cohort)
             if (!cr.persisted)
-                return refuse(COHORT_PERSIST_FAILED, "${cr.status}: ${cr.detail}", "cohort_persist")
+                return refuse(COHORT_PERSIST_FAILED, "${cr.status}: ${cr.detail}",
+                    "cohort_persist", storeStatus = cr.status)
             cohort = sel.cohort
         }
 

@@ -1056,9 +1056,11 @@ class MainActivity : AppCompatActivity() {
         buildString {
             append("\n\nCapture: ").append(s.optString("collection_state"))
             append(" (evidence only; not a trading mode)")
+            // ONE headroom calculation, the same one admission uses, with both reserves
+            // deducted. Unknown is displayed as unknown, never as a number.
             append("\nroom left: ").append(
-                if (s.optBoolean("global_bytes_known") && remaining >= 0)
-                    "${remaining / 1024} KiB" else "unknown until the first run")
+                if (s.optBoolean("evidence_bytes_known") && remaining >= 0)
+                    "${remaining / 1024} KiB" else "unknown (not measured yet)")
             if (w != null) {
                 append("\nworker: running=").append(w.optBoolean("running"))
                     .append(" waiting=").append(w.optBoolean("waiting"))
@@ -1070,18 +1072,44 @@ class MainActivity : AppCompatActivity() {
             // PER INDEX, from the worker's own bounded projection. The single `last_run`
             // snapshot below is whichever index finished last, so it is labelled as that rather
             // than presented as results for both.
-            val byIdx = w?.optJSONObject("last_by_index")
-            if (byIdx != null && byIdx.length() > 0) {
-                for (k in byIdx.keys()) {
-                    val e = byIdx.optJSONObject(k) ?: continue
-                    append("\n").append(k).append(": ").append(e.optString("status"))
+            /*
+             * The last IN-WINDOW result per index, not the last result.
+             *
+             * This read `last_by_index`, which is whatever finished most recently — so every
+             * poll after 15:00 overwrote it with OUTSIDE_EXPERIMENT_WINDOW and the refusal that
+             * explained the empty day was gone from the screen by the time anyone looked. On 13
+             * November that is exactly what the operator saw.
+             *
+             * Each line carries its own IST session date, so a result retained from an earlier
+             * day cannot be read as today's, and names which KIND of failure it was: a job the
+             * worker rejected before any write (saturation, oversized payload) is a different
+             * problem from a write that was attempted and refused by the store or the device.
+             */
+            val byIdx = w?.optJSONObject("last_in_window_by_index")
+            val rejected = w?.optJSONObject("last_queue_rejection_by_index")
+            val today = PremiumCapturePollAdapter
+                .istSessionDateOrNull(System.currentTimeMillis()) ?: ""
+            for (k in listOf("NF", "BNF")) {
+                val e = byIdx?.optJSONObject(k)
+                val q = rejected?.optJSONObject(k)
+                if (e == null && q == null) continue
+                append("\n").append(k).append(": ")
+                if (e != null) {
+                    val d = e.optString("session_date", "")
+                    append(e.optString("status"))
                         .append(" written=").append(e.optInt("written", -1))
                         .append(" summary_durable=")
                         .append(e.optBoolean("summary_durably_recorded"))
+                        .append(if (d.isEmpty()) " (date unknown)"
+                                else if (d == today) " ($d, today)" else " ($d, NOT today)")
+                } else {
+                    append("no write was attempted in the window")
                 }
+                if (q != null) append("\n  queue rejected: ").append(q.optString("reason"))
+                    .append(" (").append(q.optString("session_date")).append(")")
             }
             if (lr != null) {
-                append("\nlatest single run (").append(lr.optString("index")).append("): ")
+                append("\nlatest run of any kind (").append(lr.optString("index")).append("): ")
                     .append(lr.optString("status"))
                     .append(" written=").append(lr.optInt("written", -1))
                     .append(" summary_durable=").append(lr.optBoolean("summary_durably_recorded"))

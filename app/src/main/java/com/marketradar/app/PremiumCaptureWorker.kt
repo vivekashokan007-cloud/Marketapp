@@ -113,12 +113,26 @@ object PremiumCaptureWorker {
     private var lastRefusalReason: String? = null
     private var lastRefusalAtMs: Long = 0L
 
+    /**
+     * The last QUEUE REJECTION per index: a poll the worker turned away before any write was
+     * attempted. It is a different failure from a write that was attempted and refused — the
+     * first is worker saturation or an oversized payload, the second is the store or the device
+     * — and the two must not be shown as one. A rejected job never runs its closure, so it
+     * leaves no persistence result at all and would otherwise be invisible per index.
+     */
+    private val rejectedByIndex = HashMap<String, JSONObject>()
+
     /** Records a refusal. Callers hold [lock]; `submit` records before returning any refusal. */
-    private fun noteRefusalLocked(reason: String) {
+    private fun noteRefusalLocked(reason: String, job: Job? = null) {
         refusedTotal++
         refusedByReason[reason] = (refusedByReason[reason] ?: 0L) + 1L
         lastRefusalReason = reason
         lastRefusalAtMs = System.currentTimeMillis()
+        if (job != null) rejectedByIndex[job.index] = JSONObject()
+            .put("reason", reason)
+            .put("session_date", job.sessionDate)
+            .put("at_ms", lastRefusalAtMs)
+            .put("outcome_kind", "QUEUE_REJECTED_NOTHING_WAS_WRITTEN")
     }
 
     /**
@@ -126,15 +140,15 @@ object PremiumCaptureWorker {
      */
     fun submit(job: Job): String {
         if (job.preparedBytes > MAX_PREPARED_BYTES_PER_JOB) {
-            synchronized(lock) { noteRefusalLocked(REFUSED_TOO_LARGE) }
+            synchronized(lock) { noteRefusalLocked(REFUSED_TOO_LARGE, job) }
             return REFUSED_TOO_LARGE
         }
         synchronized(lock) {
             if (running != null && waiting != null) {
-                noteRefusalLocked(REFUSED_BUSY); return REFUSED_BUSY
+                noteRefusalLocked(REFUSED_BUSY, job); return REFUSED_BUSY
             }
             if (pendingBytes + job.preparedBytes > MAX_PENDING_BYTES) {
-                noteRefusalLocked(REFUSED_BYTES); return REFUSED_BYTES
+                noteRefusalLocked(REFUSED_BYTES, job); return REFUSED_BYTES
             }
             val status: String
             if (running == null) {
@@ -187,6 +201,11 @@ object PremiumCaptureWorker {
                 if (pendingBytes < 0) pendingBytes = 0
                 lastResult = result
                 result?.let {
+                    // The job's own session date, so a displayed result is tied to the IST
+                    // session it belongs to and a stale result cannot be read as today's.
+                    if (!it.has("session_date")) runCatching {
+                        it.put("session_date", job.sessionDate)
+                    }
                     lastByIndex[job.index] = it
                     // keep the last result that was actually inside the window, so a run of
                     // after-window polls cannot displace the refusal that explains the session
@@ -269,6 +288,8 @@ object PremiumCaptureWorker {
                 lastInWindowByIndex.forEach { (idx, r) ->
                     o.put(idx, JSONObject()
                         .put("status", r.optString("status"))
+                        .put("session_date", r.optString("session_date", ""))
+                        .put("outcome_kind", "PERSISTENCE_WAS_ATTEMPTED")
                         .put("written", r.optInt("written", -1))
                         .put("detail", r.optString("detail", ""))
                         .put("summary_durably_recorded",
@@ -276,6 +297,9 @@ object PremiumCaptureWorker {
                                 ?.optBoolean("durably_recorded", false) ?: false))
                 }
             })
+            // queue rejections per index, which leave no persistence result to displace
+            .put("last_queue_rejection_by_index", JSONObject().also { o ->
+                rejectedByIndex.forEach { (idx, r) -> o.put(idx, r) } })
             .put("in_flight_io_is_not_cancellable", true)
     }
 
@@ -290,6 +314,7 @@ object PremiumCaptureWorker {
             lastResult = null
             lastByIndex.clear()
             lastInWindowByIndex.clear()
+            rejectedByIndex.clear()
             completed = 0L
             failed = 0L
             refusedTotal = 0L

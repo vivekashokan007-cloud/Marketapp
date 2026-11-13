@@ -93,9 +93,40 @@ object PremiumExportSection {
                         .put("capacity", runCatching { store.capacitySnapshot() }
                             .getOrElse { JSONObject().put("unavailable", it.javaClass.simpleName) })
                     val summary = runCatching { store.readSummary(idx, date) }.getOrNull()
+                    val diagFail = runCatching { store.readDiagnosticFailure(idx, date) }
+                        .getOrNull()
                     if (summary != null) empty.put("durable_counters", summary)
-                    else empty.put("durable_counters_state",
-                        if (store.sessionBytes(idx, date) > 0L) "UNREADABLE" else "NOT_WRITTEN")
+                    else empty.put("durable_counters_state", when {
+                        // the write of the diagnostic itself was refused -- NOT "nothing was
+                        // attempted", which is what NOT_WRITTEN alone would say
+                        diagFail != null -> "DIAGNOSTIC_WRITE_REFUSED"
+                        store.sessionBytes(idx, date) > 0L -> "UNREADABLE"
+                        else -> "NOT_WRITTEN"
+                    })
+                    if (diagFail != null) empty.put("diagnostic_write_failure", diagFail)
+                    /*
+                     * WHY, named from the reason recorded at the time of the refusal.
+                     *
+                     * An app-cap refusal, a low-device-space refusal and a file-system failure
+                     * need three different responses, and the counter cannot tell them apart:
+                     * `refused_cohort_persist` is the same integer in all three. Neither can the
+                     * capacity reading above, taken whenever the export runs -- on 13 November
+                     * 2026 the store was 735 B from its ceiling at the moment of the refusal, and
+                     * a reading taken after a later ceiling change would have shown ample room.
+                     */
+                    empty.put("refusal", PremiumCaptureStore.classifyRefusal(
+                        summary ?: diagFail?.let { f ->
+                            JSONObject()
+                                .put("last_refusal_store_status",
+                                    f.opt("refusal_store_status") ?: JSONObject.NULL)
+                                .put("last_refusal_status", f.opt("slot_status") ?: JSONObject.NULL)
+                                .put("last_refusal_counter",
+                                    f.opt("refusal_counter") ?: JSONObject.NULL)
+                                .put("last_refusal_slot", f.opt("slot") ?: JSONObject.NULL)
+                                .put("last_refusal_at_ms", f.opt("at_ms") ?: JSONObject.NULL)
+                                .put("last_refusal_detail",
+                                    f.opt("summary_write_detail") ?: JSONObject.NULL)
+                        }))
                     section.getJSONObject("indices").put(idx, empty)
                     continue
                 }

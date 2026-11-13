@@ -62,6 +62,19 @@ object PremiumCapturePollAdapter {
     }
 
     /**
+     * The IST session date (`YYYY-MM-DD`) for a wall-clock stamp, or null for a clock that
+     * never ran. The store keys every session by this date, so a displayed result has to be
+     * compared against it rather than against the device's local date.
+     */
+    fun istSessionDateOrNull(ms: Long): String? {
+        if (ms <= 0L) return null
+        val cal = Calendar.getInstance(TimeZone.getTimeZone("Asia/Kolkata"))
+            .apply { timeInMillis = ms }
+        return "%04d-%02d-%02d".format(
+            cal.get(Calendar.YEAR), cal.get(Calendar.MONTH) + 1, cal.get(Calendar.DAY_OF_MONTH))
+    }
+
+    /**
      * The scheduler's INTENDED slot for this poll, derived from the service's `slotKey`
      * (`"YYYY-MM-DD|ordinal"`). Kept separate from the acquisition clock on purpose: it records
      * intent, and never relabels a response that completed in a different slot.
