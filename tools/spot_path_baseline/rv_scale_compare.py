@@ -73,12 +73,18 @@ def build_namespace(root, rows, plan, clock_basis):
 def rv_scale(series, anchor_min, window_min, min_returns):
     """Realised volatility from trailing five-minute returns ending at or before the anchor.
 
-    Uses only minutes <= anchor_min, so it is computable at the anchor itself.
+    CORRECTED (Codex, 13 Nov): a return is counted ONLY when its two observations are
+    exactly five minutes apart on the declared clock.  A gap is skipped, never treated as a
+    five-minute return -- otherwise a 10- or 15-minute move is scored as a 5-minute one and
+    the scale is inflated.  Lookback and minimum are the frozen 60 min / 6 returns.
     """
     lo = anchor_min - window_min
     pts = sorted((m, p) for m, p in series.items() if lo <= m <= anchor_min)
-    rets = []
+    rets, skipped = [], 0
     for (m0, p0), (m1, p1) in zip(pts, pts[1:]):
+        if m1 - m0 != 5:                       # strict five-minute spacing
+            skipped += 1
+            continue
         if p0 > 0 and p1 > 0:
             r = math.log(p1 / p0)
             if math.isfinite(r):
@@ -148,24 +154,30 @@ def main():
                             continue
                         # ---- matched row (identical to the reference) ----
                         y = labels[key]
-                        e0 = [v for _, v in train]
+                        e0_full = [v for _, v in train]          # full E0 coverage
                         sq, why = rv_scale(series[ix, d], minute(t), a.window_min, a.min_returns)
                         if sq is None:
                             abst[(ix, h, 'query_' + why)] += 1
                             continue
-                        scaled, dropped = [], 0
+                        # MATCHED pools: a history row whose own scale is unavailable is
+                        # excluded from BOTH samples, so E0 and E0+RV are scored on exactly
+                        # the same historical observations.
+                        matched, scaled, dropped = [], [], 0
                         for td, v in train:
-                            si, why_i = rv_scale(series[ix, td], minute(t), a.window_min, a.min_returns)
+                            si, _why = rv_scale(series[ix, td], minute(t), a.window_min, a.min_returns)
                             if si is None:
                                 dropped += 1
                                 continue
+                            matched.append(v)
                             scaled.append(v * (sq / si))
-                        if len(scaled) < P['minimum_training_sessions']:
-                            abst[(ix, h, 'insufficient_scaled_training')] += 1
+                        if len(matched) < P['minimum_training_sessions']:
+                            abst[(ix, h, 'insufficient_matched_training')] += 1
                             continue
                         results.append({'index': ix, 'horizon_min': h, 'date': d, 'slot': t,
-                                        'E0': score(e0, y), 'E0_RV': score(scaled, y),
-                                        'train_n': len(e0), 'scaled_n': len(scaled),
+                                        'E0': score(matched, y),          # matched E0
+                                        'E0_full': score(e0_full, y),     # full-coverage E0
+                                        'E0_RV': score(scaled, y),
+                                        'train_n': len(e0_full), 'matched_n': len(matched),
                                         'dropped_history': dropped})
 
         print('\n--- %s clock ---' % clock_basis)
@@ -186,10 +198,12 @@ def main():
                     if rs:
                         ss.append({'date': d, 'n': len(rs),
                                    'E0': avg([r['E0'] for r in rs]),
+                                   'E0_full': avg([r['E0_full'] for r in rs]),
                                    'E0_RV': avg([r['E0_RV'] for r in rs])})
                 if not ss:
                     continue
                 e0 = avg([s['E0'] for s in ss])
+                e0f = avg([s['E0_full'] for s in ss])
                 rv = avg([s['E0_RV'] for s in ss])
                 delta = [s['E0_RV']['crps_bp'] - s['E0']['crps_bp'] for s in ss]
                 rng = random.Random(BOOTSTRAP_SEED)
@@ -201,10 +215,12 @@ def main():
                          '%.2f/%.2f' % (e0['coverage80'], rv['coverage80']),
                          '%.1f/%.1f' % (e0['width80_bp'], rv['width80_bp'])))
                 view.append({'index': ix, 'horizon_min': h, 'matched_rows': len(grp),
-                             'heldout_sessions': len(ss), 'E0': e0, 'E0_RV': rv,
+                             'heldout_sessions': len(ss), 'E0': e0, 'E0_full_coverage': e0f,
+                             'E0_RV': rv,
+                             'mean_train_n': statistics.mean(r['train_n'] for r in grp),
+                             'mean_matched_n': statistics.mean(r['matched_n'] for r in grp),
                              'delta_crps_bp': statistics.mean(delta),
                              'delta_crps_95_cluster_bootstrap': ci,
-                             'mean_scaled_n': statistics.mean(r['scaled_n'] for r in grp),
                              'mean_dropped_history': statistics.mean(r['dropped_history'] for r in grp)})
         for v in view:
             lo, hi = v['delta_crps_95_cluster_bootstrap']

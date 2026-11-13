@@ -71,3 +71,36 @@ variant. Any directional claim must come from elsewhere.
 
 The five evaluation sessions were previously examined, so every number from this variant is
 **development evidence**, not fresh validation.
+
+---
+
+# Addendum 2 — corrections and premium comparison (13 Nov, frozen before scoring)
+
+## RV correction (Codex)
+
+| rule | value |
+|---|---|
+| return counted | **only when its two observations are exactly five minutes apart on the declared clock**; a gap is skipped, never treated as a five-minute return |
+| lookback / minimum | unchanged: 60 min, 6 returns |
+| scale per observation | each historical residual uses the scale at **its own forecast time** |
+| matched pools | a historical row whose own scale is unavailable is excluded from **both** E0 and E0+RV, so the two are scored on identical samples; full-coverage E0 is reported separately |
+
+## 60-minute premium comparison
+
+| model | definition | ranked |
+|---|---|---|
+| `PERSIST` | premium at t+60 equals the entry mid (point forecast, CRPS = MAE) | yes |
+| `E0_IV` | frozen E0 spot sample, repriced at t+60 with **unchanged IV** and reduced time | yes |
+| `E0RV_IV` | corrected E0+RV spot sample, same repricing | yes |
+| `ORACLE_SPOT` | repriced from the **realised** spot at t+60, unchanged IV | **no — oracle, diagnostic only** |
+
+Pricing assumptions declared before scoring: Black-Scholes European, r = 0, ACT/365 with the
+60-minute horizon taken as a fraction of the 375-minute session. Entry IV from
+`iv.iv_greeks_raw.raw` read as annualised percent — its own metadata says
+`iv_source: GREEKS_PRESENT_ONLY`, `iv_authoritative_resolved: false`,
+`iv_market_data_raw: ABSENT`, `iv_unit_status: UNKNOWN`, so every premium figure is a
+**greeks-derived proxy** and the percent reading is an unconfirmed assumption.
+
+After-cost Paper P&L is long premium only: entry at **ask**, exit at **bid**, dated lot
+(NF 65, BNF 30), fees at the plan's ₹20 / ₹30 sensitivity. Depth is reported from
+`bid_qty_raw` / `ask_qty_raw`. **Quote age is not carried in these records.**
