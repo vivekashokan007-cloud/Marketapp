@@ -53,7 +53,7 @@ oracle diagnostics; the denominator set; and every proxy label.
 | item | identity |
 |---|---|
 | harness | `tools/spot_path_baseline/premium_repricing_v2.py`, `CONTRACT_VERSION = 2.2` |
-| focused tests | `tools/spot_path_baseline/test_repricing_fixes.py`, 39 checks, all passing |
+| focused tests | `tools/spot_path_baseline/test_repricing_fixes.py`, 50 checks, all passing |
 | rules | `RULES_FROZEN.md`, Addenda 3, 4 and 5 |
 | spot history | `spots_20261021_20261104.jsonl`, sha256 `f6f29ed8fd6e1290f3d0f59e9be2cdd36f236b945409aebb2a73edffd499d186` |
 | development session | `mr_session_evidence_2026-11-12.json`, sha256 `5f399accefabd0dd3f1f1f3bb829bb71fd6ae56a309dfc92db5ac18e6d3444cb` |
