@@ -30,6 +30,17 @@ class B515CandidatePwaTest {
     private val acceptedVersionName = "2.6.99"
     private val acceptedVersionCode = 530
 
+    /**
+     * The app.js cache-bust revision, named rather than typed inline.
+     *
+     * It was a bare `assertEquals(1393, ...)` below, the SIXTH identity literal in a file whose
+     * whole purpose is that the identity is typed once — and the one the b530 bump missed,
+     * because a search for the JS spellings (`v=1393`, `app_js_v: 1393`) cannot match a Kotlin
+     * integer argument. CI caught it. Keeping it up here means the next bump changes five named
+     * values in one place and nothing else.
+     */
+    private val acceptedAppJsV = 1394
+
     private fun file(rel: String) = listOf(File(rel), File("app/$rel")).first { it.exists() }
     private fun src(n: String) = file("src/main/java/com/marketradar/app/$n").readText()
     private fun serve(url: String, method: String = "GET") = CandidatePwaRoute.decide(method, url)
@@ -186,7 +197,7 @@ class B515CandidatePwaTest {
         assertEquals(acceptedAppJsSha256, pin.getJSONObject("files").getJSONObject("app.js").getString("sha256"))
         val id = pin.getJSONObject("pwa_identity")
         assertEquals(acceptedVersionName, id.getString("version")); assertEquals(acceptedVersionCode, id.getInt("build"))
-        assertEquals(1393, id.getInt("app_js_v"))
+        assertEquals(acceptedAppJsV, id.getInt("app_js_v"))
         // index.html must reference the same app.js revision that is bundled, or the pin describes a mismatched pair.
         assertEquals(id.getInt("app_js_v"), id.getInt("index_app_js_v"))
         // The pin identity must be the PAIRED native release: read gradle, do not type the version a second time.
