@@ -20,15 +20,15 @@ class B515CandidatePwaTest {
      *
      * Why this is centralised: SEVEN independent hardcoded copies of this identity existed, at FOUR different values
      * (877b02fd/517/2.6.86, 7005a751/523/2.6.92, 3f3f46ad/526/2.6.95, and 526/2.6.95 for the native pair alone);
-     * 3f3f46ad/526/2.6.95, 12a1920e/527/2.6.96 and 524caa77/528/2.6.97 are superseded by the 2.6.98 C1 R6 candidate pair, which is why these live in one place.
+     * 3f3f46ad/526/2.6.95, 12a1920e/527/2.6.96, 524caa77/528/2.6.97 and 5abafc93/529/2.6.98 are superseded by the 2.6.99 b530 premium-capture candidate pair, which is why these live in one place.
      * Two of them were in *this file* and disagreed with each other, and only the ones reached by the push-triggered
      * CI were ever noticed. This class compiles into testDebugUnitTest AND testCandidateUnitTest, so these literals
      * are enforced on every push and in the candidate variant, and the duplicates are no longer needed.
      */
-    private val acceptedMarketViviSha = "5abafc932135b43d7f7b9a8a6867d8e07b0b5e58"
-    private val acceptedAppJsSha256 = "f80513bea164f886411a76b968a35ebc7b31aead3323c5c317c223f2346bb1b7"
-    private val acceptedVersionName = "2.6.98"
-    private val acceptedVersionCode = 529
+    private val acceptedMarketViviSha = "348a9a3688c3cfd4ffe2585ee5aa7d188563d596"
+    private val acceptedAppJsSha256 = "007dad12ecbd0ed461bf0482b8125ecb19e417f67c2d4e8a6ea433f194516ad2"
+    private val acceptedVersionName = "2.6.99"
+    private val acceptedVersionCode = 530
 
     private fun file(rel: String) = listOf(File(rel), File("app/$rel")).first { it.exists() }
     private fun src(n: String) = file("src/main/java/com/marketradar/app/$n").readText()
