@@ -41,3 +41,33 @@ is invented. Where a rule could not be recovered it is listed as UNFROZEN and is
 The sessions used here were already read during earlier exploratory work in this same
 session. They are therefore **exploratory**, not untouched validation data. No holdout
 claim is made.
+
+---
+
+# Addendum — realised-volatility scale (frozen 13 Nov, before scoring)
+
+E0/E1 are now governed by Grok's recovered R2 plan
+(`3d1d115d426d90d13685a51e2ee37009ab2e966ebe891b1ca45d3677b1667c65`) and the pinned
+11-session spot input, both supplied and verified. The reference replay reproduces exactly.
+**E1 (three nearest feature-complete earlier sessions) is parked after reproduction.**
+
+Rules for the volatility variant, fixed before any outcome was viewed:
+
+| rule | value |
+|---|---|
+| scale | `RV(d,t) = sqrt(mean(r^2))` over trailing five-minute log returns of the same index, same session, minutes ≤ anchor |
+| trailing window | 60 minutes (at most 12 returns) |
+| minimum support | 6 returns, else the row abstains |
+| zero / non-finite scale | abstain; never divided |
+| missing data | a gap yields fewer returns; never interpolated |
+| prior-only fitting | each historical residual uses the scale at **its own** anchor; the query uses its own |
+| forecast | `E0_RV = { y_i * (s_q / s_i) }` over the **same** training pool E0 uses |
+| clocks | both reference views: retained minute and nominal five-minute slot |
+| scoring | the reference `score()`, matching, per-session equal weighting and seeded cluster bootstrap, unchanged |
+
+Structural note recorded before results: a positive multiplicative scale cannot change the
+sign of any sample, so the positive-return Brier score is **identically unchanged** by this
+variant. Any directional claim must come from elsewhere.
+
+The five evaluation sessions were previously examined, so every number from this variant is
+**development evidence**, not fresh validation.
