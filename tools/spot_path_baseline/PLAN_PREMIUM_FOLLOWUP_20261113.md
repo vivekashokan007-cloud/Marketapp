@@ -1,9 +1,23 @@
 # Frozen plan — premium repricing research check
 
-**Dated 13 November 2026 IST. Revision R4, frozen before any fresh session is scored.**
+**Dated 13 November 2026 IST. Revision R5, frozen before any fresh session is scored.**
 
 R2 supersedes R1, which superseded the plan first written earlier today. Changes are recorded
 here rather than quietly edited away.
+
+**New in R5**, on review of the plan wording itself:
+
+- **§6 is rewritten as a strict partition.** It previously contained two rows that contradicted
+  each other: one granted research support for three CRPS wins, another required both metrics.
+  Both metrics are required. Research support for an index needs **ΔCRPS < 0 and ΔMAE < 0 on
+  each of the three eligible fresh sessions**. A SPLIT session stays inconclusive; two supported
+  out of three stays inconclusive; three SPLITs do not aggregate.
+- **ADVERSE is defined and separated from data exclusions.** An ADVERSE session is a genuine
+  failure of both metrics (ΔCRPS ≥ 0 and ΔMAE ≥ 0); the adverse-result rule applies at two or
+  more. A session refused for a data reason is none of the three labels, is reported separately,
+  and does not consume a slot.
+- The rolling model is a **predeclared secondary** comparison, scored only where its required
+  history exists. The fixed-model check proceeds on the pinned history.
 
 **New in R4**, after review found one further defect:
 
@@ -82,7 +96,7 @@ oracle diagnostics; the denominator set; and every proxy label.
 | item | identity |
 |---|---|
 | harness | `tools/spot_path_baseline/premium_repricing_v2.py`, `CONTRACT_VERSION = 2.4` |
-| focused tests | `tools/spot_path_baseline/test_repricing_fixes.py`, 86 checks, all passing |
+| focused tests | `tools/spot_path_baseline/test_repricing_fixes.py`, 86 checks, all passing (unchanged in R5; R5 edits the plan only) |
 | rules | `RULES_FROZEN.md`, Addenda 3 to 7 |
 | spot history | **pinned** `spots_20261021_20261104.jsonl`, sha256 `f6f29ed8fd6e1290f3d0f59e9be2cdd36f236b945409aebb2a73edffd499d186`, 11 sessions 2026-10-21 … 2026-11-04 — used for the fixed-model comparison |
 | development session | `mr_session_evidence_2026-11-12.json`, sha256 `5f399accefabd0dd3f1f1f3bb829bb71fd6ae56a309dfc92db5ac18e6d3444cb` |
@@ -145,14 +159,60 @@ outcome-dependent quantity.
 
 ## 6 · What each outcome is allowed to mean
 
+Revised in **R5**. The previous version contained two rows that contradicted each other: one
+granted research support for three CRPS wins, while another required both metrics. **Both metrics
+are required.** The rows below are a strict partition — exactly one applies to any result.
+
+### Definitions
+
+For one index in one eligible session, on **matched rows** (identical contract, entry
+acquisition and exit quote for both models):
+
+```
+Δ CRPS = E0_FWD CRPS − PERSIST CRPS
+Δ MAE  = E0_FWD MAE  − PERSIST MAE
+```
+
+| label | condition |
+|---|---|
+| **SUPPORTED** | ΔCRPS < 0 **and** ΔMAE < 0 |
+| **SPLIT** | exactly one of ΔCRPS, ΔMAE is < 0 |
+| **ADVERSE** | ΔCRPS ≥ 0 **and** ΔMAE ≥ 0 — a genuine failure of both metrics |
+
+A session refused for a stated data reason (§4) or ineligible under §9 is **none of these three**.
+It is not a failure, it is not evidence either way, and it **does not consume one of the three
+slots**. Data exclusions are reported separately from ADVERSE results and are never counted as
+them.
+
+### Per-index decision over the three eligible sessions
+
+With `nS`, `nSPLIT`, `nADV` counting the three eligible sessions for that index
+(`nS + nSPLIT + nADV = 3`):
+
 | outcome | permitted conclusion |
 |---|---|
-| `E0_FWD` beats `PERSIST` on CRPS in all three sessions for an index | the 60-minute E0 premium challenger is supported **for research** on that index. Still no activation claim and no change to v7 ranking, gates, sizing, exits, teacher fee or notifications. |
-| it wins in two of three | **inconclusive**; report both metrics and widen the session count before any further claim |
-| **ΔCRPS < 0 and ΔMAE ≥ 0 in any session** | that session is **SPLIT — INCONCLUSIVE on its own**, and is never reported as an unqualified improvement. A line of three SPLIT sessions does **not** aggregate into support: it is reported as a consistent CRPS gain carrying an MAE cost, with both numbers, and the decision stays open. Support requires **ΔCRPS < 0 and ΔMAE < 0 together** in all three sessions. |
-| ΔCRPS ≥ 0 and ΔMAE < 0 in any session | also **SPLIT — INCONCLUSIVE on its own** |
-| it fails in two or more sessions for an index | the 12 November result does not generalise for that index; record it and stop that line |
-| entry basis error under the forward exceeds ~0.5 implied-vol points, or the parity forward stops agreeing across strikes | **stop and re-diagnose the data contract before reading any forecast number.** A forecast score computed on a broken underlying is what produced the defect this plan exists to correct. This is a data-quality halt, not a market finding. |
+| `nS = 3` | the 60-minute E0 premium challenger has **research support** for that index. No activation claim, and no change to v7 ranking, gates, sizing, exits, teacher fee or notifications. |
+| `nADV ≥ 2` | the 12 November result **does not generalise** for that index. Record it and stop that line. |
+| every other combination | **INCONCLUSIVE.** Report ΔCRPS and ΔMAE for all three sessions and leave the decision open. |
+
+Consequences of the partition, stated so they cannot be reinterpreted later:
+
+- **Three SPLIT sessions do not aggregate into support.** A consistent CRPS gain carrying an MAE
+  cost is reported as exactly that, with both numbers, and the decision stays open.
+- **Two SUPPORTED and one SPLIT is inconclusive.** Two supported sessions out of three are not
+  support.
+- **One ADVERSE session alone is inconclusive**, not a failure of the line; two or more are.
+- A session is never upgraded or downgraded by the other two. Each is labelled on its own
+  Δ pair first, and only then counted.
+
+### Data-quality halt, unchanged
+
+| condition | action |
+|---|---|
+| entry basis error under the forward exceeds ~0.5 implied-vol points, or the parity forward stops agreeing across strikes | **stop and re-diagnose the data contract before reading any forecast number.** A forecast score computed on a broken underlying is what produced the defect this plan exists to correct. This is a data-quality halt, not a market finding, and it is not an ADVERSE result. |
+
+The diagnostics of §3 and the exclusion rules of §4 are unchanged and still reported every
+session.
 
 ## 7 · Explicitly out of scope
 
