@@ -626,10 +626,113 @@ pre = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                         'preflight_export.py')).read()
 check('D13 the preflight imports the shared resolver',
       'resolve_pinned' in pre and 'KNOWN_PINNED_PATHS' not in pre)
-check('D13 the preflight cross-checks against the recursive resolver',
-      'RESOLVER MISMATCH' in pre)
+# the R6 cross-check against the recursive resolver is gone on purpose: with no fallback
+# there is nothing to cross-check, and D14 asserts the resolver's determinism directly.
+check('D13 the preflight does not reimplement resolution',
+      'KNOWN_PINNED_PATHS' not in pre and 'PINNED_PATHS = (' not in pre)
 check('D13 the preflight states that a pass is not eligibility',
       'may proceed to the replay' in pre)
+
+
+# -- D14: expected indices, and no recursive fallback ------------------------------------
+# Two edge cases review found in the R6 checker.  Removing the BANKNIFTY section entirely gave
+# OVERALL PASS, because the loop walked only the sections present.  And two different lists at
+# undeclared paths were resolved by a recursive search, so reversing the JSON keys changed
+# which was selected -- the fallback is gone, not merely reported.
+import preflight_export as _P  # noqa: E402
+
+_CS_A = [{'instrument_key': 'A', 'option_type': 'CE', 'strike': 100,
+          'expiry': '2026-11-17', 'underlying_key': 'U', 'index': 'BNF'}]
+_CS_B = [{'instrument_key': 'B', 'option_type': 'CE', 'strike': 999,
+          'expiry': '2026-11-17', 'underlying_key': 'U', 'index': 'BNF'}]
+
+
+def _undeclared(order):
+    d = {'records': [], 'slot_envelopes': []}
+    for name, cs in (order):
+        d[name] = {'pinned_contracts': json.loads(json.dumps(cs))}
+    return d
+
+
+for lbl, order in (('alpha first', [('alpha', _CS_A), ('omega', _CS_B)]),
+                   ('omega first', [('omega', _CS_B), ('alpha', _CS_A)])):
+    pins, path, note = _M2.resolve_pinned(_undeclared(order))
+    check('D14 undeclared lists are never selected (%s)' % lbl,
+          pins == [] and path == 'not present', 'path=%s pins=%d' % (path, len(pins)))
+    check('D14 their presence is reported as unused (%s)' % lbl,
+          note is not None and 'NOT used' in note, 'note=%s' % note)
+
+a = _M2.resolve_pinned(_undeclared([('alpha', _CS_A), ('omega', _CS_B)]))
+b = _M2.resolve_pinned(_undeclared([('omega', _CS_B), ('alpha', _CS_A)]))
+check('D14 both key orders give the identical resolution', a == b, '%s vs %s' % (a[1], b[1]))
+check('D14 the recursive search WOULD have differed by key order',
+      (_M2.find_pinned(_undeclared([('alpha', _CS_A), ('omega', _CS_B)]))[0]['strike']
+       != _M2.find_pinned(_undeclared([('omega', _CS_B), ('alpha', _CS_A)]))[0]['strike']),
+      'this is the nondeterminism the removal fixes')
+
+_code5 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           'premium_repricing_v2.py')).read().split('"""', 2)[-1]
+# asserted behaviourally and on returned literals, not on prose: the previous version of
+# this check matched the words "recursive fallback" in the docstring that says there is none.
+check('D14 no code path returns a recursively-found list',
+      "'recursive fallback'" not in _code5 and 'return fb,' not in _code5)
+check('D14 find_pinned is called once, only to detect an unused undeclared list',
+      _code5.count('find_pinned(index_doc)') == 1)
+_only_undeclared = _undeclared([('zzz', _CS_A)])
+check('D14 a single undeclared list is still not selected',
+      _M2.resolve_pinned(_only_undeclared)[0] == []
+      and len(_M2.find_pinned(_only_undeclared) or []) == 1,
+      'the recursive search finds it; the resolver refuses it')
+_pre = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                         'preflight_export.py')).read()
+check('D14 the preflight no longer imports find_pinned', 'find_pinned' not in
+      _pre.split('"""', 2)[-1])
+
+# Expected-index checking, through the real preflight entry point.
+def _tmp_export(obj):
+    import tempfile
+    f = tempfile.mktemp(suffix='.json')
+    json.dump(obj, open(f, 'w'))
+    return f
+
+
+_pins6 = [contract('ce0', 'CE', 25000, '2026-11-17'),
+          contract('pe0', 'PE', 25000, '2026-11-17')]
+_good_ix = {'records': [{'x': 1}], 'slot_envelopes': [{'y': 1}],
+            'cohort': {'pinned_contracts': _pins6}}
+_both = {'manifest': {'session_date_used': '2026-11-13'},
+         'premium': {'indices': {'NF': json.loads(json.dumps(_good_ix)),
+                                 'BNF': json.loads(json.dumps(_good_ix))}},
+         'parts': {'authority_doc': {'history': {}}}}
+f = _tmp_export(_both)
+_lines, ok, v = _P.preflight(f)
+check('D14 an export with both indices passes', ok and v == {'NF': True, 'BNF': True},
+      'ok=%s v=%s' % (ok, v))
+os.unlink(f)
+
+_one = json.loads(json.dumps(_both))
+del _one['premium']['indices']['BNF']
+f = _tmp_export(_one)
+_lines, ok, v = _P.preflight(f)
+txt = '\n'.join(_lines)
+check('D14 a missing expected section fails the overall check', ok is False, 'ok=%s' % ok)
+check('D14 the missing index is named as MISSING',
+      'index BNF is MISSING' in txt and 'EXPECTED INDEX SECTION MISSING: BNF' in txt)
+check('D14 the present index keeps its own PASS',
+      v.get('NF') is True and v.get('BNF') is False, 'v=%s' % v)
+check('D14 the present index still reports its counts', 'pinned_contracts               2' in txt)
+os.unlink(f)
+
+_none = json.loads(json.dumps(_both))
+_none['premium']['indices'] = {}
+f = _tmp_export(_none)
+_lines, ok, v = _P.preflight(f)
+check('D14 an export with no index sections at all fails',
+      ok is False and v == {'NF': False, 'BNF': False}, 'v=%s' % v)
+os.unlink(f)
+
+check('D14 the expected index set is declared explicitly',
+      _P.EXPECTED_INDICES == ('NF', 'BNF'), '%s' % (_P.EXPECTED_INDICES,))
 
 print()
 if FAIL:

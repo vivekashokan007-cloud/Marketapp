@@ -7,14 +7,22 @@ is not a result.
 R6 fix.  The first version looked for `pinned_contracts` at the top level of each index.  In a
 populated export the contracts live at `premium.indices[ix].cohort.pinned_contracts`, so it
 reported zero contracts and rejected both indices of the 12 November export, which carries six
-each.  The harness had always resolved this correctly through `find_pinned`, a recursive
-resolver written for exactly this nesting -- the preflight hand-rolled a flat lookup instead.
+each.
 
-Two things prevent a repeat:
-  * the preflight resolves contracts with the harness's OWN `find_pinned`, so there is one
-    resolver rather than two;
-  * it additionally reports the path it was found at, and FAILS LOUDLY if its own path walk
-     disagrees with `find_pinned` on the count.
+R7 fixes two edge cases found by review:
+  * EXPECTED INDICES ARE CHECKED EXPLICITLY.  The loop walked only the sections that happened to
+    be present, so an export with the BANKNIFTY section removed entirely was never examined for
+    it and reported OVERALL PASS on the strength of NIFTY alone.  A missing expected section is
+    now reported as MISSING and fails the overall check, while every present index keeps its own
+    individual result.
+  * NO RECURSIVE FALLBACK.  `resolve_pinned` used to fall back to a recursive search and merely
+    report it.  A recursive search returns the first match in key insertion order: given two
+    different lists at undeclared paths, reversing the JSON keys changed which was selected.
+    Resolution is now from declared paths only -- missing if none provides a list, rejected with
+    the conflict reported if declared copies disagree.  A list outside the declared paths is
+    reported as present-but-unused and never selected.
+
+Preflight and replay share the one resolver, `premium_repricing_v2.resolve_pinned`.
 
   preflight_export.py <export.json> [<export.json> ...]
 
@@ -28,7 +36,12 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from premium_repricing_v2 import find_pinned, resolve_pinned   # noqa: E402  shared resolver
+from premium_repricing_v2 import resolve_pinned                # noqa: E402  shared resolver
+
+# The indices a session export is expected to carry.  Checked EXPLICITLY: iterating only the
+# sections that happen to be present meant a removed section was never examined, and an export
+# missing BANKNIFTY entirely reported OVERALL PASS on the strength of NIFTY alone.
+EXPECTED_INDICES = ('NF', 'BNF')
 
 
 
@@ -55,16 +68,21 @@ def preflight(path):
               'requested_session_date', 'session_date_substitution', 'section_version'):
         say('  %-34s %s' % (k, p.get(k)))
 
-    verdicts, mismatches = {}, []
-    for ix in sorted(p.get('indices') or {}):
-        d = p['indices'][ix] or {}
+    present = p.get('indices') or {}
+    verdicts, missing_sections = {}, []
+    for ix in sorted(set(EXPECTED_INDICES) | set(present)):
+        if ix not in present:
+            missing_sections.append(ix)
+            verdicts[ix] = False
+            say('')
+            say('  -- %s --' % ix)
+            say('    CAPTURE PREFLIGHT              FAIL  -> index %s is MISSING: the export '
+                'carries no section for it' % ix)
+            continue
+        d = present[ix] or {}
         recs = d.get('records') or []
         envs = d.get('slot_envelopes') or []
         pins, pin_path, pin_note = resolve_pinned(d)
-        # the preflight must never disagree with the harness about what exists
-        harness_n = len(find_pinned(d) or [])
-        if harness_n != len(pins) and pin_path != 'not present':
-            mismatches.append((ix, 'recursive=%d' % harness_n, 'declared=%d' % len(pins)))
         slots = sorted({r.get('slot') for r in recs if r.get('slot')})
 
         missing = []
@@ -116,12 +134,13 @@ def preflight(path):
                str(h[-1].get('receipt_ts'))[11:19],
                dict(collections.Counter(r.get('availability') for r in h))))
 
-    if mismatches:
+    if missing_sections:
         say('')
-        say('!! RESOLVER MISMATCH -- the preflight and the harness disagree: %s' % mismatches)
-        say('   Treat the export as unverifiable until this is reconciled.')
+        say('!! EXPECTED INDEX SECTION MISSING: %s. Expected %s. The overall check FAILS; each '
+            'present index keeps its own result above.'
+            % (', '.join(missing_sections), ', '.join(EXPECTED_INDICES)))
 
-    if verdicts and not any(verdicts.values()):
+    if verdicts and not any(verdicts.values()) and not missing_sections:
         say('')
         say('-- capture trace: which stage does the evidence confirm? --')
         sc = ((ex.get('parts') or {}).get('learning_ledger') or {}).get('scales') or {}

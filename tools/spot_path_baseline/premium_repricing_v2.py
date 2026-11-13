@@ -1,6 +1,6 @@
 """60-minute premium repricing comparison.
 
-CONTRACT_VERSION 2.5 -- review round R6 corrections applied on top of 2.4.
+CONTRACT_VERSION 2.6 -- review round R7 corrections applied on top of 2.5.
 
 Correction history, oldest first.
 
@@ -89,6 +89,17 @@ Correction history, oldest first.
               Found while verifying the preflight checker against real exports, not by
               reading code.  Scores on 2026-11-12 are unchanged.
 
+--- 2.6 ----------------------------------------------------------------------------------
+  FALLBACK    2.5 kept a recursive fallback in `resolve_pinned` and merely REPORTED its use.
+              That is not enough: a recursive search returns the first match in key insertion
+              order, so with two different lists at undeclared paths, reversing the JSON keys
+              changed which list was selected.  Reporting a nondeterminism does not make it
+              deterministic.  2.6 resolves from DECLARED PATHS ONLY -- missing when none
+              provides a list, rejected with the conflict reported when declared copies
+              disagree.  A list outside the declared paths is reported present-but-unused and
+              never selected.  `find_pinned` survives for that detection alone.
+              Scores on 2026-11-12 are unchanged: the declared cohort path is present.
+
 Expiry timestamp assumption: 15:30 IST on each contract's own expiry date.  Targets at or
 after expiry are rejected.
 
@@ -117,7 +128,7 @@ import os
 import statistics
 import sys
 
-CONTRACT_VERSION = '2.5'
+CONTRACT_VERSION = '2.6'
 HORIZON_MIN = 60
 HORIZON_TOL_S = 5.0
 WINDOW_MIN, MIN_RETURNS = 60, 6
@@ -244,13 +255,18 @@ PINNED_PATHS = (('cohort', 'pinned_contracts'),
 
 
 def resolve_pinned(index_doc):
-    """Resolve the pinned contract list by EXPLICIT path.  Returns (contracts, path, note).
+    """Resolve the pinned contract list from DECLARED PATHS ONLY.  (contracts, path, note).
 
-    `find_pinned` walks dict values in insertion order, so with two copies present it picked
-    whichever key happened to come first -- correct on the exports seen, but dependent on JSON
-    key order.  This resolves by declared precedence instead, and if two copies are present and
-    DISAGREE it returns nothing: we cannot tell which list is authoritative (fail closed).
-    `find_pinned` remains only as a last-resort fallback, and its use is reported.
+    There is no recursive fallback.  An earlier version kept one and merely reported its use,
+    but a recursive search returns the first match in key insertion order: given two different
+    lists at undeclared paths, reversing the JSON keys changed which was selected.  Reporting a
+    nondeterminism does not make it deterministic, so the fallback is gone.
+
+    Outcomes, all deterministic:
+      * exactly one declared path, or several that AGREE -> that list, with the path used;
+      * several declared paths that DISAGREE -> nothing, index rejected, conflict reported;
+      * no declared path -> nothing, reported as missing.  If a list exists somewhere outside
+        the declared paths it is reported as present-but-unused, never selected.
     """
     found = []
     for cand in PINNED_PATHS:
@@ -260,10 +276,12 @@ def resolve_pinned(index_doc):
         if isinstance(node, list) and node:
             found.append(('.'.join(cand), node))
     if not found:
-        fb = find_pinned(index_doc)
-        if fb:
-            return fb, 'recursive fallback', 'WARNING: resolved by recursive search, not a declared path'
-        return [], 'not present', None
+        note = None
+        if find_pinned(index_doc):
+            note = ('a contract list exists outside the declared paths %s and was NOT used; '
+                    'selecting it would depend on key order'
+                    % ['.'.join(c) for c in PINNED_PATHS])
+        return [], 'not present', note
     sigs = {json.dumps(v, sort_keys=True, default=str) for _p, v in found}
     if len(sigs) > 1:
         return ([], 'conflicting copies at %s' % [p for p, _ in found],

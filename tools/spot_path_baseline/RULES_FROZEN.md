@@ -557,3 +557,53 @@ path ran. **Skipped, refused, and fetched-but-not-retained all remain open**, an
 carries no premium-capture attempt or refusal counter to separate them. The R5 reply overstated
 this as "the gap is between a successful quote fetch and a retained premium record", which
 implied the premium path itself fetched successfully. It is not established.
+
+---
+
+## Addendum 9 — R7 corrections (13 Nov 2026, contract 2.6)
+
+Two edge cases in the capture preflight, both found by review supplying inputs the checker had
+never seen.
+
+### Expected indices are checked explicitly
+
+The index loop walked only the sections **present** in the export. An export with the BANKNIFTY
+section removed entirely was therefore never examined for it, and reported **OVERALL PASS** on
+the strength of NIFTY alone — the worst possible failure for a screening tool.
+
+| rule | value |
+|---|---|
+| expected set | `EXPECTED_INDICES = ('NF', 'BNF')`, declared explicitly |
+| missing section | reported as **MISSING** for that index, and the **overall check FAILS** |
+| other indices | each present index keeps its **own individual result**, counts and all |
+| no sections at all | both indices MISSING, overall FAIL |
+
+### The recursive fallback is removed, not reported
+
+Addendum 8 kept a recursive fallback and reported its use. That is insufficient. A recursive
+search returns the first match in **key insertion order**: given two different contract lists at
+undeclared paths, reversing the JSON keys changed which list was selected — strike 100 one way,
+strike 999 the other. **Reporting a nondeterminism does not make it deterministic.**
+
+| situation | outcome |
+|---|---|
+| exactly one declared path, or several that **agree** | that list is used, and the path is reported |
+| several declared paths that **disagree** | index **rejected**, conflict reported, nothing returned |
+| **no** declared path provides a list | reported **missing** |
+| a list exists **outside** the declared paths | reported **present-but-unused**, never selected |
+
+`find_pinned` remains in the module for that last detection only; no code path returns its
+result. Preflight and replay share the one resolver, and the preflight no longer imports
+`find_pinned` at all.
+
+### Verification against real and supplied inputs
+
+| input | result |
+|---|---|
+| unchanged 12 November export | NF 318 / 53 / 6, BNF 323 / 54 / 6, both PASS, **exit 0** |
+| BANKNIFTY section removed | BNF **MISSING**, NF PASS with its counts, overall **FAIL**, exit 1 |
+| two undeclared lists, `alpha` first | BNF missing, undeclared list reported unused, overall FAIL, exit 1 |
+| two undeclared lists, `omega` first | **identical output** apart from filename and sha256 |
+| replay scores | 2.5 → 2.6 moves no model by more than 1e-12; reversed input identical |
+
+Regressions: D14 adds 17 checks, D13 now 17. Total **119**.
