@@ -261,3 +261,92 @@ Primary comparison is **`E0_FWD` vs `PERSIST`** on matched rows; `E0_IV_ANCH` is
 all three oracles stay outside the ranking. **CRPS and MAE are both reported every time**: on
 2026-11-12 `E0_FWD` won on CRPS and lost on MAE for both indices, and that split is reported
 as a split, never as an unqualified improvement.
+
+---
+
+## Addendum 5 — R2 corrections (13 Nov 2026, contract 2.2)
+
+Two further defects found on review. The first was latent; **the second was active on every
+spot-dependent row of 12 November** and changed results.
+
+### Parity forward is per (underlying, expiry) group
+
+Addendum 4 matched call and put **legs** within an expiry but then **pooled the per-strike
+estimates across expiries** into one median and one dispersion. One complete strike pair in
+each of two expiries therefore satisfied the two-item count, and the "dispersion" compared two
+genuinely different forwards.
+
+| rule | value |
+|---|---|
+| group | one **(underlying, expiry)**, within one acquisition envelope |
+| minimum | **≥ 2 distinct strikes** carrying a complete pair **inside the group** (`MIN_FWD_STRIKES`) |
+| dispersion | computed **inside the group** only, ≤ 25 points |
+| scope of use | a contract may use **only its own group's** forward; estimates are never pooled across expiries |
+| refusals | `fwd_rej_too_few_strikes_in_group`, `fwd_rej_strike_dispersion` |
+
+Latent on 2026-11-12: one expiry per index, so one group per envelope.
+
+### Spot availability — ACTIVE defect
+
+Addendum 4 took the spot whose `asof` minute equalled the slot, **ignoring when that reading
+was received**. The spot authority's own `receipt_ts` runs **1.69–32.60 s behind the quote
+cutoff**, so every one of 53 (NF) and 54 (BNF) slots used a reading that had not yet arrived.
+Worked example: slot 09:20 has cutoff **09:20:05.804**, and the 09:20 spot is received at
+**09:20:07.814**.
+
+| rule | value |
+|---|---|
+| availability instant | the spot record's own `receipt_ts`. `published_at` is recorded but not used as the gate: a reading is usable once received. |
+| admission | a reading is used only when `receipt_ts ≤ forecast cutoff`; the **most recent** such reading is taken |
+| age | the chosen reading's age is **reported every session**. On 2026-11-12 it is **282.0–303.4 s (median 297.8)** — normally the previous slot's reading. |
+| unestablishable | a record with no parseable `receipt_ts` cannot have availability established and is excluded; the count is reported |
+| no qualifying reading | counted as `rej_no_spot_available_by_cutoff`, per spot-dependent model, plus `rows_without_available_spot` |
+| authority flag | the record's `availability` field is **reported, not gated** — it describes the direction decision, not the spot reading. Uses of a non-`AVAILABLE` record are counted as `spot_used_flagged_*`. |
+
+**Effect on 2026-11-12** (the look-ahead removed): `E0_IV` NF 15.10 → 16.19 and BNF 46.30 →
+**48.16**, which now loses to persistence; `ORACLE_ANCH` NF 6.13 → 8.24 and BNF 12.71 →
+**21.54**. `E0_FWD`, `PERSIST` and `ORACLE_UNANCH` are **unchanged**, because none of them
+reads the current spot.
+
+### Model decoupling
+
+Addendum 4 refused an entire row when no entry spot was usable, which blocked `E0_FWD` — a
+model needing only the parity forward and the historical return distribution. Each model is
+now scored on the inputs **it actually requires**, so `E0_FWD` scores with **no current-spot
+join**. `SPOT_DEPENDENT = {E0_IV, E0_IV_ANCH, E0RV_IV_ANCH}`; the oracles additionally require
+the realised exit spot.
+
+### Forecast target vs scoring quote
+
+| rule | value |
+|---|---|
+| entry clock | `T0 = tte(entry receipt)` |
+| forecast clock | `T1 = tte(entry receipt + 60 min)` — the **planned target**, knowable when the forecast is formed |
+| scoring quote | admitted only when `abs(exit receipt − planned target) ≤ 5 s`, else `rej_exit_quote_outside_tolerance` |
+| observed | exit-vs-target deviation **−0.93 to +1.09 s** on 2026-11-12; none refused |
+
+Addendum 4 took `T1` from the **actual exit receipt**, which is not knowable at forecast time.
+The actual receipt now tests admissibility only; it never enters the pricing clock.
+
+### Outcome rule when CRPS improves and MAE worsens — explicit
+
+The harness computes and prints the primary verdict itself, on matched rows:
+
+| ΔCRPS | ΔMAE | verdict |
+|---|---|---|
+| < 0 | < 0 | **SUPPORTED on that session** |
+| < 0 | ≥ 0 | **SPLIT — INCONCLUSIVE on its own.** Never reported as an unqualified improvement. |
+| ≥ 0 | < 0 | **SPLIT — INCONCLUSIVE on its own** |
+| ≥ 0 | ≥ 0 | **NOT SUPPORTED on that session** |
+
+Both metrics are reported for every session and index. CRPS scores the whole predictive
+distribution and MAE only its median, so a wider but better-placed distribution can win one and
+lose the other; neither is allowed to stand alone. On 2026-11-12 both indices are **SPLIT**:
+ΔCRPS −6.78 with ΔMAE +0.06 for NIFTY, and ΔCRPS −8.42 with ΔMAE +5.07 for BANKNIFTY.
+
+### Basis diagnostic
+
+The reported basis compares the parity forward with the **contemporaneous (realised)** spot at
+the same minute, so it knowingly uses a reading that was not available at the cutoff. It is a
+**market diagnostic only**: it enters no model, no gate and no eligibility decision, and its
+sign alone never makes a session ineligible.

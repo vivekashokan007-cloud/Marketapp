@@ -45,8 +45,8 @@ pins = {c['instrument_key']: c for c in [
 ]}
 qs = {('ce1', 560, 'A1'): quote(300.0), ('pe1', 560, 'A1'): quote(100.0),
       ('ce2', 560, 'A1'): quote(250.0), ('pe2', 560, 'A1'): quote(150.0)}
-F, disp, n = M.implied_forward(qs, pins, 'A1', 'NF')
-check('D1 cross-expiry legs are not paired', F is None and n == 0, 'pairs=%d' % n)
+g = M.implied_forwards(qs, pins, 'A1', 'NF')
+check('D1 cross-expiry legs are not paired', g == {}, 'groups=%s' % sorted(g))
 
 # Same strikes, same expiry -> two genuine pairs, forward is produced.
 pins_ok = {c['instrument_key']: c for c in [
@@ -55,9 +55,11 @@ pins_ok = {c['instrument_key']: c for c in [
     contract('ce2', 'CE', 25100, '2026-11-17'),
     contract('pe2', 'PE', 25100, '2026-11-17'),
 ]}
-F, disp, n = M.implied_forward(qs, pins_ok, 'A1', 'NF')
-check('D1 same-expiry legs pair normally', F is not None and n == 2,
-      'F=%s disp=%s pairs=%d' % (F, disp, n))
+g = M.implied_forwards(qs, pins_ok, 'A1', 'NF')
+one_g = g.get(('NF', '2026-11-17'))
+check('D1 same-expiry legs pair normally',
+      one_g is not None and one_g['strikes'] == 2 and abs(one_g['F'] - 25200.0) < 1e-9,
+      'group=%s' % one_g)
 
 # Different underlyings at the same strike/expiry must not pair either.
 pins_und = {c['instrument_key']: c for c in [
@@ -66,30 +68,30 @@ pins_und = {c['instrument_key']: c for c in [
     contract('ce2', 'CE', 25100, '2026-11-17', und='NF'),
     contract('pe2', 'PE', 25100, '2026-11-17', und='BNF'),
 ]}
-F, _d, n = M.implied_forward(qs, pins_und, 'A1', 'NF')
-check('D1 cross-underlying legs are not paired', F is None and n == 0, 'pairs=%d' % n)
+g = M.implied_forwards(qs, pins_und, 'A1', 'NF')
+check('D1 cross-underlying legs are not paired', g == {}, 'groups=%s' % sorted(g))
 
 
 # -- D2: a single pair must not pass the dispersion gate vacuously -----------------------
 one = {('ce1', 560, 'A1'): quote(300.0), ('pe1', 560, 'A1'): quote(100.0)}
-F, disp, n = M.implied_forward(one, pins_ok, 'A1', 'NF')
-check('D2 one pair is refused despite zero dispersion',
-      F is None and n == 1, 'pairs=%d disp=%s' % (n, disp))
-check('D2 MIN_FWD_PAIRS is at least 2', M.MIN_FWD_PAIRS >= 2, 'value=%d' % M.MIN_FWD_PAIRS)
+g = M.implied_forwards(one, pins_ok, 'A1', 'NF')
+check('D2 one strike is refused despite zero dispersion', g == {}, 'groups=%s' % sorted(g))
+check('D2 MIN_FWD_STRIKES is at least 2', M.MIN_FWD_STRIKES >= 2,
+      'value=%d' % M.MIN_FWD_STRIKES)
 
 # A genuinely inconsistent book (dispersion above the gate) is still refused.
 bad = {('ce1', 560, 'A1'): quote(300.0), ('pe1', 560, 'A1'): quote(100.0),
        ('ce2', 560, 'A1'): quote(250.0), ('pe2', 560, 'A1'): quote(10.0)}
-F, disp, n = M.implied_forward(bad, pins_ok, 'A1', 'NF')
-check('D2 dispersion gate still refuses an inconsistent book',
-      F is None and n == 2 and disp > M.FWD_MAX_STRIKE_DISPERSION, 'disp=%.1f' % (disp or -1))
+g = M.implied_forwards(bad, pins_ok, 'A1', 'NF')
+check('D2 dispersion gate still refuses an inconsistent book', g == {},
+      'groups=%s' % sorted(g))
 
 # Legs from a different envelope are not borrowed.
 other = dict(one)
 other[('ce2', 560, 'B9')] = quote(250.0, aid='B9')
 other[('pe2', 560, 'B9')] = quote(150.0, aid='B9')
-F, _d, n = M.implied_forward(other, pins_ok, 'A1', 'NF')
-check('D2 pairs are not borrowed across envelopes', F is None and n == 1, 'pairs=%d' % n)
+g = M.implied_forwards(other, pins_ok, 'A1', 'NF')
+check('D2 pairs are not borrowed across envelopes', g == {}, 'groups=%s' % sorted(g))
 
 
 # -- D3: bounds must hold AFTER the anchor is added --------------------------------------
@@ -148,7 +150,8 @@ check('D5 per-contract output is labelled descriptive', 'descriptive only' in sr
 
 
 # -- D6: basis sign is a diagnostic, not an eligibility gate -----------------------------
-check('D6 the forward basis is labelled a diagnostic', 'basis (F - spot) DIAGNOSTIC' in src)
+check('D6 the forward basis is labelled a diagnostic',
+      any('basis' in ln and 'DIAGNOSTIC' in ln for ln in src.splitlines()))
 check('D6 nothing refuses a minute on the basis sign',
       'basis' not in src.split('exclusions by reason')[0].split('rej_')[-1][:200]
       and 'rej_basis' not in src)
@@ -160,6 +163,120 @@ check('D7 oracles are excluded from the ranked set',
       all(d not in M.RANKED for d in M.DIAG))
 check('D7 every oracle is a point forecast', all(d in M.POINT_MODELS for d in M.DIAG))
 check('D7 persistence is a point forecast', 'PERSIST' in M.POINT_MODELS)
+
+
+# -- D8: parity estimates must never be pooled across expiries ---------------------------
+# Codex's case: ONE complete strike pair in each of two expiries.  Pooling gives two
+# estimates and passes a two-item count check, while the "dispersion" compares two
+# genuinely different forwards.  Per group, each has only one strike, so neither qualifies.
+pins_two_exp = {c['instrument_key']: c for c in [
+    contract('a_ce', 'CE', 25000, '2026-11-17'),
+    contract('a_pe', 'PE', 25000, '2026-11-17'),
+    contract('b_ce', 'CE', 25100, '2026-11-24'),
+    contract('b_pe', 'PE', 25100, '2026-11-24'),
+]}
+q_two_exp = {('a_ce', 560, 'A1'): quote(300.0), ('a_pe', 560, 'A1'): quote(100.0),
+             ('b_ce', 560, 'A1'): quote(250.0), ('b_pe', 560, 'A1'): quote(150.0)}
+g = M.implied_forwards(q_two_exp, pins_two_exp, 'A1', 'NF')
+check('D8 one strike in each of two expiries yields no forward', g == {},
+      'groups=%s' % sorted(g))
+
+# Two strikes in one expiry and one in another: only the complete group qualifies, and the
+# other expiry's contracts must get nothing rather than borrowing it.
+pins_mixed = {c['instrument_key']: c for c in [
+    contract('a_ce', 'CE', 25000, '2026-11-17'),
+    contract('a_pe', 'PE', 25000, '2026-11-17'),
+    contract('c_ce', 'CE', 25100, '2026-11-17'),
+    contract('c_pe', 'PE', 25100, '2026-11-17'),
+    contract('b_ce', 'CE', 25200, '2026-11-24'),
+    contract('b_pe', 'PE', 25200, '2026-11-24'),
+]}
+q_mixed = dict(q_two_exp)
+q_mixed[('c_ce', 560, 'A1')] = quote(250.0)
+q_mixed[('c_pe', 560, 'A1')] = quote(150.0)
+q_mixed[('b_ce', 560, 'A1')] = quote(260.0)
+q_mixed[('b_pe', 560, 'A1')] = quote(140.0)
+g = M.implied_forwards(q_mixed, pins_mixed, 'A1', 'NF')
+check('D8 only the group with two strikes qualifies',
+      set(g) == {('NF', '2026-11-17')}, 'groups=%s' % sorted(g))
+check('D8 the qualifying group uses only its own strikes',
+      g[('NF', '2026-11-17')]['strikes'] == 2 and abs(g[('NF', '2026-11-17')]['F'] - 25200.0) < 1e-9,
+      'group=%s' % g[('NF', '2026-11-17')])
+check('D8 a contract in the unqualified expiry gets no forward',
+      g.get(M.group_key(pins_mixed['b_ce'], 'NF')) is None)
+
+# A second expiry whose forward is far away must not inflate the first group's dispersion.
+pins_far = {c['instrument_key']: c for c in [
+    contract('a_ce', 'CE', 25000, '2026-11-17'),
+    contract('a_pe', 'PE', 25000, '2026-11-17'),
+    contract('c_ce', 'CE', 25100, '2026-11-17'),
+    contract('c_pe', 'PE', 25100, '2026-11-17'),
+    contract('d_ce', 'CE', 26000, '2026-12-29'),
+    contract('d_pe', 'PE', 26000, '2026-12-29'),
+    contract('e_ce', 'CE', 26100, '2026-12-29'),
+    contract('e_pe', 'PE', 26100, '2026-12-29'),
+]}
+q_far = {('a_ce', 560, 'A1'): quote(300.0), ('a_pe', 560, 'A1'): quote(100.0),
+         ('c_ce', 560, 'A1'): quote(250.0), ('c_pe', 560, 'A1'): quote(150.0),
+         ('d_ce', 560, 'A1'): quote(900.0), ('d_pe', 560, 'A1'): quote(100.0),
+         ('e_ce', 560, 'A1'): quote(850.0), ('e_pe', 560, 'A1'): quote(150.0)}
+g = M.implied_forwards(q_far, pins_far, 'A1', 'NF')
+check('D8 a distant second expiry does not refuse the first group',
+      set(g) == {('NF', '2026-11-17'), ('NF', '2026-12-29')}, 'groups=%s' % sorted(g))
+check('D8 each group keeps its own forward',
+      abs(g[('NF', '2026-11-17')]['F'] - 25200.0) < 1e-9
+      and abs(g[('NF', '2026-12-29')]['F'] - 26800.0) < 1e-9,
+      '%.1f / %.1f' % (g[('NF', '2026-11-17')]['F'], g[('NF', '2026-12-29')]['F']))
+check('D8 in-group dispersion is computed within the group',
+      g[('NF', '2026-11-17')]['disp'] < 1e-9 and g[('NF', '2026-12-29')]['disp'] < 1e-9,
+      '%.2f / %.2f' % (g[('NF', '2026-11-17')]['disp'], g[('NF', '2026-12-29')]['disp']))
+
+
+# -- D9: spot must be established as available before use --------------------------------
+cut = M.ist('2026-11-12', 560) + datetime.timedelta(seconds=5.8)
+tl = [(M.ist('2026-11-12', 555) + datetime.timedelta(seconds=2.4), 555, 25209.55, 'AVAILABLE'),
+      (M.ist('2026-11-12', 560) + datetime.timedelta(seconds=7.8), 560, 25306.05, 'AVAILABLE')]
+av = M.spot_as_of(tl, cut)
+check('D9 a spot received after the cutoff is not used',
+      av is not None and av[1] == 555 and abs(av[2] - 25209.55) < 1e-9,
+      'picked asof minute %s' % (av[1] if av else None))
+check('D9 the same-minute reading would have been look-ahead',
+      tl[1][0] > cut, 'receipt %s > cutoff %s' % (tl[1][0].time(), cut.time()))
+check('D9 no qualifying reading returns None', M.spot_as_of(tl[1:], cut) is None)
+check('D9 the most recent qualifying reading wins',
+      M.spot_as_of(tl, cut + datetime.timedelta(seconds=10))[1] == 560)
+check('D9 a record without a receipt clock cannot establish availability',
+      M.parse_ts(None) is None)
+check('D9 naive timestamps are read as IST',
+      M.parse_ts('2026-11-12T09:20:00').utcoffset() == datetime.timedelta(hours=5, minutes=30))
+check('D9 E0_FWD is not in the spot-dependent set', 'E0_FWD' not in M.SPOT_DEPENDENT)
+check('D9 every spot-based model is declared spot-dependent',
+      M.SPOT_DEPENDENT == frozenset(('E0_IV', 'E0_IV_ANCH', 'E0RV_IV_ANCH')),
+      '%s' % sorted(M.SPOT_DEPENDENT))
+
+
+# -- D10: forecast target is planned at entry, not read from the exit --------------------
+entry = M.ist('2026-11-12', 560) + datetime.timedelta(seconds=5.804)
+target = entry + datetime.timedelta(minutes=60)
+exit_recv = entry + datetime.timedelta(seconds=3600 + 1.09)   # realistic jitter
+check('D10 the planned target is exactly 60 calendar minutes after entry',
+      abs((M.tte(entry, '2026-11-17') - M.tte(target, '2026-11-17')) * M.YEAR_SECONDS - 3600.0)
+      < 1e-6)
+check('D10 the planned target differs from the actual exit receipt',
+      abs((exit_recv - target).total_seconds() - 1.09) < 1e-6)
+check('D10 T1 from the planned target is knowable at entry',
+      M.tte(target, '2026-11-17') != M.tte(exit_recv, '2026-11-17'))
+check('D10 jitter inside tolerance is admitted',
+      abs((exit_recv - target).total_seconds()) <= M.HORIZON_TOL_S)
+late = entry + datetime.timedelta(seconds=3600 + 42)
+check('D10 an exit quote outside tolerance is refused',
+      abs((late - target).total_seconds()) > M.HORIZON_TOL_S)
+src2 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                         'premium_repricing_v2.py')).read()
+check('D10 T1 is computed from the target, not the exit cutoff',
+      'T1 = tte(target' in src2 and 'T1 = tte(x[' not in src2)
+check('D10 the exit receipt is used for the tolerance test',
+      "dev = (x['cutoff'] - target)" in src2)
 
 print()
 if FAIL:

@@ -1,9 +1,25 @@
 # Frozen plan — premium repricing research check
 
-**Dated 13 November 2026 IST. Revision R1, frozen before any fresh session is scored.**
+**Dated 13 November 2026 IST. Revision R2, frozen before any fresh session is scored.**
 
-R1 supersedes the plan first written earlier today, on review. Three things changed and are
-recorded here rather than quietly edited away:
+R2 supersedes R1, which superseded the plan first written earlier today. Changes are recorded
+here rather than quietly edited away.
+
+**New in R2**, after review found two further defects:
+
+- The parity forward is computed **per (underlying, expiry) group**, requiring ≥ 2 distinct
+  strikes inside the group. R1 pooled per-strike estimates across expiries, so one pair from
+  each of two expiries passed the count check against a meaningless dispersion.
+- **Spot must be established as available before use.** R1 used the same-minute reading
+  regardless of when it arrived; the spot authority's `receipt_ts` runs 1.69–32.60 s behind the
+  quote cutoff, so every spot-dependent row of 12 November carried look-ahead. Spot-based models
+  now run on the most recent reading **received by the cutoff** — about 5 minutes stale — with
+  its age reported, and `E0_FWD` scores with **no spot join at all**.
+- Forecast time to expiry comes from the **planned target** (entry receipt + 60 min). The actual
+  exit receipt only tests the scoring quote against the tolerance.
+- The CRPS/MAE outcome rule is **explicit and computed by the harness** (§6).
+
+**Carried from R1:**
 
 - The **spot–forward basis is a diagnostic, not a gate.** The earlier plan made "BANKNIFTY's
   basis stays negative" a prediction whose failure would halt the read. That was wrong: a
@@ -21,20 +37,24 @@ harness, so it cannot also confirm the conclusions it produced.
 
 ## 1 · What is frozen
 
-Everything in `RULES_FROZEN.md` Addenda 3 and 4: the ACT/365 calendar clock measured from the
-**envelope receipt instant**, with a 15:30 IST per-contract expiry timestamp and the realised
-receipt-to-receipt horizon gated at 3600 ± 5 s; the parity forward `F = K + (C_mid − P_mid)`
-with `DF = 1`, matched on **(underlying, expiry, strike)** within **one envelope**, requiring
-**≥ 2 pairs** before the ≤ 25-point dispersion gate may pass; the anchoring form
+Everything in `RULES_FROZEN.md` Addenda 3, 4 and 5: the ACT/365 calendar clock with entry at the
+**envelope receipt instant**, the forecast clock at the **planned target** (entry receipt +
+60 min), a 15:30 IST per-contract expiry timestamp, and the scoring quote admitted only when the
+actual exit receipt falls within **± 5 s** of that target; the parity forward
+`F = K + (C_mid − P_mid)` with `DF = 1`, computed **per (underlying, expiry) group** inside one
+envelope, requiring **≥ 2 distinct strikes in the group** before the ≤ 25-point in-group
+dispersion gate may pass, and usable only by contracts in that group; spot admitted only when
+its own `receipt_ts ≤ the forecast cutoff`, most recent such reading, age reported; the anchoring
+form
 `observed_entry_mid + (model_exit − model_entry)` with price bounds re-applied **after**
 anchoring, including in the anchored realised-spot diagnostic; the ranked set and the three
 oracle diagnostics; the denominator set; and every proxy label.
 
 | item | identity |
 |---|---|
-| harness | `tools/spot_path_baseline/premium_repricing_v2.py`, `CONTRACT_VERSION = 2.1` |
-| focused tests | `tools/spot_path_baseline/test_repricing_fixes.py`, 28 checks, all passing |
-| rules | `RULES_FROZEN.md`, Addenda 3 and 4 |
+| harness | `tools/spot_path_baseline/premium_repricing_v2.py`, `CONTRACT_VERSION = 2.2` |
+| focused tests | `tools/spot_path_baseline/test_repricing_fixes.py`, 39 checks, all passing |
+| rules | `RULES_FROZEN.md`, Addenda 3, 4 and 5 |
 | spot history | `spots_20261021_20261104.jsonl`, sha256 `f6f29ed8fd6e1290f3d0f59e9be2cdd36f236b945409aebb2a73edffd499d186` |
 | development session | `mr_session_evidence_2026-11-12.json`, sha256 `5f399accefabd0dd3f1f1f3bb829bb71fd6ae56a309dfc92db5ac18e6d3444cb` |
 
@@ -84,8 +104,11 @@ outcome-dependent quantity.
 
 - **Three fresh sessions** for an initial research check, each not yet examined for premium
   research, each captured under the existing pilot rules.
-- Each session is scored **independently and reported separately**, with CRPS, MAE, interval
-  coverage and exclusions **by session and index**, before any pooling.
+- Each session is scored **independently and reported separately**, with **matched `E0_FWD` and
+  persistence CRPS and MAE**, interval coverage, and exclusions **by session and index**, before
+  any pooling. The harness prints the per-session verdict from the §6 rule itself.
+- The **available spot age** is reported per session, since spot-based models run on a reading
+  that is stale by construction, and `E0_FWD`'s independence from it is the reason it is primary.
 - Pooling, if any, is by **session-level mean**, never by row and never by contract: rows
   within a session share one spot path.
 - Run order is fixed by date. No session is dropped after its result is seen; exclusion
@@ -96,7 +119,9 @@ outcome-dependent quantity.
 | outcome | permitted conclusion |
 |---|---|
 | `E0_FWD` beats `PERSIST` on CRPS in all three sessions for an index | the 60-minute E0 premium challenger is supported **for research** on that index. Still no activation claim and no change to v7 ranking, gates, sizing, exits, teacher fee or notifications. |
-| it wins in two of three, or wins on CRPS while losing on MAE throughout | **inconclusive**; report both metrics and widen the session count before any further claim |
+| it wins in two of three | **inconclusive**; report both metrics and widen the session count before any further claim |
+| **ΔCRPS < 0 and ΔMAE ≥ 0 in any session** | that session is **SPLIT — INCONCLUSIVE on its own**, and is never reported as an unqualified improvement. A line of three SPLIT sessions does **not** aggregate into support: it is reported as a consistent CRPS gain carrying an MAE cost, with both numbers, and the decision stays open. Support requires **ΔCRPS < 0 and ΔMAE < 0 together** in all three sessions. |
+| ΔCRPS ≥ 0 and ΔMAE < 0 in any session | also **SPLIT — INCONCLUSIVE on its own** |
 | it fails in two or more sessions for an index | the 12 November result does not generalise for that index; record it and stop that line |
 | entry basis error under the forward exceeds ~0.5 implied-vol points, or the parity forward stops agreeing across strikes | **stop and re-diagnose the data contract before reading any forecast number.** A forecast score computed on a broken underlying is what produced the defect this plan exists to correct. This is a data-quality halt, not a market finding. |
 
