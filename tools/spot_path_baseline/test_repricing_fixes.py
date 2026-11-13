@@ -552,6 +552,85 @@ check('D12 the quote signature covers every scored field',
           for f in ('bid', 'ask', 'bid_qty', 'ask_qty', 'iv', 'iv_status',
                     'identity_verified', 'identity_disagreements', 'slot')))
 
+
+# -- D13: the contract-list resolver and the capture preflight ---------------------------
+# The preflight's first version looked for `pinned_contracts` at the top level of each index.
+# A populated export keeps it at `cohort.pinned_contracts`, so it reported zero and rejected
+# both indices of a session carrying six each.  Verifying it against real exports then showed
+# a SECOND copy at `references.pinned_contracts`, which made the recursive resolver depend on
+# JSON key insertion order.  These checks pin both.
+import premium_repricing_v2 as _M2  # noqa: E402  (same module; explicit for readability)
+
+
+def _ix_doc(cohort=True, references=True, disagree=False, flat=False):
+    cs = [contract('ce0', 'CE', 25000, '2026-11-17'),
+          contract('pe0', 'PE', 25000, '2026-11-17')]
+    d = {'records': [], 'slot_envelopes': []}
+    if cohort:
+        d['cohort'] = {'pinned_contracts': json.loads(json.dumps(cs))}
+    if references:
+        ref = json.loads(json.dumps(cs))
+        if disagree:
+            ref[0]['strike'] = 99999
+        d['references'] = {'pinned_contracts': ref}
+    if flat:
+        d['pinned_contracts'] = json.loads(json.dumps(cs))
+    return d
+
+
+pins, path, note = _M2.resolve_pinned(_ix_doc())
+check('D13 nested cohort.pinned_contracts is found',
+      len(pins) == 2 and path == 'cohort.pinned_contracts', 'path=%s' % path)
+check('D13 cohort wins over references when both agree', note is None, 'note=%s' % note)
+
+pins, path, note = _M2.resolve_pinned(_ix_doc(cohort=False))
+check('D13 falls back to references when cohort is absent',
+      len(pins) == 2 and path == 'references.pinned_contracts', 'path=%s' % path)
+check('D13 the fallback is REPORTED, not silent',
+      note is not None and 'cohort list is absent' in note, 'note=%s' % note)
+
+pins, path, note = _M2.resolve_pinned(_ix_doc(disagree=True))
+check('D13 disagreeing copies are refused, not silently picked',
+      pins == [] and 'conflicting' in path, 'path=%s pins=%d' % (path, len(pins)))
+check('D13 the refusal says why', note is not None and note.startswith('REFUSED'))
+check('D13 the recursive resolver WOULD have returned one of them',
+      len(_M2.find_pinned(_ix_doc(disagree=True)) or []) == 2,
+      'this is the order dependence the declared resolver removes')
+
+pins, path, note = _M2.resolve_pinned(_ix_doc(cohort=False, references=False, flat=True))
+check('D13 a flat top-level list is still accepted',
+      len(pins) == 2 and path == 'pinned_contracts', 'path=%s' % path)
+
+pins, path, note = _M2.resolve_pinned(_ix_doc(cohort=False, references=False))
+check('D13 an index with no contract list resolves to nothing',
+      pins == [] and path == 'not present', 'path=%s' % path)
+
+pins, path, note = _M2.resolve_pinned({'cohort': {'pinned_contracts': []}})
+check('D13 an empty list is not treated as present', pins == [] and path == 'not present')
+
+check('D13 declared precedence puts cohort first',
+      _M2.PINNED_PATHS[0] == ('cohort', 'pinned_contracts'),
+      '%s' % (_M2.PINNED_PATHS,))
+
+# The harness must consume the declared resolver, not the recursive one.
+src4 = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                         'premium_repricing_v2.py')).read()
+_code4 = src4.split('"""', 2)[-1]
+check('D13 score_index resolves contracts through resolve_pinned',
+      'pins, pin_path, pin_note = resolve_pinned(p)' in _code4)
+check('D13 score_index no longer calls find_pinned directly for the cohort',
+      'pins = find_pinned(p)' not in _code4)
+check('D13 the resolved path is reported in the output',
+      'resolved at %s' in _code4)
+pre = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        'preflight_export.py')).read()
+check('D13 the preflight imports the shared resolver',
+      'resolve_pinned' in pre and 'KNOWN_PINNED_PATHS' not in pre)
+check('D13 the preflight cross-checks against the recursive resolver',
+      'RESOLVER MISMATCH' in pre)
+check('D13 the preflight states that a pass is not eligibility',
+      'may proceed to the replay' in pre)
+
 print()
 if FAIL:
     print('%d FAILED: %s' % (len(FAIL), ', '.join(FAIL)))

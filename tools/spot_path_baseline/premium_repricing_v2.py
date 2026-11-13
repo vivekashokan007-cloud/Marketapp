@@ -1,6 +1,6 @@
 """60-minute premium repricing comparison.
 
-CONTRACT_VERSION 2.4 -- review round R4 corrections applied on top of 2.3.
+CONTRACT_VERSION 2.5 -- review round R6 corrections applied on top of 2.4.
 
 Correction history, oldest first.
 
@@ -76,6 +76,19 @@ Correction history, oldest first.
               Fail closed: a null bid against a real one is a conflict, not a reason to
               prefer the real one, because we cannot tell which record is authoritative.
 
+--- 2.5 ----------------------------------------------------------------------------------
+  RESOLVER    A populated export carries the pinned contract list TWICE, at
+              `cohort.pinned_contracts` and `references.pinned_contracts`, byte-identical on
+              every export seen.  `find_pinned` walks dict values in insertion order, so it
+              picked `cohort` only because that key happens to come first -- correct here,
+              but dependent on JSON key order after four review rounds of order-dependence
+              defects.  2.5 resolves by EXPLICIT declared precedence (`resolve_pinned`),
+              reports the path it used, falls back to the recursive search only as a last
+              resort and says so, and REFUSES when two copies are present and disagree,
+              because neither can then be treated as authoritative.
+              Found while verifying the preflight checker against real exports, not by
+              reading code.  Scores on 2026-11-12 are unchanged.
+
 Expiry timestamp assumption: 15:30 IST on each contract's own expiry date.  Targets at or
 after expiry are rejected.
 
@@ -104,7 +117,7 @@ import os
 import statistics
 import sys
 
-CONTRACT_VERSION = '2.4'
+CONTRACT_VERSION = '2.5'
 HORIZON_MIN = 60
 HORIZON_TOL_S = 5.0
 WINDOW_MIN, MIN_RETURNS = 60, 6
@@ -220,6 +233,45 @@ def find_pinned(o):
             if r is not None:
                 return r
     return None
+
+
+# Explicit, ordered paths to the pinned contract list inside one index document.  `cohort` is
+# authoritative: it carries cohort_id, selection_basis and payload_sha256.  A populated export
+# also carries a byte-identical copy at `references.pinned_contracts`.
+PINNED_PATHS = (('cohort', 'pinned_contracts'),
+                ('references', 'pinned_contracts'),
+                ('pinned_contracts',))
+
+
+def resolve_pinned(index_doc):
+    """Resolve the pinned contract list by EXPLICIT path.  Returns (contracts, path, note).
+
+    `find_pinned` walks dict values in insertion order, so with two copies present it picked
+    whichever key happened to come first -- correct on the exports seen, but dependent on JSON
+    key order.  This resolves by declared precedence instead, and if two copies are present and
+    DISAGREE it returns nothing: we cannot tell which list is authoritative (fail closed).
+    `find_pinned` remains only as a last-resort fallback, and its use is reported.
+    """
+    found = []
+    for cand in PINNED_PATHS:
+        node = index_doc
+        for k in cand:
+            node = node.get(k) if isinstance(node, dict) else None
+        if isinstance(node, list) and node:
+            found.append(('.'.join(cand), node))
+    if not found:
+        fb = find_pinned(index_doc)
+        if fb:
+            return fb, 'recursive fallback', 'WARNING: resolved by recursive search, not a declared path'
+        return [], 'not present', None
+    sigs = {json.dumps(v, sort_keys=True, default=str) for _p, v in found}
+    if len(sigs) > 1:
+        return ([], 'conflicting copies at %s' % [p for p, _ in found],
+                'REFUSED: the copies disagree, so neither can be treated as authoritative')
+    path, contracts = found[0]
+    note = (None if path.startswith('cohort')
+            else 'the authoritative cohort list is absent; used %s' % path)
+    return contracts, path, note
 
 
 def contract_underlying(c, fallback):
@@ -374,7 +426,7 @@ def score_index(ex, ix, hist, hist_dates, session):
         say('--- %s --- NO PREMIUM RECORDS (state=%s); nothing scored' % (ix, state))
         return ({'state': state or 'NO_RECORDS', 'coverage': {}, 'models': {}}, [], cov, lines)
 
-    pins = find_pinned(p) or []
+    pins, pin_path, pin_note = resolve_pinned(p)
     pc = {c['instrument_key']: c for c in pins}
 
     # ---- envelopes: group by acquisition_id FIRST, so a conflict excludes the whole id ----
@@ -619,6 +671,8 @@ def score_index(ex, ix, hist, hist_dates, session):
     groups = sorted({group_key(c, ix) for c in pins})
     say('--- %s --- parity groups %s, %d prior sessions in the E0 pool'
         % (ix, ['%s %s' % gk for gk in groups], len(hist_dates)))
+    say('pinned contracts: %d, resolved at %s%s'
+        % (len(pins), pin_path, '  [%s]' % pin_note if pin_note else ''))
     say('acquisitions %d; slots carrying more than one acquisition %d; contract-minutes '
         'under more than one acquisition %d'
         % (cov['acquisitions'], cov['slots_with_multiple_acquisitions'],

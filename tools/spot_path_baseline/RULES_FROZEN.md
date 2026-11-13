@@ -497,3 +497,63 @@ used for the primary comparison:
 | comparison | pinned and rolling are compared **only on matched rows** |
 | decision rule | unchanged: support requires ΔCRPS < 0 **and** ΔMAE < 0 |
 | precondition | a spot-history file actually covering those sessions. Until one exists, `E0_ROLL` is **not scored**, and its absence is reported rather than silently skipped. |
+
+---
+
+## Addendum 8 — R6 corrections (13 Nov 2026, contract 2.5)
+
+A defect in the **preflight checker** added in R5, and a latent defect in the **harness
+resolver** found while verifying the fix against real exports.
+
+### The preflight defect
+
+The checker looked for `pinned_contracts` at the top level of each index. A populated export
+keeps it at **`premium.indices[ix].cohort.pinned_contracts`**, so the checker reported **zero**
+contracts and failed both indices of the 12 November export, which carries **six each**. It would
+have excluded every valid session.
+
+The harness had always resolved this correctly through `find_pinned`, a recursive resolver
+written for exactly this nesting. The checker hand-rolled a flat lookup instead. **There is now
+one resolver**, and the checker additionally reports the path used and warns if its declared walk
+disagrees with the recursive one.
+
+### The resolver defect, found by verifying against real exports
+
+A populated export carries the pinned contract list **twice**:
+
+| path | 12 November |
+|---|---|
+| `cohort.pinned_contracts` | 6 per index — **authoritative** (its parent carries `cohort_id`, `selection_basis`, `payload_sha256`) |
+| `references.pinned_contracts` | 6 per index, **byte-identical** on every export seen |
+
+`find_pinned` walks dict values in insertion order, so it selected `cohort` only because that key
+happens to come first. Correct on these exports, but dependent on JSON key order — after four
+review rounds of order-dependence defects, not acceptable to leave.
+
+`resolve_pinned` replaces it at the call site:
+
+| rule | value |
+|---|---|
+| precedence | explicit and declared: `cohort.pinned_contracts`, then `references.pinned_contracts`, then a flat `pinned_contracts` |
+| reporting | the resolved **path** is printed every run; a non-`cohort` path is reported as a note, never silent |
+| two copies that **disagree** | **REFUSED** — neither can be treated as authoritative, so nothing is returned and the index scores nothing (fail closed) |
+| empty list | not treated as present |
+| recursive search | retained as a last-resort fallback only, and its use is reported |
+
+**Scores are unchanged**: contract 2.4 → 2.5 moves no model by more than 1e-12 on 12 November,
+and forward-vs-reversed input remains identical.
+
+### Capture preflight is not eligibility
+
+A preflight **PASS** means only that the export carries premium capture output, so it may proceed
+to the replay's own eligibility checks (§8 and §9 of the plan). It is not eligibility and it is
+not a result. Exit status is 0 when every index passes, 1 otherwise, so it can gate a replay.
+
+### Limit of the capture trace, corrected
+
+The trace reports the opening scale and any C1 quote because they establish that **other app
+paths** fetched option quotes that day. They say **nothing** about whether the premium capture
+path ran. **Skipped, refused, and fetched-but-not-retained all remain open**, and the export
+carries no premium-capture attempt or refusal counter to separate them. The R5 reply overstated
+this as "the gap is between a successful quote fetch and a retained premium record", which
+implied the premium path itself fetched successfully. It is not established.
