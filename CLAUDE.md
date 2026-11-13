@@ -6,6 +6,21 @@ Guidance for Claude Code when working in this repository.
 >
 > **This is a header-only refresh.** Only the version line above was updated for the 2.6.98 candidate. The body below still describes the 2.6.40 era and is badly drifted — a separate, reviewed update is outstanding. Treat every version claim and `brain.py` line reference in it as stale until then, and `grep` the symbol rather than trusting a number.
 >
+> **One version at every public release — both repositories and the brain.** Vivek's standing
+> rule, 13 November 2026: a public release carries ONE version across Marketapp
+> (`app/build.gradle.kts` `versionName`/`versionCode`), the embedded brain
+> (`brain.py` `BRAIN_VERSION`) and MarketVivi (`index.html` title and header, `M0_PWA_IDENTITY`).
+> The web `app.js?v=` cache-bust revision advances with it. Three guards enforce this, and each
+> was checked to FAIL on a real mismatch, not merely to pass:
+> `PM1_Unchanged.test_brain_version_equals_the_gradle_version_name` compares `BRAIN_VERSION` to
+> gradle with no literal; `B515CandidatePwaTest.theWebRuntimeAndTheAndroidPairCarryOneVersion`
+> reads MarketVivi's real bytes (not the pin that describes them) and compares them to the
+> version pair and the brain; and MarketVivi's `tests/test_one_version_across_repos.mjs` is the
+> mirror, enforced when the workflow reports a true same-name pair and reported as a skip when it
+> fell back to Marketapp main. **Name paired review branches identically in both repositories**,
+> or that mirror can only report instead of enforce. On main both sides resolve to main, so a
+> public release is always the enforced case.
+>
 > **Candidate pin identity is typed once.** The accepted MarketVivi commit, its `app.js` digest and the paired `versionName`/`versionCode` live in `B515CandidatePwaTest` and nowhere else; every other check derives from them or from the committed pin. Eight hardcoded copies at four different values were consolidated on 2026-11-08 after a stale one failed CI. When you bump the version, bump the **pair**: a Gradle-only bump leaves the pairing test red, and a brain-only bump leaves the Python assertions red. Search for the regex-escaped spelling (`2\.6\.95`) as well as the literal one — a plain grep cannot match an escaped assertion, and that is exactly how one copy was missed.
 
 ## Project overview

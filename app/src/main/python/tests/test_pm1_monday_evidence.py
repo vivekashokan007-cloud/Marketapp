@@ -4,6 +4,7 @@ plus unchanged policy constants and behaviour versus a763dc4 (v2.6.85).  PM1-4 (
 import copy
 import json
 import os
+import re
 import shutil
 import tempfile
 import time
@@ -671,6 +672,27 @@ class PM1_Unchanged(unittest.TestCase):
         g = open(os.path.join(os.path.dirname(__file__), '..', '..', '..', '..', 'build.gradle.kts')).read()
         self.assertIn('versionCode = 530', g)
         self.assertIn('versionName = "2.6.99"', g)
+
+    def test_brain_version_equals_the_gradle_version_name(self):
+        """RELEASE INVARIANT, checked WITHOUT a literal.
+
+        Standing rule (Vivek, 13 Nov 2026): at every public release the two repositories and the
+        brain carry the SAME version.  test_version_identity above pins the expected number, but
+        it states the brain's version and gradle's in two separate assertions, so a bump that
+        wrote two DIFFERENT values into the two literals would pass it.  This compares them to
+        each other instead, with nothing typed, so it holds at every future bump and cannot be
+        satisfied by updating a literal.
+        """
+        g = open(os.path.join(os.path.dirname(__file__), '..', '..', '..', '..',
+                              'build.gradle.kts')).read()
+        name = re.search(r'versionName\s*=\s*"([^"]+)"', g)
+        code = re.search(r'versionCode\s*=\s*(\d+)', g)
+        self.assertIsNotNone(name, 'build.gradle.kts has no versionName')
+        self.assertIsNotNone(code, 'build.gradle.kts has no versionCode')
+        self.assertEqual(brain.BRAIN_VERSION, name.group(1),
+                         'BRAIN_VERSION %r != gradle versionName %r: a public release must carry '
+                         'one version across the brain, the app and the PWA'
+                         % (brain.BRAIN_VERSION, name.group(1)))
 
 
 BEHAVIOUR_DIGEST_A763DC4 = '2c62a2d7b11da627e7605efb00421672de384c0408bcc76621bfcfc13c5f7402'

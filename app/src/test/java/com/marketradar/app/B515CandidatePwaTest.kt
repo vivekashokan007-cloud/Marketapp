@@ -215,6 +215,57 @@ class B515CandidatePwaTest {
         println("REAL MarketVivi bytes at $mv verify against the committed pin: ${(r as CandidatePwaManifest.Result.Verified).hashes}")
     }
 
+    /**
+     * RELEASE INVARIANT, read from the REAL web bytes rather than from the pin that describes
+     * them.
+     *
+     * Standing rule (Vivek, 13 Nov 2026): at every public release the two repositories and the
+     * brain carry the same version. The checks above get close but not all the way: they verify
+     * that MarketVivi's bytes hash to what the manifest claims, and separately that the
+     * manifest's `pwa_identity` matches gradle. A hand-edited `pwa_identity` satisfies both — the
+     * byte check only compares digests, and the identity check only reads the manifest. So this
+     * reads MarketVivi's own `index.html` and `app.js` and compares what they SAY to the
+     * Android version pair, with nothing typed.
+     *
+     * Skips with a printed reason when no MarketVivi checkout is available, as the real-bytes
+     * check above does; CI's candidate step sets MARKETVIVI_DIR, so it executes there.
+     */
+    @Test fun theWebRuntimeAndTheAndroidPairCarryOneVersion() {
+        val mv = System.getenv("MARKETVIVI_DIR")?.let { File(it) }?.takeIf { it.isDirectory }
+            ?: return println("SKIPPED web/native one-version check: MARKETVIVI_DIR not set")
+        val gradle = file("build.gradle.kts").readText()
+        val name = Regex("versionName\\s*=\\s*\"([^\"]+)\"").find(gradle)!!.groupValues[1]
+        val code = Regex("versionCode\\s*=\\s*(\\d+)").find(gradle)!!.groupValues[1].toInt()
+
+        val index = File(mv, "index.html").readText()
+        val app = File(mv, "app.js").readText()
+
+        assertTrue("MarketVivi index.html title must read v$name, not: " +
+            (Regex("<title>([^<]*)</title>").find(index)?.groupValues?.get(1) ?: "no title"),
+            index.contains("<title>Market Radar v$name</title>"))
+        assertTrue("MarketVivi index.html header must read v$name \u00b7 b$code",
+            index.contains("<span class=\"version\">v$name \u00b7 b$code</span>"))
+
+        val id = Regex("const M0_PWA_IDENTITY = \\{ version: '([^']+)', build: (\\d+), " +
+            "app_js_v: (\\d+) \\}").find(app)
+        assertTrue("MarketVivi app.js must declare M0_PWA_IDENTITY", id != null)
+        assertEquals("M0_PWA_IDENTITY version must equal the Android versionName",
+            name, id!!.groupValues[1])
+        assertEquals("M0_PWA_IDENTITY build must equal the Android versionCode",
+            code, id.groupValues[2].toInt())
+        // and the cache-bust revision the page loads must be the one the identity declares
+        assertTrue("index.html must load app.js?v=${id.groupValues[3]}",
+            index.contains("app.js?v=${id.groupValues[3]}\""))
+
+        // the brain ships inside the APK, so its version is part of the same pair
+        val brain = file("src/main/python/brain.py").readText()
+        val brainVersion = Regex("^BRAIN_VERSION\\s*=\\s*\"([^\"]+)\"",
+            RegexOption.MULTILINE).find(brain)!!.groupValues[1]
+        assertEquals("BRAIN_VERSION must equal the Android versionName", name, brainVersion)
+        println("one version across both repositories and the brain: $name / b$code " +
+            "(app.js?v=${id.groupValues[3]})")
+    }
+
     // ---------- source contracts: same identity/signing, release unchanged, hook gated, nothing cleared ----------
     @Test fun candidateBuildTypeKeepsApplicationIdAndReleaseSigning() {
         val g = file("build.gradle.kts").readText()
