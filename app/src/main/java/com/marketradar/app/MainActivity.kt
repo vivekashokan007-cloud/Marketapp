@@ -1102,6 +1102,14 @@ class MainActivity : AppCompatActivity() {
                         .append(e.optBoolean("summary_durably_recorded"))
                         .append(if (d.isEmpty()) " (date unknown)"
                                 else if (d == today) " ($d, today)" else " ($d, NOT today)")
+                    // the named cause, so the operator knows WHICH problem this is: an
+                    // exhausted app budget, a full phone, or a file-system failure
+                    val cause = e.optString("refusal_cause")
+                    if (cause.isNotEmpty() && cause != "null")
+                        append("\n  cause: ").append(cause)
+                    val why = e.optString("detail")
+                    if (why.isNotEmpty() && why != "null")
+                        append("\n  ").append(if (why.length > 120) why.take(120) else why)
                 } else {
                     append("no write was attempted in the window")
                 }

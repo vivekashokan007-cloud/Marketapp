@@ -110,6 +110,42 @@ class PremiumFullSessionTest {
         return raw
     }
 
+    /**
+     * What these artifacts ARE. The generator derives quotes from the committed fixture rather
+     * than reprinting them, so neither "live device capture" nor "historical vendor fixture"
+     * describes the result. Passed to the production export builder, which otherwise stamps
+     * every file it assembles as live device capture.
+     */
+    private fun syntheticContext() = PremiumCaptureSession.EvidenceContext.syntheticPerturbedFixture(
+        fixture = "contracts/x1_upstox_raw_chains.json",
+        generator = "PremiumFullSessionTest.perturb/deterministic-mix-of-date-index-slot")
+
+    /** Every generated artifact must say it is synthetic, at the section and the index level. */
+    private fun assertSyntheticProvenance(section: JSONObject) {
+        assertEquals("SYNTHETIC_PERTURBED_FIXTURE_REPLAY", section.getString("source_kind"))
+        assertEquals(false, section.getBoolean("device_evidence"))
+        val indices = section.getJSONObject("indices")
+        for (k in indices.keys()) {
+            val d = indices.getJSONObject(k)
+            // a populated index carries the whole evidence context; an empty one carries the
+            // two labels directly, because it has no context block to carry
+            val kind = d.optJSONObject("evidence_context")?.optString("source_kind")
+                ?: d.optString("source_kind")
+            assertEquals("$k must not be labelled live device capture",
+                "SYNTHETIC_PERTURBED_FIXTURE_REPLAY", kind)
+            assertEquals("$k must not claim device evidence", false,
+                d.getBoolean("device_evidence"))
+            if (d.has("is_synthetic"))
+                assertEquals("$k must be marked synthetic", true, d.getBoolean("is_synthetic"))
+            d.optJSONObject("evidence_context")?.let { c ->
+                assertTrue("$k must name the generator, not a plain fixture reprint",
+                    c.getString("quote_provenance").startsWith("DERIVED_FROM_FIXTURE_BY_GENERATOR:"))
+                assertTrue("$k must list the perturbed quote fields as synthetic",
+                    c.getJSONArray("synthetic_fields").toString().contains("quotes.bid_price"))
+            }
+        }
+    }
+
     private fun bundle(date: String, section: JSONObject) = JSONObject()
         .put("manifest", JSONObject()
             .put("session_date_used", date)
@@ -177,8 +213,9 @@ class PremiumFullSessionTest {
                 assertEquals("$date/$index must observe every slot", all.size, observed)
             }
 
-            val section = PremiumExportSection.build(filesDir, date)
+            val section = PremiumExportSection.build(filesDir, date, syntheticContext())
             assertEquals("$date must export as present", "PRESENT", section.optString("state"))
+            assertSyntheticProvenance(section)
             val text = bundle(date, section).toString()
             sizes[date] = text.toByteArray(Charsets.UTF_8).size
             maybeWrite("export_full_session_$date.json", bundle(date, section).toString(1))
@@ -242,8 +279,9 @@ class PremiumFullSessionTest {
         }
 
         // ── and the retained prior date must still export, unchanged ─────────────────────────
-        val oldSection = PremiumExportSection.build(filesDir, oldDate)
+        val oldSection = PremiumExportSection.build(filesDir, oldDate, syntheticContext())
         assertEquals("the prior date must still export", "PRESENT", oldSection.optString("state"))
+        assertSyntheticProvenance(oldSection)
         assertEquals("and its records must be untouched", oldRecordsAtCapture,
             oldSection.getJSONObject("indices").getJSONObject("NF")
                 .getJSONArray("records").length())
@@ -282,8 +320,9 @@ class PremiumFullSessionTest {
                 mapRef = "instrument_map/2026-11-01")
             assertEquals(PremiumCaptureSession.COHORT_PERSIST_FAILED, r.status)
         }
-        val section = PremiumExportSection.build(filesDir, date)
+        val section = PremiumExportSection.build(filesDir, date, syntheticContext())
         assertEquals("NO_PREMIUM_DATA", section.optString("state"))
+        assertSyntheticProvenance(section)
         for (index in listOf("NF", "BNF")) {
             val d = section.getJSONObject("indices").getJSONObject(index)
             assertEquals("NO_PREMIUM_DATA_FOR_THIS_INDEX", d.getString("state"))
@@ -295,5 +334,180 @@ class PremiumFullSessionTest {
                 .getLong("refused_cohort_persist"))
         }
         maybeWrite("export_refused_at_cap_$date.json", bundle(date, section).toString(1))
+    }
+
+    /**
+     * The phone's path is unchanged: with no context passed, the builder still describes itself
+     * as live device capture. The synthetic labelling is something a test must ASK for, so a
+     * future caller cannot accidentally de-label a real phone export.
+     */
+    @Test
+    fun theDevicePathStillLabelsItselfAsLiveDeviceCapture() {
+        val filesDir = Files.createTempDirectory("premcap-provenance").toFile()
+        val section = PremiumExportSection.build(filesDir, "2026-11-16")
+        assertEquals("LIVE_DEVICE_CAPTURE", section.getString("source_kind"))
+        assertEquals(true, section.getBoolean("device_evidence"))
+    }
+
+    // ───── the in-window reason must survive the rest of the day ─────
+
+    /** The real coordinator path: prepare, submit, drain the worker, read what it persisted. */
+    private fun coordinate(filesDir: File, date: String, slot: String, indices: List<String>) {
+        PremiumCaptureWorker.resetForTest()
+        val acqs = indices.map { index ->
+            val tmpl = fixture(if (index == "NF") "mon_0920_entry_NF" else "mon_0920_entry_BNF")
+            PremiumCaptureCoordinator.ChainAcquisition(
+                index = index,
+                rawChain = perturb(tmpl.getJSONObject("raw"), date, index, slot),
+                requestStartedMs = istMs(date, slot, 2),
+                responseReceivedMs = istMs(date, slot, 3),
+                requestedUnderlyingKey = PremiumCaptureCohort.INDEX_UNDERLYING[index],
+                expiry = "2026-10-27", receiptHhmm = slot)
+        }
+        PremiumCaptureCoordinator.onChainsAcquired(filesDir, date, slot, acqs,
+            PremiumCaptureCoordinator.PREPARE_BUDGET_MS_PER_POLL)
+        assertTrue("the capture worker must drain inside the test bound",
+            PremiumCaptureWorker.awaitIdle(30_000L))
+    }
+
+    /**
+     * FAILED BEFORE THE FIX, through the real persistence and export paths.
+     *
+     * Every session is followed by polls after 15:05, and each one is refused
+     * OUTSIDE_EXPERIMENT_WINDOW through the SAME refusal writer as a failed in-window cohort
+     * write. Those refusals overwrote the durable `last_refusal_*` fields with an outside-window
+     * status and a NULL store status, so by the end of the day the reason the session was empty
+     * had been replaced by the reason the 15:30 poll was, and the export read
+     * `OTHER_REFUSAL_SEE_STORE_STATUS`. The earlier refusal fixture exported immediately, before
+     * any after-window poll could run, which is exactly why it passed.
+     *
+     * This is the same displacement as the About screen's `last_by_index`, one layer down.
+     */
+    @Test
+    fun theInWindowRefusalReasonSurvivesTheAfterWindowPolls() {
+        val filesDir = Files.createTempDirectory("premcap-provenance-window").toFile()
+        val root = PremiumCaptureControl.root(filesDir).apply { mkdirs() }
+        java.io.RandomAccessFile(File(root, "retained.bin"), "rw")
+            .use { it.setLength(PremiumCaptureStore.evidenceBudgetBytes() - 735L) }
+        PremiumCaptureControl.setEnabled(filesDir, true)
+        val date = "2026-11-19"
+        try {
+            // the in-window refusal that explains the day, on BOTH indices
+            coordinate(filesDir, date, "09:20", listOf("NF", "BNF"))
+            for (index in listOf("NF", "BNF")) {
+                val r = requireNotNull(PremiumCaptureWorker.resultFor(index))
+                assertEquals(PremiumCaptureSession.COHORT_PERSIST_FAILED, r.getString("status"))
+                assertEquals(PremiumCaptureStore.REFUSED_GLOBAL_BYTES,
+                    r.getString("refusal_store_status"))
+                assertEquals("the phone must be able to name the cause without parsing text",
+                    PremiumCaptureStore.CAUSE_APP_CAP, r.getString("refusal_cause"))
+            }
+
+            // the rest of the day: polls after the window closes
+            for (slot in listOf("15:10", "15:20", "15:30", "15:40")) {
+                PremiumCaptureWorker.resetForTest()
+                coordinate(filesDir, date, slot, listOf("NF", "BNF"))
+                assertEquals(PremiumCaptureSession.OUTSIDE_WINDOW,
+                    PremiumCaptureWorker.resultFor("NF")?.getString("status"))
+            }
+
+            // REOPEN FROM THE PERSISTED FILES, as the end-of-day export does in a later process
+            PremiumCaptureStore.forgetCachedBytesForTest()
+            val reopened = PremiumCaptureStore(PremiumCaptureControl.root(filesDir))
+            val section = PremiumExportSection.build(filesDir, date, syntheticContext())
+            assertEquals("NO_PREMIUM_DATA", section.getString("state"))
+            for (index in listOf("NF", "BNF")) {
+                val summary = requireNotNull(reopened.readSummary(index, date))
+                val counters = summary.getJSONObject("counters")
+                // the outside-window count is KEPT, beside the in-window reason
+                assertEquals("four after-window polls must still be counted", 4L,
+                    counters.getLong("refused_outside_window"))
+                assertEquals(1L, counters.getLong("refused_cohort_persist"))
+                assertEquals("the in-window store status must be the one retained",
+                    PremiumCaptureStore.REFUSED_GLOBAL_BYTES,
+                    summary.getString("last_refusal_store_status"))
+                assertEquals("09:20", summary.getString("last_refusal_slot"))
+                assertEquals("and the out-of-window facts must live in their own fields",
+                    "15:40", summary.getString("last_outside_window_slot"))
+
+                val d = section.getJSONObject("indices").getJSONObject(index)
+                assertEquals("NO_PREMIUM_DATA_FOR_THIS_INDEX", d.getString("state"))
+                assertEquals(PremiumCaptureStore.CAUSE_APP_CAP,
+                    d.getJSONObject("refusal").getString("cause"))
+                assertEquals(PremiumCaptureStore.REFUSED_GLOBAL_BYTES,
+                    d.getJSONObject("refusal").getString("store_status"))
+                // and R7 must still exclude it: no records, no envelopes, no pinned contracts
+                assertTrue("$index must still carry no replayable evidence",
+                    !d.has("records") && !d.has("slot_envelopes") && !d.has("cohort"))
+            }
+            maybeWrite("export_refusal_after_full_day_$date.json",
+                bundle(date, section).toString(1))
+        } finally {
+            PremiumCaptureWorker.resetForTest()
+        }
+    }
+
+    /**
+     * The same preservation on the LOW-DEVICE-SPACE fallback. There the summary write is refused
+     * too, so the reason lives in the control reserve — and an after-window poll must not be able
+     * to replace that record with one that names no store status either.
+     */
+    @Test
+    fun theControlReserveFallbackKeepsTheReasonThroughTheAfterWindowPolls() {
+        val filesDir = Files.createTempDirectory("premcap-provenance-device").toFile()
+        val root = PremiumCaptureControl.root(filesDir).apply { mkdirs() }
+        PremiumCaptureControl.setEnabled(filesDir, true)
+        val store = PremiumCaptureStore(root)
+        val date = "2026-11-20"
+        try {
+            PremiumCaptureStore.freeBytesForTest =
+                { PremiumCaptureStore.MIN_FREE_DEVICE_BYTES - 1L }
+            for (index in listOf("NF", "BNF")) {
+                val tmpl = fixture(if (index == "NF") "mon_0920_entry_NF" else "mon_0920_entry_BNF")
+                val r = PremiumCaptureSession(store).observeSlot(index, date,
+                    perturb(tmpl.getJSONObject("raw"), date, index, "09:20"), "09:20", "09:20",
+                    tmpl.optString("requested_underlying_key").ifEmpty { null },
+                    istMs(date, "09:20", 2), istMs(date, "09:20", 3),
+                    claimedLot = 75, claimedLotSource = "CONTRACT_LOT_TABLE",
+                    lotTableRef = "t", mapRef = "m")
+                assertEquals(PremiumCaptureSession.COHORT_PERSIST_FAILED, r.status)
+                assertEquals("the summary cannot be written on a full device", false,
+                    r.summaryWrite?.persisted)
+                assertEquals("so the control reserve must carry it", true,
+                    r.diagnosticWrite?.persisted)
+            }
+            // the after-window polls that follow, still on a full device
+            for (slot in listOf("15:10", "15:30")) for (index in listOf("NF", "BNF")) {
+                val tmpl = fixture(if (index == "NF") "mon_0920_entry_NF" else "mon_0920_entry_BNF")
+                val r = PremiumCaptureSession(store).observeSlot(index, date,
+                    perturb(tmpl.getJSONObject("raw"), date, index, slot), slot, slot,
+                    tmpl.optString("requested_underlying_key").ifEmpty { null },
+                    istMs(date, slot, 2), istMs(date, slot, 3),
+                    claimedLot = 75, claimedLotSource = "CONTRACT_LOT_TABLE",
+                    lotTableRef = "t", mapRef = "m")
+                assertEquals(PremiumCaptureSession.OUTSIDE_WINDOW, r.status)
+            }
+
+            PremiumCaptureStore.forgetCachedBytesForTest()
+            val reopened = PremiumCaptureStore(PremiumCaptureControl.root(filesDir))
+            val section = PremiumExportSection.build(filesDir, date, syntheticContext())
+            for (index in listOf("NF", "BNF")) {
+                val f = requireNotNull(reopened.readDiagnosticFailure(index, date)) {
+                    "$index must have a control-reserve record"
+                }
+                assertEquals("the device refusal must be the one kept",
+                    PremiumCaptureStore.REFUSED_DEVICE_LOW_SPACE,
+                    f.getString("refusal_store_status"))
+                assertEquals("09:20", f.getString("slot"))
+                val d = section.getJSONObject("indices").getJSONObject(index)
+                assertEquals("DIAGNOSTIC_WRITE_REFUSED", d.getString("durable_counters_state"))
+                assertEquals(PremiumCaptureStore.CAUSE_DEVICE,
+                    d.getJSONObject("refusal").getString("cause"))
+                assertTrue("$index must still carry no replayable evidence",
+                    !d.has("records") && !d.has("slot_envelopes") && !d.has("cohort"))
+            }
+        } finally {
+            PremiumCaptureStore.freeBytesForTest = null
+        }
     }
 }

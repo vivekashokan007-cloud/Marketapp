@@ -291,7 +291,13 @@ object PremiumCaptureWorker {
                         .put("session_date", r.optString("session_date", ""))
                         .put("outcome_kind", "PERSISTENCE_WAS_ATTEMPTED")
                         .put("written", r.optInt("written", -1))
-                        .put("detail", r.optString("detail", ""))
+                        // the named cause and a BOUNDED detail: the screen used to omit both,
+                        // so an operator could not tell an exhausted app budget from a full
+                        // phone from a file-system failure
+                        .put("refusal_cause", r.opt("refusal_cause") ?: JSONObject.NULL)
+                        .put("refusal_store_status",
+                            r.opt("refusal_store_status") ?: JSONObject.NULL)
+                        .put("detail", r.optString("detail", "").take(160))
                         .put("summary_durably_recorded",
                             r.optJSONObject("summary_write")
                                 ?.optBoolean("durably_recorded", false) ?: false))

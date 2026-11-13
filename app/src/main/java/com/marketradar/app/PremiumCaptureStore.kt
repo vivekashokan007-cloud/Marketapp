@@ -837,6 +837,16 @@ class PremiumCaptureStore(val root: File) {
         val key = "$session/${index.uppercase()}"
         val existing = readControlJson(DIAGNOSTIC_FAILURES)
         val map = existing?.optJSONObject("failures") ?: JSONObject()
+        // A record that NAMES a store status is never replaced by one that does not. Without
+        // this, a later refusal carrying no store status would overwrite the one that explains
+        // the session, which is the same displacement the in-window/out-of-window split fixes in
+        // the summary.
+        val held = map.optJSONObject(key)
+        val heldNames = held?.opt("refusal_store_status")?.takeIf { it != JSONObject.NULL } != null
+        val newNames = record.opt("refusal_store_status")?.takeIf { it != JSONObject.NULL } != null
+        if (heldNames && !newNames)
+            return WriteResult(DUPLICATE_NO_OP, 0,
+                "kept the recorded reason: ${held?.opt("refusal_store_status")}")
         map.put(key, record)
         // bounded: keep the most recent entries only, so this can never grow with the retention
         while (map.length() > MAX_DIAGNOSTIC_FAILURES) {

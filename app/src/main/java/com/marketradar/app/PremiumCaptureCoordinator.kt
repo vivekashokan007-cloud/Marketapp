@@ -256,6 +256,14 @@ object PremiumCaptureCoordinator {
                 .put("batch_complete", r.batchComplete)
                 .put("chain_present", chain != null)
                 .put("detail", r.detail ?: JSONObject.NULL)
+                // the store's own refusal status and the cause it names, so the phone can tell
+                // an exhausted app budget from a full device from an I/O failure without
+                // parsing the detail text
+                .put("refusal_store_status", r.storeStatus ?: JSONObject.NULL)
+                .put("refusal_cause", if (r.storeStatus == null) JSONObject.NULL
+                    else PremiumCaptureStore.classifyRefusal(JSONObject()
+                        .put("last_refusal_store_status", r.storeStatus)
+                        .put("last_refusal_status", r.status)).optString("cause"))
                 // THE CAPTURE SUMMARY: this attempt's own batch/write/refusal counters
                 .put("summary_write", JSONObject()
                     .put("kind", "CAPTURE_BATCH_WRITE_AND_REFUSAL_COUNTERS")

@@ -53,7 +53,14 @@ object PremiumExportSection {
      * before and after, and a concurrent capture write is REPORTED rather than silently producing
      * a torn view.
      */
-    fun build(filesDir: File, date: String): JSONObject {
+    /**
+     * @param context how the export must DESCRIBE ITSELF. Defaults to [deviceContext] — the
+     *   phone's own path is unchanged and callers there pass nothing. A test that drives this
+     *   builder has to pass its own provenance, because an artifact produced from a fixture must
+     *   not be labelled as live device capture, whichever code assembled it.
+     */
+    fun build(filesDir: File, date: String,
+              context: PremiumCaptureSession.EvidenceContext = deviceContext()): JSONObject {
         val section = JSONObject()
             .put("section_version", SECTION_VERSION)
             .put("requested_session_date", date)
@@ -61,9 +68,13 @@ object PremiumExportSection {
         return try {
             if (!PremiumObservationContract.isCalendarDate(date))
                 return section.put("state", "REQUESTED_DATE_INVALID").put("has_data", false)
+                    .put("source_kind", context.sourceKind)
+                    .put("device_evidence", context.deviceEvidence)
             val root = PremiumCaptureControl.root(filesDir)
             if (!root.exists()) return section.put("state", "NO_PREMIUM_DATA")
                 .put("has_data", false)
+                .put("source_kind", context.sourceKind)
+                .put("device_evidence", context.deviceEvidence)
                 .put("capture_enabled", PremiumCaptureControl.isEnabled(filesDir))
             val store = PremiumCaptureStore(root)
             val session = PremiumCaptureSession(store)
@@ -88,6 +99,8 @@ object PremiumExportSection {
                      * absent, so capture preflight still refuses this index.
                      */
                     val empty = JSONObject().put("state", "NO_PREMIUM_DATA_FOR_THIS_INDEX")
+                        .put("source_kind", context.sourceKind)
+                        .put("device_evidence", context.deviceEvidence)
                         .put("diagnostics_only",
                             "NOT_EVIDENCE_AND_NOT_ELIGIBILITY: why this index is empty")
                         .put("capacity", runCatching { store.capacitySnapshot() }
@@ -158,7 +171,7 @@ object PremiumExportSection {
                     // visible and incrementing could leave unchanged across a read that had
                     // already observed the change.
                     if (before % 2L != 0L) continue
-                    val built = session.export(idx, date, null, deviceContext())
+                    val built = session.export(idx, date, null, context)
                     val after = store.generation()
                     if (after == before && after % 2L == 0L) {
                         ex = built; consistent = true; break
@@ -177,6 +190,10 @@ object PremiumExportSection {
             }
             section.put("state", if (any) "PRESENT" else "NO_PREMIUM_DATA")
                 .put("has_data", any)
+                // at the SECTION level too, so what the file is does not have to be inferred
+                // from inside an index block
+                .put("source_kind", context.sourceKind)
+                .put("device_evidence", context.deviceEvidence)
                 .put("capture_enabled", PremiumCaptureControl.isEnabled(filesDir))
                 .put("concurrent_capture_write_detected", torn)
                 .put("session_date_substitution", "NEVER_ONLY_THE_REQUESTED_DATE")

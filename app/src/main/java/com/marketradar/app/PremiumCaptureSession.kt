@@ -99,6 +99,11 @@ class PremiumCaptureSession(private val store: PremiumCaptureStore) {
          * result is the only account of it.
          */
         val diagnosticWrite: PremiumCaptureStore.WriteResult? = null,
+        /**
+         * The STORE's own status for a refused write, so the cause can be named on the phone
+         * without re-deriving it from the detail text. Null when no store write was refused.
+         */
+        val storeStatus: String? = null,
     )
 
     /**
@@ -145,23 +150,49 @@ class PremiumCaptureSession(private val store: PremiumCaptureStore) {
     ): SlotResult {
         fun refuse(status: String, detail: String?, counter: String,
                    storeStatus: String? = null): SlotResult {
-            // The counter says WHAT failed; these fields say WHY, durably and at the time. An
-            // app-cap refusal, a low-device-space refusal and an I/O failure are three different
-            // operator actions, and a capacity reading taken afterwards cannot tell them apart.
             val at = System.currentTimeMillis()
             val slot = acquisitionHhmm ?: schedulerSlot
-            val sw = store.bumpCounters(index, sessionDate, mapOf("refused_$counter" to 1L),
+            /*
+             * AN ATTEMPT THAT FAILED, OR NO ATTEMPT AT ALL — and the two must not share one
+             * record.
+             *
+             * The counter says WHAT failed; the `refusal_*` fields say WHY, durably and at the
+             * time, because an app-cap refusal, a low-device-space refusal and an I/O failure
+             * are three different operator actions that a capacity reading taken hours later
+             * cannot separate.
+             *
+             * But every session is followed by polls after 15:05, and each one is refused
+             * OUTSIDE_EXPERIMENT_WINDOW through this same writer. Those refusals used to
+             * overwrite `refusal_*` with an outside-window status and a NULL store status, so by
+             * the end of the day the reason the session was empty had been replaced by the
+             * reason the 15:30 poll was — exactly the displacement that had just been fixed one
+             * layer up, in the About screen's `last_by_index`. The earlier fixture exported
+             * immediately and so could not see it.
+             *
+             * An out-of-window poll is not an attempt to write this session's evidence. It keeps
+             * its own count and its own `outside_window_*` fields, and never touches the
+             * in-window reason.
+             */
+            val isAttempt = status != OUTSIDE_WINDOW
+            val fields = if (isAttempt)
                 mapOf("refusal_counter" to counter,
                       "refusal_status" to status,
                       "refusal_store_status" to storeStatus,
                       "refusal_detail" to detail,
                       "refusal_slot" to slot,
-                      "refusal_at_ms" to at))
+                      "refusal_at_ms" to at)
+            else
+                mapOf("outside_window_slot" to slot,
+                      "outside_window_at_ms" to at)
+            val sw = store.bumpCounters(index, sessionDate, mapOf("refused_$counter" to 1L),
+                fields)
             // The diagnostic write is itself a write, and the device guard applies to it too. If
             // even this bounded record cannot be saved, fall back to the control reserve so the
             // export can say DIAGNOSTIC_WRITE_REFUSED instead of NOT_WRITTEN, which would read
-            // as "nothing was attempted".
-            val dw = if (sw.persisted) null else runCatching {
+            // as "nothing was attempted". Only for a real attempt: an out-of-window poll has no
+            // reason worth a last-resort record, and writing one would displace the reason that
+            // has.
+            val dw = if (sw.persisted || !isAttempt) null else runCatching {
                 store.recordDiagnosticFailure(index, sessionDate, JSONObject()
                     .put("at_ms", at)
                     .put("slot", slot)
@@ -172,7 +203,7 @@ class PremiumCaptureSession(private val store: PremiumCaptureStore) {
                     .put("summary_write_detail", sw.detail ?: JSONObject.NULL))
             }.getOrNull()
             return SlotResult(status, null, null, 0, 0, 0, 0, emptyMap(), detail = detail,
-                summaryWrite = sw, diagnosticWrite = dw)
+                summaryWrite = sw, diagnosticWrite = dw, storeStatus = storeStatus)
         }
 
         val slotId = PremiumCaptureCohort.slotIdentity(schedulerSlot, acquisitionHhmm)
@@ -343,6 +374,33 @@ class PremiumCaptureSession(private val store: PremiumCaptureStore) {
                     "clocks.acquisition_response_ms", "clocks.slot_basis", "slot",
                     "lot.contract_lot_table_ref", "lot.map_ref", "lot.lot_claimed_raw"),
                 note = note,
+            )
+
+            /**
+             * A session SYNTHESISED from a committed fixture: the quotes are derived from real
+             * vendor rows by a deterministic generator, not reprinted from them, and every clock,
+             * slot and lot reference is invented in the test.
+             *
+             * This exists because the full-session engineering test drives the production export
+             * builder, which stamped `source_kind: LIVE_DEVICE_CAPTURE` and
+             * `device_evidence: true` on files that never went near a phone. The export now has
+             * to be told what it is, and the labelling is asserted rather than assumed.
+             */
+            fun syntheticPerturbedFixture(fixture: String, generator: String,
+                                          note: String? = null) = EvidenceContext(
+                sourceKind = "SYNTHETIC_PERTURBED_FIXTURE_REPLAY",
+                quoteProvenance = "DERIVED_FROM_FIXTURE_BY_GENERATOR:$fixture:$generator",
+                clockProvenance = "SYNTHETIC_GENERATED_IN_TEST",
+                slotProvenance = "MANUALLY_ASSIGNED_IN_TEST",
+                lotTableProvenance = "CONSTRUCTED_TEST_TABLE",
+                deviceEvidence = false,
+                syntheticFields = listOf("quotes.bid_price", "quotes.ask_price", "quotes.ltp",
+                    "underlying_spot_price", "clocks.acquisition_request_ms",
+                    "clocks.acquisition_response_ms", "clocks.slot_basis", "slot",
+                    "lot.contract_lot_table_ref", "lot.map_ref", "lot.lot_claimed_raw"),
+                note = note ?: "every price in this artifact is synthetic: no phone, no broker " +
+                    "and no market data took part. It establishes collection and export " +
+                    "coverage only, and counts toward no research session.",
             )
         }
     }
