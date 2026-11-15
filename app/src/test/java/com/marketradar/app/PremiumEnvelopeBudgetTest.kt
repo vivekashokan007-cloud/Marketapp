@@ -232,6 +232,37 @@ class PremiumEnvelopeBudgetTest {
     }
 
     /**
+     * The probe must describe the runtime it ran on, not a guess. On this JVM the reference
+     * org.json leaves `/` bare; on a phone Android's escapes it. Asserting the probe against the
+     * runtime's actual behaviour is what makes the recorded value trustworthy on either.
+     */
+    @Test
+    fun theQuoterProbeAgreesWithTheRuntimeItRanOn() {
+        val slashIsEscaped = JSONObject.quote("/") == "\"\\/\""
+        val expected = if (slashIsEscaped) PremiumObservationContract.QUOTE_ANDROID
+        else PremiumObservationContract.QUOTE_REFERENCE
+        assertEquals("the probe must report what this runtime actually does",
+            expected, PremiumObservationContract.quoteImplementation())
+        // this harness is the JVM, so it must be the reference rule; if this ever flips here,
+        // the vectors and every JVM-side canonical assertion are describing something else
+        assertEquals(PremiumObservationContract.QUOTE_REFERENCE,
+            PremiumObservationContract.quoteImplementation())
+    }
+
+    /**
+     * Recording which quoter ran must not be able to change a digest, so it lives outside every
+     * hashed body. If it leaked into the envelope or a record, every existing digest would break.
+     */
+    @Test
+    fun theRecordedQuoterIsOutsideEveryHashedBody() {
+        val e = envelope(weeklyLotRef, null, hex32)!!
+        assertTrue("the envelope must not carry it", !e.has("canonical_quote_impl"))
+        assertTrue("nor may its hashed sub-objects",
+            !e.getJSONObject("lot").has("canonical_quote_impl"))
+        assertTrue("and the envelope must still verify", PremiumObservationContract.verifyHash(e))
+    }
+
+    /**
      * The canonical encoding delegates to `JSONObject.quote`, which differs between Android and
      * the JVM — so this JVM assertion is explicitly about the JVM rule, and says so rather than
      * claiming to describe the phone. The device rule is implemented and tested on the verifier

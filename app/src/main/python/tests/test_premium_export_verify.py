@@ -95,6 +95,22 @@ class EncodingProfiles(unittest.TestCase):
         self.assertEqual(V.canonical({'b': 1, 'a': [2, True, None]}, V.PROFILE_ANDROID),
                          V.canonical({'b': 1, 'a': [2, True, None]}, V.PROFILE_DESKTOP))
 
+    def test_a_declared_quoter_beats_inferred_provenance(self):
+        """The export can STATE which org.json escaped its strings, measured on the runtime that
+        did it. That is a fact about the producer, not an inference, so it wins - including the
+        case that matters: device provenance but a JVM re-encode."""
+        for declared, want in (('ANDROID_ORG_JSON_SLASH_ESCAPED', V.PROFILE_ANDROID),
+                               ('REFERENCE_ORG_JSON_SLASH_BARE', V.PROFILE_DESKTOP)):
+            sec = {'indices': {'NF': {'canonical_quote_impl': declared,
+                                      'evidence_context': {'source_kind': 'LIVE_DEVICE_CAPTURE'}}}}
+            prof, why = V.choose_profile(sec)
+            self.assertEqual(want, prof, declared)
+            self.assertIn(declared, why)
+        # indices that disagree are reported rather than silently resolved
+        sec = {'indices': {'NF': {'canonical_quote_impl': 'ANDROID_ORG_JSON_SLASH_ESCAPED'},
+                           'BNF': {'canonical_quote_impl': 'REFERENCE_ORG_JSON_SLASH_BARE'}}}
+        self.assertIn('DIFFERENT quoters', V.choose_profile(sec)[1])
+
     def test_the_profile_is_chosen_from_provenance_and_reported(self):
         prof, why = V.choose_profile(V.premium_section(load(NOV12)))
         self.assertEqual(V.PROFILE_ANDROID, prof)

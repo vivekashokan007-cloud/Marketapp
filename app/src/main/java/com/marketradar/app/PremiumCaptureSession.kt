@@ -742,6 +742,10 @@ class PremiumCaptureSession(private val store: PremiumCaptureStore) {
             .put("session_date", sessionDate)
             // the caller must STATE the provenance; nothing about it is hardcoded here
             .put("evidence_context", context.json())
+            // WHICH org.json escaped the hashed strings, measured on the runtime that did it.
+            // Outside every hashed body on purpose: it tells a verifier which canonical rule to
+            // recompute with, and stating it must not be able to change a digest.
+            .put("canonical_quote_impl", PremiumObservationContract.quoteImplementation())
             .put("is_synthetic", context.syntheticFields.isNotEmpty())
             .put("device_evidence", context.deviceEvidence)
             .put("claims", JSONObject()

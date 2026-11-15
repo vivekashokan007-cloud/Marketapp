@@ -543,6 +543,28 @@ object PremiumObservationContract {
         else -> JSONObject.quote(o.toString())
     }
 
+    // ── which org.json actually escaped these strings ──────────────────────────────────────────
+    const val QUOTE_ANDROID = "ANDROID_ORG_JSON_SLASH_ESCAPED"
+    const val QUOTE_REFERENCE = "REFERENCE_ORG_JSON_SLASH_BARE"
+
+    /**
+     * Probe the runtime's `JSONObject.quote`, because [canonicalJson] delegates to it and **it is
+     * not the same function on Android as on the JVM**.
+     *
+     * `Pc2CompactBatch` round 3 documented the divergence: Android's org.json escapes every `/`
+     * as `\/` and leaves U+0080-U+009F and U+2000-U+20FF literal, while the reference org.json
+     * used by the JVM tests escapes `/` only after `<` and escapes those ranges as `\uXXXX`.
+     * Premium strings carry slashes — `lot.contract_lot_table_ref` for one — so a phone export's
+     * digests cover different bytes from the same object hashed on a JVM.
+     *
+     * An offline verifier therefore has to know which rule produced an artifact. Until now it
+     * could only infer that from provenance; this states it, measured on the runtime that did the
+     * work. The result is recorded in the export BESIDE the evidence and never inside a hashed
+     * body, so stating it cannot change a digest.
+     */
+    fun quoteImplementation(): String =
+        if (JSONObject.quote("/") == "\"\\/\"") QUOTE_ANDROID else QUOTE_REFERENCE
+
     fun sha256Hex(s: String): String =
         java.security.MessageDigest.getInstance("SHA-256").digest(s.toByteArray(Charsets.UTF_8))
             .joinToString("") { "%02x".format(it) }

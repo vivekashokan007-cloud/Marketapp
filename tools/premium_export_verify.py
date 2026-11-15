@@ -176,6 +176,23 @@ def choose_profile(sec, explicit=None):
     """
     if explicit:
         return explicit, 'explicitly requested'
+    # PREFERRED: the export states which org.json escaped its strings, measured on the runtime
+    # that did it (PremiumObservationContract.quoteImplementation). That is a fact about the
+    # producer rather than an inference from provenance, so it wins when present.
+    declared = set()
+    for blk in (sec.get('indices') or {}).values():
+        if isinstance(blk, dict) and isinstance(blk.get('canonical_quote_impl'), str):
+            declared.add(blk['canonical_quote_impl'])
+    if len(declared) == 1:
+        d = declared.pop()
+        if d == 'ANDROID_ORG_JSON_SLASH_ESCAPED':
+            return PROFILE_ANDROID, 'the export states %s' % d
+        if d == 'REFERENCE_ORG_JSON_SLASH_BARE':
+            return PROFILE_DESKTOP, 'the export states %s' % d
+        return PROFILE_ANDROID, 'the export states an unrecognised quoter (%s)' % d
+    if len(declared) > 1:
+        return PROFILE_ANDROID, ('the indices state DIFFERENT quoters (%s); the artifact should '
+                                 'be split' % ', '.join(sorted(declared)))
     kinds = set()
     for blk in (sec.get('indices') or {}).values():
         if not isinstance(blk, dict):
