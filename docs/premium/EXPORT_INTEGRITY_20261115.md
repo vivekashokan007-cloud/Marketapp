@@ -1,114 +1,149 @@
-# Premium export integrity — what recomputation actually finds (15 November 2026)
+# Premium export integrity — the offline verifier, and a correction (15 November 2026)
 
-**Short version.** The offline verifier now exists and reads real phone exports. It does **not**
-confirm the premise it was built on. In the 12 November 2026 phone export, **641 of 641
-observation records verify and 0 of 107 slot envelopes do** — under the independent Python mirror
-*and* under Android's own `PremiumObservationContract.verifyHash` run over the exported bytes.
-Both implementations produce the **same** recomputed digest, so this is **not** a cross-language
-encoding difference.
+**The 12 November 2026 phone export is intact.** All 1,603 digests in it recompute exactly:
+641 records, 107 envelopes, 107 acquisition ids, 107 cohort refs, 641 envelope refs.
 
-The export's own `accounting.envelope_hash_verified` says **53** and **54** — all 107 verified on
-the device at export time. Recomputation from the file says none of them do. One of those two
-statements is about bytes that exist; the other is a counter the producer wrote about itself.
+An earlier version of this document said the opposite — 0 of 107 envelopes — and it was wrong.
+The correction is recorded here rather than quietly replaced, because the mistake is cheap to
+repeat and the repository had already written down why.
 
-Nothing here changes a frozen rule, and no digest was reinterpreted to make anything pass.
+## What went wrong, exactly
 
-## What was measured, and how
+`PremiumObservationContract.canonicalJson` delegates string escaping to `JSONObject.quote`.
+**That is not the same function on Android as on the JVM.** This project found the same divergence
+once before and documented it in `Pc2CompactBatch`, round 3:
 
-| check | 12 Nov phone export | synthetic export from HEAD's real pipeline |
+> Android's org.json escapes every `/` as `\/` and leaves U+0080–U+009F and U+2000–U+20FF
+> literal. The reference org.json used by the JVM tests escapes `/` only after `<`, and escapes
+> U+0080–U+009F and U+2000–U+20FF as `\uXXXX`.
+
+Premium capture still delegates. So a phone export's digests cover **Android-escaped** bytes,
+while any JVM or desktop verifier recomputes over **reference-escaped** bytes. Every premium
+string containing a slash — `lot.contract_lot_table_ref`, for one — then hashes differently off
+the device. The 12 November bundle contains **648 `\/` sequences**: the divergence is visible in
+the artifact itself.
+
+My error was not the hypothesis — I tested "string encoding or escaping" and cleared it. It was
+the reference: I compiled `PremiumObservationContract` against `org.json:json:20240303`, got the
+same digest as the Python mirror, and called that "Android's own encoder". It is not. Compiling
+the contract on a JVM establishes agreement **under the json implementation that run used**, and
+nothing more. Records verified under both rules only because the record body happens to carry no
+slash; the envelope's lot reference does.
+
+Credit where due: Codex found it by changing one thing — escaping every slash — and reproducing
+the stored digest exactly.
+
+## The verifier, as it now stands
+
+`tools/premium_export_verify.py` recomputes every digest an export carries, under an explicit
+**encoding profile**:
+
+| profile | string rule | used for |
 | --- | --- | --- |
-| `record_payload` | **641 / 641 verified** | 828 / 828 verified |
-| `envelope_payload` | **0 / 107** verified | 138 / 138 verified |
-| `acquisition_id` re-derived from its own basis | **0 / 107** | all verified |
-| `cohort_ref` re-derived from the exported cohort | **107 / 107 verified** | all verified |
-| `envelope_ref` on each record | 0 / 641 | all verified |
-| the phone's own `envelope_hash_verified` | 53 and 54 | — |
+| `android-legacy` | escape `"` `\` and **every** `/`; five short forms; other < U+0020 as lowercase `\u00xx`; everything else literal | artifacts produced on the phone |
+| `desktop` | the reference org.json 20240303 rule | artifacts produced by a JVM run |
 
-Reproduce:
+The `hash_basis.serialization` tag is **shared** between both — both say
+`json_sorted_keys_compact_utf8_v1` — so it cannot select the profile. What can is the provenance
+the export already carries: `evidence_context.source_kind` of `LIVE_DEVICE_CAPTURE` means
+Android's org.json; anything synthetic or replayed means a JVM run. `--profile` overrides it, and
+**the decision and its reason are printed** rather than assumed. One profile is applied to every
+digest in an artifact.
 
-```
-python3 -I tools/premium_export_verify.py <export.json>
-```
-
-## Hypotheses eliminated, each by measurement rather than reading
-
-1. **A Python-mirror bug.** Ruled out: Android's own `verifyHash`, compiled from
-   `PremiumObservationContract.kt` and run over the same exported bytes on a JVM, fails the same
-   107 envelopes and returns *byte-identical* recomputed digests to the mirror
-   (`f1a669d0719d47bcb8083fc3096470a557ed7e6c3f8980b362baaa6cd4e33bac` for NF 12:20 in both).
-2. **A canonical-encoding divergence between Android and desktop.** Ruled out by the same
-   result, and positively: the envelope's `cohort_ref` — a `contentHash` over the exported
-   cohort, using the identical encoder — **re-derives exactly, 107 times out of 107**. The
-   encoder is right, and now proven against real device bytes rather than only against synthetic
-   vectors.
-3. **The encoding changed after the export was written.** Ruled out:
-   `PremiumObservationContract.kt` is unchanged between b528 (`6eca48b`, the build that wrote the
-   file — its bundle reports `brain_version 2.6.97`) and HEAD.
-4. **A schema difference.** Ruled out: the 12 November envelope and a HEAD envelope have
-   identical key sets at every level, including inside `clocks`, `underlying` and `lot`.
-5. **Export-time mutation of the hashed object.** Not found: the exporter does
-   `envArr.put(it)` — the envelope verbatim — and no code in `export()` mutates an envelope or
-   any of its nested objects after the verify.
-6. **Number reformatting in transit.** Ruled out: the envelope's numeric literals in the file are
-   plain and unremarkable (`1794466205573`, `119`, `25234.2`, `65`), and parse back to exactly
-   those values.
-7. **String encoding or escaping.** Ruled out: all 31 string values in the envelope are plain
-   ASCII, and the two implementations' quoting agrees on every one.
-8. **A key added or removed after stamping.** Ruled out by search: no removal of one, two or
-   three field paths from the exported envelope reproduces either the claimed
-   `payload_sha256` or the claimed `acquisition_id`.
-9. **The lot-authority path or a null-valued field.** Ruled out by reproduction: HEAD's real
-   coordinator path, with the authority reference attached and `lot.map_ref` JSON `null`,
-   produces envelopes that verify in memory, after a text round trip, and after a real export.
-
-## What this narrows it to
-
-`payload_sha256` and `acquisition_id` are the two values derived from the envelope's **mutable
-basis** (`clocks`, `underlying`, `lot`, `batch_evidence_ref`, `request_outcome`, `slot`,
-`session_date`, `index`). Both fail. `cohort_ref`, the one value **not** derived from that basis,
-verifies. So one or more *values* inside that basis differ from what they were when the id and
-the digest were computed — not a key, not a number format, not a string encoding.
-
-**I could not identify the specific field from the artifact alone, and I am not going to guess
-it.** The remaining untested candidate is `batch_evidence_ref`, a digest over the prepared
-six-contract evidence whose array order is not recoverable from the export; confirming or
-clearing it needs the producer, not the file.
-
-## Why it matters, stated at its real size
-
-- **Record-level integrity for 12 November is intact and now independently proven**: 641 of 641.
-  The quotes the research line reprices are covered by digests that recompute exactly.
-- **Envelope-level integrity for that date cannot be re-established offline.** The envelope
-  carries the clocks, the underlying spot, the lot basis and the acquisition identity. A replay
-  that needs to prove *which acquisition* a quote came from cannot do that from this file by
-  digest alone.
-- **It is not known to affect any other date.** 12 November is the only phone export in hand that
-  contains premium evidence at all: 2, 3 and 4 November carry no premium section, and 13 November
-  captured nothing (the 735 B headroom refusal). So this is one observation, not a trend — and
-  equally, there is **no** phone export whose envelope digests do verify.
-- **HEAD is clean on every test available here**, including a full three-session synthetic run
-  (2,070 digests, all matching). That is consistent with the defect being fixed, and consistent
-  with it needing a condition my synthetic runs do not reproduce. Those are different
-  conclusions and the evidence does not separate them.
-
-## The check that should exist and does not
-
-The export states `envelope_hash_verified` as a count the producer computed about itself. On this
-file that number is 53/54 while recomputation gets 0/107, so the field cannot be used as
-evidence. A verifier outside the producer is the only thing that settles it — which is what
-`tools/premium_export_verify.py` now is, and why the suite pins a **known-good** fixture beside
-the failing one: a verifier that fails everything would prove nothing.
-
-## Monday
-
-This does not block collection on b530. If both indices save quotes, record-level integrity is
-checkable immediately with the verifier, and the envelope question is answered by running it on
-the fresh export: a b530 export whose envelopes verify localizes the 12 November failure to the
-older build; one whose envelopes do not reproduces it on a build we control, which is the better
-outcome for fixing it.
-
-Run on the fresh export, before any scoring:
+When the selected profile mismatches, the report adds a **diagnostic** naming the profile that
+does reproduce the digests. It is a diagnostic only: the verdict and exit status stay with the
+selected profile, because a verifier that retries until something passes verifies nothing.
 
 ```
-python3 -I tools/premium_export_verify.py mr_session_evidence_2026-11-16.json
+$ python3 -I tools/premium_export_verify.py mr_session_evidence_2026-11-12.json
+encoding profile android-legacy   (provenance: LIVE_DEVICE_CAPTURE, so Android's org.json)
+  -- NF --   record_payload VERIFIED=318 | envelope_payload VERIFIED=53 | acquisition_id
+             VERIFIED=53 | cohort_ref VERIFIED=53 | envelope_ref VERIFIED=318
+VERDICT: ALL 1603 RECOMPUTED DIGESTS MATCH (profile android-legacy)
 ```
+
+### Exit statuses, documented for automation
+
+| code | meaning |
+| --- | --- |
+| 0 | `VERIFIED` — every digest checked matched |
+| 1 | `MISMATCH` — a digest is present and does not match the bytes it covers |
+| 2 | `UNREADABLE` — unreadable, or no premium section |
+| 3 | `NOTHING_TO_VERIFY` — a premium section with no records and no envelopes |
+| 4 | `INCOMPLETE` — a required binding is absent, so verification could not complete |
+
+Precedence across files and indices: **1 > 4 > 3 > 0**. An older export missing a binding reports
+4, never 1 — absent is not wrong, and only present-and-wrong fails. An empty export is **not**
+0: 13 November has nothing to recompute and must not read like a day that was checked.
+
+**Run it before the eligibility checks**, not after: there is no point scoring an artifact whose
+digests have not been shown to cover its bytes.
+
+```
+python3 -I tools/premium_export_verify.py <export.json>   # integrity first
+python3 -I preflight_export.py <export.json>              # then the R7 capture preflight
+```
+
+The frozen R7 package and the eligibility and scoring rules are untouched.
+
+## Still true, and still worth keeping
+
+- **A tamper is still caught.** Changing one underlying spot value in a disposable copy fails
+  that envelope's `payload_sha256` and its `acquisition_id`, and the six records bound to that
+  acquisition lose their `envelope_ref` — while the other 106 envelopes and all 24 records in the
+  fixture still verify. The Android profile is not a rule that makes everything pass.
+- **A self-reported counter is not verification.** `accounting.envelope_hash_verified` happened
+  to be right here, but it is a number the producer writes about itself; the point of an outside
+  verifier is that it does not have to be believed.
+- **The paired fixtures stay paired.** A known-good JVM artifact sits beside the phone one, so a
+  verifier that failed everything would be caught — which is exactly the failure mode that
+  produced the wrong conclusion above.
+
+## The byte budget, measured as the device stores it
+
+Two things made the earlier measurement understate this: toy clocks (`1000`/`1300` instead of
+13-digit epoch milliseconds), and measuring JVM bytes when the phone stores Android-escaped bytes,
+which are one byte larger per slash. The cap is enforced on **stored** bytes.
+
+**From the real 12 November export, all 107 stored envelopes: 2,012 to 2,021 bytes** against the
+2,048 B cap — the fleet ran on **27 to 36 bytes** of headroom. The largest is BNF 13:45 at
+2,021 B.
+
+Through the real producer with production clocks (`jvm → android stored`):
+
+| configuration | jvm | android | headroom |
+| --- | ---: | ---: | ---: |
+| NF weekly, `map_ref` null | 1,991 | 1,994 | 54 |
+| BNF monthly, `map_ref` null | 2,001 | 2,004 | 44 |
+| NF weekly, `map_ref` a dated path | 2,014 | 2,018 | 30 |
+| BNF monthly, `map_ref` a content reference | 2,031 | 2,034 | **14** |
+| the same plus a vendor timestamp | — | — | **REFUSED BY THE STORE** |
+
+That last line is an overflow **reached on the current build**, with a payload the contract
+accepts. An overflow is not a degraded envelope: `putEnvelope` is refused and, by the fail-closed
+rule, every observation in that slot is dropped — the 8 November incident (`a69bfd0`) again.
+
+### The smallest change that fixes it
+
+`lot.lot_authority_requires` costs **106 bytes** per envelope and has **one distinct value in the
+entire export** — a fixed policy string
+(`RESOLVER_VALIDATED_TABLE_ROW_FOR_THIS_UNDERLYING_EFFECTIVE_AT_THE_SESSION_DATE`) repeated 107
+times, already implied by `production_authority_ref`, which names the per-session authority record
+that the string describes. Moving it onto that record takes the real worst case from 2,021 B to
+about 1,915 B, and the both-additions case to about 1,968 B, with nothing lost. This is the move
+that fixed the same problem before: take content out by reference rather than enlarge the cap.
+
+Not applied here — it changes the envelope shape and therefore every future digest, so it belongs
+in a reviewed next-build change alongside the encoding fix below, not in a verifier patch.
+
+## The app-side fix this points to
+
+The verifier's `android-legacy` profile reads existing exports. It does not remove the cause: the
+contract still delegates to `JSONObject.quote`, so the device and every off-device verifier will
+keep disagreeing by construction.
+
+The fix is the one `Pc2CompactBatch` already made — implement the string rule explicitly instead
+of delegating — together with a serialization tag bump, so that future artifacts are
+self-describing (`hash_basis.serialization` would then select the profile instead of provenance
+having to), and `android-legacy` remains for everything written before it. Prepared as a separate
+reviewed change; it is a next-build item, and the verifier works on today's evidence without it.

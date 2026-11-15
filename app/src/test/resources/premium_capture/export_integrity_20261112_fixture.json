@@ -1,13 +1,13 @@
 {
- "_fixture": "premium_export_integrity_regression_v1",
+ "_fixture": "premium_export_integrity_regression_v2",
  "_provenance": {
   "derived_from": "mr_session_evidence_2026-11-12.json, a real phone export",
-  "note": "the per-index record and envelope COUNTS below are this fixture's, not the whole day's. The full-file figures are recorded in the test and in docs/premium/EXPORT_INTEGRITY_20261115.md.",
+  "encoding": "ANDROID org.json: every \"/\" escaped as \"\\\\/\". The bundle this came from carries 648 such sequences. Verifying it with the reference JVM org.json rule fails every envelope digest; with the Android rule all of them verify.",
   "producer": "Market Radar 2.6.97 / b528 on the phone (brain_version 2.6.97 in that bundle)",
   "source_file_bytes": 1658253,
   "source_file_sha256": "5f399accefabd0dd3f1f1f3bb829bb71fd6ae56a309dfc92db5ac18e6d3444cb",
-  "what_is_kept": "ONLY the premium section objects whose digests this fixture exists to check: every slot envelope, both cohorts, and the records of the first two acquisitions per index. Kept BYTE-FOR-BYTE so the recorded digests still cover exactly the bytes they covered on the phone.",
-  "what_is_removed": "every other part of the phone bundle - Paper positions, trades, the brain parts and the authority/learning ledgers. None of it is covered by the digests under test, and raw phone exports do not belong in the repository."
+  "what_is_kept": "ONLY the premium objects whose digests this fixture checks - every slot envelope, both cohorts, the records of the first two acquisitions per index, and each index's evidence_context, which is the provenance the verifier reads to choose the encoding profile. Kept BYTE-FOR-BYTE.",
+  "what_is_removed": "every other part of the phone bundle - Paper positions, trades, the brain parts and the authority/learning ledgers. None is covered by these digests, and raw phone exports do not belong in the repository."
  },
  "premium": {
   "indices": {
@@ -96,6 +96,16 @@
      "selection_spot": 61164.6,
      "session_date": "2026-11-12",
      "underlying_key": "NSE_INDEX|Nifty Bank"
+    },
+    "evidence_context": {
+     "clock_provenance": "DEVICE_LOCAL_ACQUISITION_RECEIPT_EXCHANGE_EVENT_SEMANTICS_UNVERIFIED",
+     "device_evidence": true,
+     "lot_table_provenance": "CONTRACT_LOT_TABLE:contract_lot_table_v3_20260914",
+     "note": "device evidence does not mean synchronised exchange ticks or executable fills",
+     "quote_provenance": "VENDOR_OPTION_CHAIN_RESPONSE_AS_RECEIVED",
+     "slot_provenance": "DERIVED_FROM_EACH_INDEX_OWN_ACQUISITION_CLOCK",
+     "source_kind": "LIVE_DEVICE_CAPTURE",
+     "synthetic_fields": []
     },
     "records": [
      {
@@ -4375,6 +4385,16 @@
      "selection_spot": 25306.05,
      "session_date": "2026-11-12",
      "underlying_key": "NSE_INDEX|Nifty 50"
+    },
+    "evidence_context": {
+     "clock_provenance": "DEVICE_LOCAL_ACQUISITION_RECEIPT_EXCHANGE_EVENT_SEMANTICS_UNVERIFIED",
+     "device_evidence": true,
+     "lot_table_provenance": "CONTRACT_LOT_TABLE:contract_lot_table_v3_20260914",
+     "note": "device evidence does not mean synchronised exchange ticks or executable fills",
+     "quote_provenance": "VENDOR_OPTION_CHAIN_RESPONSE_AS_RECEIVED",
+     "slot_provenance": "DERIVED_FROM_EACH_INDEX_OWN_ACQUISITION_CLOCK",
+     "source_kind": "LIVE_DEVICE_CAPTURE",
+     "synthetic_fields": []
     },
     "records": [
      {

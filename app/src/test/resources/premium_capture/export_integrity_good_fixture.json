@@ -1,10 +1,11 @@
 {
- "_fixture": "premium_export_integrity_good_v1",
+ "_fixture": "premium_export_integrity_good_v2",
  "_provenance": {
-  "derived_from": "an export produced by the REAL Kotlin pipeline in PremiumFullSessionTest (synthetic quotes, no device)",
+  "derived_from": "an export produced by the REAL Kotlin pipeline in PremiumFullSessionTest",
+  "encoding": "REFERENCE JVM org.json, because this ran on a JVM with org.json:json:20240303, not on Android. Its provenance is synthetic, which is how the verifier selects the desktop profile for it.",
   "source_file_sha256": "89d1b11e3c4d86734784488c2860922f1ccbd4792d0f9461de70d4740bfc1a2a",
   "synthetic": true,
-  "why": "the control for export_integrity_20261112_fixture.json. A verifier that fails everything is worthless, so the suite pins a case that MUST verify, taken from the real producer rather than constructed by the verifier itself."
+  "why": "the control for export_integrity_20261112_fixture.json. A verifier that fails everything proves nothing, and one that passes everything proves less."
  },
  "premium": {
   "indices": {
@@ -82,6 +83,28 @@
      "selection_spot": 24560,
      "session_date": "2026-11-16",
      "underlying_key": "NSE_INDEX|Nifty 50"
+    },
+    "evidence_context": {
+     "clock_provenance": "SYNTHETIC_GENERATED_IN_TEST",
+     "device_evidence": false,
+     "lot_table_provenance": "CONSTRUCTED_TEST_TABLE",
+     "note": "every price in this artifact is synthetic: no phone, no broker and no market data took part. It establishes collection and export coverage only, and counts toward no research session.",
+     "quote_provenance": "DERIVED_FROM_FIXTURE_BY_GENERATOR:contracts/x1_upstox_raw_chains.json:PremiumFullSessionTest.perturb/deterministic-mix-of-date-index-slot",
+     "slot_provenance": "MANUALLY_ASSIGNED_IN_TEST",
+     "source_kind": "SYNTHETIC_PERTURBED_FIXTURE_REPLAY",
+     "synthetic_fields": [
+      "quotes.bid_price",
+      "quotes.ask_price",
+      "quotes.ltp",
+      "underlying_spot_price",
+      "clocks.acquisition_request_ms",
+      "clocks.acquisition_response_ms",
+      "clocks.slot_basis",
+      "slot",
+      "lot.contract_lot_table_ref",
+      "lot.map_ref",
+      "lot.lot_claimed_raw"
+     ]
     },
     "records": [
      {
