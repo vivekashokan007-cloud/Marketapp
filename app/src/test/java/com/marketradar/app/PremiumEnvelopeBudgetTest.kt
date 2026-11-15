@@ -38,17 +38,23 @@ import java.nio.file.Files
  * distinct value in the entire export** — a fixed policy string repeated 107 times, already
  * implied by `production_authority_ref`, which names the per-session authority record the string
  * describes. It now lives on that record as `authority_requires`, and the envelope is v4.
- * Measured through the real producer, before -> after (Android stored bytes):
+ * Measured through the real producer (Android stored bytes), before -> after the constant moved
+ * -> and after the v2 serialization tag, which is 17 bytes longer than v1's:
  *
- *     NF weekly, map_ref null                1,994 -> 1,888   headroom  54 -> 160
- *     BNF monthly, map_ref null              2,004 -> 1,898   headroom  44 -> 150
- *     NF weekly, map_ref a dated path        2,018 -> 1,912   headroom  30 -> 136
- *     BNF monthly, map_ref a content ref     2,034 -> 1,928   headroom  14 -> 120
- *     the same plus a vendor timestamp     REFUSED -> 1,952   headroom  --  ->  96
+ *     NF weekly, map_ref null                1,994 -> 1,888 -> 1,906   headroom  54 -> 142
+ *     BNF monthly, map_ref null              2,004 -> 1,898 -> 1,916   headroom  44 -> 132
+ *     NF weekly, map_ref a dated path        2,018 -> 1,912 -> 1,930   headroom  30 -> 118
+ *     BNF monthly, map_ref a content ref     2,034 -> 1,928 -> 1,946   headroom  14 -> 102
+ *     the same plus a vendor timestamp     REFUSED -> 1,952 -> 1,974   headroom  --  ->  74
  *
- * 106 bytes recovered per envelope, exactly the size of the constant that moved, and the payload
- * that could not be stored now stores with 96 bytes to spare. v3 envelopes stay supported, so an
- * in-place upgrade does not orphan evidence already on the phone.
+ * 106 bytes recovered per envelope, exactly the size of the constant that moved; 17 given back to
+ * the longer tag, which is what makes a stored body say which rule hashed it. The payload that
+ * could not be stored at all now stores with 74 bytes to spare. v3 envelopes and v1 digests both
+ * stay supported, so an in-place upgrade does not orphan evidence already on the phone.
+ *
+ * The CAP is enforced on `JSONObject.toString()` bytes, which Android escapes its own way — the
+ * canonical encoding governs digests, not stored size, so moving to v2 changes nothing here
+ * beyond the length of the tag itself.
  */
 class PremiumEnvelopeBudgetTest {
 

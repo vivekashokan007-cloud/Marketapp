@@ -156,10 +156,23 @@ about 1,915 B, and the both-additions case to about 1,968 B, with nothing lost. 
 that fixed the same problem before: take content out by reference rather than enlarge the cap.
 
 **Applied** on `review/claude-premium-evidence-20261115`: the constant now lives on the authority
-record as `authority_requires`, the envelope is `mr.premium_slot_envelope.v4`, v3 stays supported,
-and the payload the store refused outright now stores at 1,952 B with 96 B to spare. Measured
-through the real producer, 106 B recovered per envelope — exactly the size of the constant that
-moved. Next-build, so Monday's capture still runs on the installed b530.
+record as `authority_requires`, the envelope is `mr.premium_slot_envelope.v4`, and v3 stays
+supported. Measured through the real producer, before → after the constant moved → after the v2
+serialization tag, which is 17 B longer than v1's (Android stored bytes, 2,048 B cap):
+
+| case | before | constant moved | with the v2 tag | headroom |
+| --- | ---: | ---: | ---: | ---: |
+| NF weekly, `map_ref` null | 1,994 | 1,888 | **1,906** | 142 |
+| BNF monthly, `map_ref` null | 2,004 | 1,898 | **1,916** | 132 |
+| NF weekly, `map_ref` a dated path | 2,018 | 1,912 | **1,930** | 118 |
+| BNF monthly, `map_ref` a content reference | 2,034 | 1,928 | **1,946** | 102 |
+| the same plus a vendor timestamp | **REFUSED** | 1,952 | **1,974** | 74 |
+
+106 B recovered, 17 given back to the longer tag — which is what makes a stored body state the
+rule that hashed it. The payload the store refused outright now stores with 74 B to spare, and
+the largest body the coordinator writes is 1,908 B against the 2,048 B cap. The cap is enforced on
+`JSONObject.toString()` bytes, so the canonical encoding governs digests, not stored size. All of
+this is next-build: Monday's capture runs on the installed b530.
 
 ## The app-side fix, applied
 
