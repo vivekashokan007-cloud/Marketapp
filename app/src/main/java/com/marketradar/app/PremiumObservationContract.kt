@@ -47,7 +47,24 @@ object PremiumObservationContract {
      * measurement.
      */
     const val RECORD_VERSION = "mr.premium_observation.v4"
-    const val ENVELOPE_VERSION = "mr.premium_slot_envelope.v3"
+    const val ENVELOPE_VERSION = "mr.premium_slot_envelope.v4"
+
+    /**
+     * What a PRODUCTION lot authority claim requires. A constant of this contract, not per-slot
+     * data: it was identical in all 107 envelopes of the 12 November export.
+     *
+     * It used to be carried inside every envelope's `lot` block at 106 bytes each, which the
+     * envelope could not afford -- measured at 2,012-2,021 B against the 2,048 B cap, and a
+     * supported payload (a content `map_ref` plus a vendor timestamp) was refused outright, which
+     * drops every observation in the slot. It is now recorded ONCE per index/session on the lot
+     * authority record that `production_authority_ref` already names, which is the same move that
+     * took the authority itself out of the envelope in `a69bfd0`. Nothing is lost: the envelope
+     * still states the per-slot facts (`lot_status`, `lot_authoritative_resolved`,
+     * `lot_resolution`), and the requirement is a property of the contract version the envelope
+     * declares.
+     */
+    const val LOT_AUTHORITY_REQUIRES =
+        "RESOLVER_VALIDATED_TABLE_ROW_FOR_THIS_UNDERLYING_EFFECTIVE_AT_THE_SESSION_DATE"
     const val CANONICAL_SERIALIZATION = "json_sorted_keys_compact_utf8_v1"
 
     /**
@@ -339,8 +356,10 @@ object PremiumObservationContract {
             .put("lot_status", "PRODUCER_CLAIM_UNRESOLVED")
             .put("lot_authoritative_resolved", false)
             .put("lot_resolution", LOT_UNRESOLVED_NO_METADATA)
-            .put("lot_authority_requires",
-                "RESOLVER_VALIDATED_TABLE_ROW_FOR_THIS_UNDERLYING_EFFECTIVE_AT_THE_SESSION_DATE")
+            // `lot_authority_requires` is NOT here: it is a contract constant
+            // ([LOT_AUTHORITY_REQUIRES]) recorded once on the authority record that
+            // `production_authority_ref` names, because 106 bytes per slot is more than the
+            // envelope's remaining headroom.
             .put("contract_lot_table_ref", if (ref.isEmpty()) JSONObject.NULL else ref)
             .put("map_ref", mapRef ?: JSONObject.NULL)
             /*
@@ -682,7 +701,16 @@ object PremiumObservationContract {
      * identity contracts was not supported by the exporter. These sets are what make it true.
      */
     val SUPPORTED_RECORD_VERSIONS = setOf(RECORD_VERSION)
-    val SUPPORTED_ENVELOPE_VERSIONS = setOf(ENVELOPE_VERSION)
+
+    /**
+     * v3 stays supported beside v4. v4 differs only by NOT carrying the
+     * `lot_authority_requires` constant, so an envelope stored before the upgrade is still
+     * complete, still verifies its own digest, and must still export -- an in-place upgrade may
+     * not orphan evidence that is already on the phone.
+     */
+    const val ENVELOPE_VERSION_V3_WITH_INLINE_AUTHORITY_REQUIREMENT = "mr.premium_slot_envelope.v3"
+    val SUPPORTED_ENVELOPE_VERSIONS =
+        setOf(ENVELOPE_VERSION, ENVELOPE_VERSION_V3_WITH_INLINE_AUTHORITY_REQUIREMENT)
 
     /** The five evidence fields, lifted back out of a stored record for re-digesting. */
     val EVIDENCE_FIELDS = listOf("instrument_key", "outcome", "identity", "iv", "bbo")

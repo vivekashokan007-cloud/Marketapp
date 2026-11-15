@@ -3,7 +3,7 @@
   "generator": "tools/premium_capture_vectors.py",
   "mirrored_constants": {
     "cohort_rule_version": "premium_capture_cohort_v2_three_paired_strikes_validated",
-    "envelope_version": "mr.premium_slot_envelope.v3",
+    "envelope_version": "mr.premium_slot_envelope.v4",
     "hash_omitted_field": "payload_sha256",
     "non_finite_nan": "NON_FINITE_NAN",
     "record_version": "mr.premium_observation.v4",

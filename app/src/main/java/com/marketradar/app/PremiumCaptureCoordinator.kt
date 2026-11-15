@@ -219,6 +219,9 @@ object PremiumCaptureCoordinator {
             // the authority is a per-index/session fact: recorded ONCE and referenced by content
             // from each slot, so the per-slot envelope stays inside the 2 KiB cap
             val authority = lot.getJSONObject("production_authority")
+                // the requirement the authority has to satisfy, recorded ONCE here instead of in
+                // every slot envelope, which could not afford its 106 bytes
+                .put("authority_requires", PremiumObservationContract.LOT_AUTHORITY_REQUIRES)
             val authorityWrite = store.putLotAuthority(index, sessionDate, authority)
             val authorityRef = if (authorityWrite.persisted)
                 PremiumObservationContract.ref(

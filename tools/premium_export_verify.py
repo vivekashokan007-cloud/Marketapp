@@ -30,6 +30,10 @@ EXIT STATUS (documented, so automation can branch on it)
   2  UNREADABLE         the file could not be read, or carries no premium section
   3  NOTHING_TO_VERIFY  a premium section with no records and no envelopes: nothing to recompute
   4  INCOMPLETE         a required binding is absent, so verification could not be completed
+  5  PROFILE_UNUSABLE   the artifact's own encoding declarations conflict, or name a rule this
+                        verifier does not implement, and no profile was given explicitly. Nothing
+                        is recomputed: guessing a rule would invent the verdict. Rerun with
+                        --profile only if you know which rule produced the bytes.
 
 Precedence when a run covers several files or indices: 1 beats 4 beats 3 beats 0. An older export
 missing a binding reports 4, never 1: absent is not wrong. Only present-and-wrong is a failure.
@@ -89,6 +93,10 @@ def _quote_android_legacy(value):
     out.append('"')
     return ''.join(out)
 
+
+QUOTE_DECL_ANDROID = 'ANDROID_ORG_JSON_SLASH_ESCAPED'
+QUOTE_DECL_REFERENCE = 'REFERENCE_ORG_JSON_SLASH_BARE'
+QUOTE_DECLARATIONS = (QUOTE_DECL_ANDROID, QUOTE_DECL_REFERENCE)
 
 PROFILE_DESKTOP = 'desktop'
 PROFILE_ANDROID = 'android-legacy'
@@ -175,7 +183,7 @@ def choose_profile(sec, explicit=None):
     wins, and the decision is reported either way rather than assumed.
     """
     if explicit:
-        return explicit, 'explicitly requested'
+        return explicit, 'explicitly requested', None
     # PREFERRED: the export states which org.json escaped its strings, measured on the runtime
     # that did it (PremiumObservationContract.quoteImplementation). That is a fact about the
     # producer rather than an inference from provenance, so it wins when present.
@@ -185,14 +193,23 @@ def choose_profile(sec, explicit=None):
             declared.add(blk['canonical_quote_impl'])
     if len(declared) == 1:
         d = declared.pop()
-        if d == 'ANDROID_ORG_JSON_SLASH_ESCAPED':
-            return PROFILE_ANDROID, 'the export states %s' % d
-        if d == 'REFERENCE_ORG_JSON_SLASH_BARE':
-            return PROFILE_DESKTOP, 'the export states %s' % d
-        return PROFILE_ANDROID, 'the export states an unrecognised quoter (%s)' % d
+        if d == QUOTE_DECL_ANDROID:
+            return PROFILE_ANDROID, 'the export states %s' % d, None
+        if d == QUOTE_DECL_REFERENCE:
+            return PROFILE_DESKTOP, 'the export states %s' % d, None
+        # An UNSUPPORTED declaration is not a licence to guess. The artifact says it was escaped
+        # by something this verifier does not implement, so recomputing under either rule would
+        # be inventing a verdict.
+        return None, ('the export declares an unsupported quoter (%s); this verifier implements '
+                      '%s only' % (d, ' and '.join(sorted(QUOTE_DECLARATIONS)))), \
+            'UNSUPPORTED_DECLARATION'
     if len(declared) > 1:
-        return PROFILE_ANDROID, ('the indices state DIFFERENT quoters (%s); the artifact should '
-                                 'be split' % ', '.join(sorted(declared)))
+        # CONTRADICTORY declarations. One profile is applied to the whole artifact, so an artifact
+        # that declares two cannot be verified as one; previously this warned and then picked
+        # Android, which could exit 0 on a file whose own declarations disagree.
+        return None, ('the indices declare DIFFERENT quoters (%s); one profile applies to a whole '
+                      'artifact, so this one cannot be verified as a whole and should be split'
+                      % ', '.join(sorted(declared))), 'CONFLICTING_DECLARATIONS'
     kinds = set()
     for blk in (sec.get('indices') or {}).values():
         if not isinstance(blk, dict):
@@ -204,13 +221,17 @@ def choose_profile(sec, explicit=None):
     if isinstance(sec.get('source_kind'), str) and sec['source_kind']:
         kinds.add(sec['source_kind'])
     if kinds == {'LIVE_DEVICE_CAPTURE'}:
-        return PROFILE_ANDROID, 'provenance: LIVE_DEVICE_CAPTURE, so Android\'s org.json'
+        return PROFILE_ANDROID, 'provenance: LIVE_DEVICE_CAPTURE, so Android\'s org.json', None
     if kinds and 'LIVE_DEVICE_CAPTURE' not in kinds:
-        return PROFILE_DESKTOP, 'provenance: %s, so a JVM run' % ', '.join(sorted(kinds))
+        return PROFILE_DESKTOP, 'provenance: %s, so a JVM run' % ', '.join(sorted(kinds)), None
     if kinds:
-        return PROFILE_ANDROID, ('provenance is MIXED (%s); the device rule is assumed and the '
-                                 'artifact should be split' % ', '.join(sorted(kinds)))
-    return PROFILE_ANDROID, 'NO PROVENANCE in the artifact; the device rule is assumed'
+        return None, ('provenance is MIXED (%s); the artifact should be split or a profile given '
+                      'explicitly' % ', '.join(sorted(kinds))), 'CONFLICTING_PROVENANCE'
+    # No declaration and no provenance: a legacy artifact. The device rule is the one that
+    # produced every phone export, so it is used -- and said out loud, because it is an
+    # assumption. b530 and earlier predate the declaration, which is exactly this case.
+    return PROFILE_ANDROID, ('NO declaration and NO provenance (a pre-declaration build); the '
+                             'device rule is assumed -- pass --profile to be explicit'), None
 
 
 def verify_index(ix, blk, profile=PROFILE_ANDROID):
@@ -272,8 +293,14 @@ def report(path, max_examples=4, explicit_profile=None):
         say.append('NO PREMIUM SECTION: nothing to verify in this file.')
         return say, 2
 
-    profile, why = choose_profile(sec, explicit_profile)
+    profile, why, unusable = choose_profile(sec, explicit_profile)
     say.append('section state    %s' % sec.get('state'))
+    if unusable:
+        say.append('encoding profile UNUSABLE   (%s)' % why)
+        say.append('')
+        say.append('VERDICT: PROFILE UNUSABLE (%s) - nothing was recomputed. Rerun with '
+                   '--profile only if you know which rule produced these bytes.' % unusable)
+        return say, 5
     say.append('encoding profile %s   (%s)' % (profile, why))
     worst = 0
     checked = 0
@@ -352,7 +379,7 @@ def report(path, max_examples=4, explicit_profile=None):
 
 def _rank(code):
     """Exit precedence: a mismatch outranks an incomplete run, which outranks an empty one."""
-    return {0: 0, 3: 1, 4: 2, 2: 3, 1: 4}.get(code, 0)
+    return {0: 0, 3: 1, 4: 2, 5: 3, 2: 4, 1: 5}.get(code, 0)
 
 
 def main(argv=None):

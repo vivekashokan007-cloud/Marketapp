@@ -103,24 +103,85 @@ class EncodingProfiles(unittest.TestCase):
                                ('REFERENCE_ORG_JSON_SLASH_BARE', V.PROFILE_DESKTOP)):
             sec = {'indices': {'NF': {'canonical_quote_impl': declared,
                                       'evidence_context': {'source_kind': 'LIVE_DEVICE_CAPTURE'}}}}
-            prof, why = V.choose_profile(sec)
+            prof, why, unusable = V.choose_profile(sec)
             self.assertEqual(want, prof, declared)
             self.assertIn(declared, why)
-        # indices that disagree are reported rather than silently resolved
-        sec = {'indices': {'NF': {'canonical_quote_impl': 'ANDROID_ORG_JSON_SLASH_ESCAPED'},
-                           'BNF': {'canonical_quote_impl': 'REFERENCE_ORG_JSON_SLASH_BARE'}}}
-        self.assertIn('DIFFERENT quoters', V.choose_profile(sec)[1])
+            self.assertIsNone(unusable)
 
     def test_the_profile_is_chosen_from_provenance_and_reported(self):
-        prof, why = V.choose_profile(V.premium_section(load(NOV12)))
+        prof, why, unusable = V.choose_profile(V.premium_section(load(NOV12)))
         self.assertEqual(V.PROFILE_ANDROID, prof)
         self.assertIn('LIVE_DEVICE_CAPTURE', why)
-        prof, why = V.choose_profile(V.premium_section(load(GOOD)))
+        self.assertIsNone(unusable)
+        prof, why, _ = V.choose_profile(V.premium_section(load(GOOD)))
         self.assertEqual(V.PROFILE_DESKTOP, prof)
         self.assertIn('JVM', why)
         # and an explicit request always wins over the provenance
-        self.assertEqual((V.PROFILE_DESKTOP, 'explicitly requested'),
+        self.assertEqual((V.PROFILE_DESKTOP, 'explicitly requested', None),
                          V.choose_profile(V.premium_section(load(NOV12)), V.PROFILE_DESKTOP))
+
+
+class UnusableDeclarations(unittest.TestCase):
+    """An artifact that cannot say which rule escaped it must not be verified under a guess.
+
+    The first version of this warned and then picked Android, so a file whose own declarations
+    disagreed could still exit 0. One profile applies to a whole artifact, so two declarations
+    mean it cannot be verified as one.
+    """
+
+    def _with_declarations(self, **by_index):
+        doc = copy.deepcopy(load(NOV12))
+        for ix, decl in by_index.items():
+            doc['premium']['indices'][ix]['canonical_quote_impl'] = decl
+        return write_temp(doc)
+
+    def test_conflicting_declarations_are_a_distinct_nonzero_and_recompute_nothing(self):
+        p = self._with_declarations(NF=V.QUOTE_DECL_ANDROID, BNF=V.QUOTE_DECL_REFERENCE)
+        try:
+            lines, rc = V.report(p)
+            self.assertEqual(5, rc)
+            self.assertIn('CONFLICTING_DECLARATIONS', lines[-1])
+            self.assertIn('nothing was recomputed', lines[-1])
+            self.assertFalse(any('VERIFIED=' in x for x in lines),
+                             'no digest may be reported as checked when the rule is unknown')
+        finally:
+            os.unlink(p)
+
+    def test_an_unsupported_declaration_is_the_same_distinct_nonzero(self):
+        p = self._with_declarations(NF='SOME_FUTURE_QUOTER_V9', BNF='SOME_FUTURE_QUOTER_V9')
+        try:
+            lines, rc = V.report(p)
+            self.assertEqual(5, rc)
+            self.assertIn('UNSUPPORTED_DECLARATION', lines[-1])
+        finally:
+            os.unlink(p)
+
+    def test_an_explicit_profile_still_verifies_a_conflicting_artifact(self):
+        """Explicit selection stays available for known legacy artifacts: the operator asserts
+        the rule, which is exactly the b530 case -- that build predates the declaration."""
+        p = self._with_declarations(NF=V.QUOTE_DECL_ANDROID, BNF=V.QUOTE_DECL_REFERENCE)
+        try:
+            lines, rc = V.report(p, explicit_profile=V.PROFILE_ANDROID)
+            self.assertEqual(0, rc)
+            self.assertIn('ALL 369', lines[-1])   # this bounded fixture's count
+        finally:
+            os.unlink(p)
+
+    def test_a_pre_declaration_export_is_verified_and_the_assumption_is_stated(self):
+        """b530 and earlier carry no declaration. Provenance still selects the device rule, and
+        the report says it is an assumption rather than presenting it as a fact."""
+        doc = copy.deepcopy(load(NOV12))
+        for blk in doc['premium']['indices'].values():
+            blk.pop('canonical_quote_impl', None)
+            blk.pop('evidence_context', None)
+        p = write_temp(doc)
+        try:
+            lines, rc = V.report(p)
+            self.assertEqual(0, rc)
+            self.assertTrue(any('NO declaration and NO provenance' in x for x in lines))
+            self.assertTrue(any('assumed' in x for x in lines))
+        finally:
+            os.unlink(p)
 
 
 class RealArtifacts(unittest.TestCase):

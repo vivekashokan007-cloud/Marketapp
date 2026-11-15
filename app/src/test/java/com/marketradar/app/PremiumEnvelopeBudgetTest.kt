@@ -23,40 +23,42 @@ import java.nio.file.Files
  * 2,012 to **2,021 bytes** against the 2,048 B cap — so the production fleet runs on **27 to 36
  * bytes** of headroom, not the 37–75 the first version reported.
  *
- * AND A SUPPORTED PAYLOAD ALREADY OVERFLOWS IT. Taking that same largest envelope:
+ * AND A SUPPORTED PAYLOAD OVERFLOWED IT, which is now fixed. Before the change, taking that
+ * largest envelope:
  *
  *     map_ref resolved to a 32-hex content reference   +30 B  ->  2,051 B   over by 3
  *     a vendor timestamp supplied                      +23 B  ->  2,044 B   4 B left
  *     both                                             +53 B  ->  2,074 B   over by 26
  *
- * Both are things the contract accepts and the field will eventually produce. An overflow is not
- * a degraded envelope: `putEnvelope` is refused and, by the fail-closed rule, **every observation
- * in that slot is dropped** — the 8 November incident (`a69bfd0`) exactly.
+ * Both are things the contract accepts, and the store refused the pair outright. An overflow is
+ * not a degraded envelope: `putEnvelope` is refused and, by the fail-closed rule, **every
+ * observation in that slot is dropped** — the 8 November incident (`a69bfd0`) exactly.
  *
- * MEASURED HERE, through the real producer with those clocks (`jvm` -> `android stored`):
+ * THE FIX, APPLIED: `lot.lot_authority_requires` cost **106 bytes** per envelope and had **one
+ * distinct value in the entire export** — a fixed policy string repeated 107 times, already
+ * implied by `production_authority_ref`, which names the per-session authority record the string
+ * describes. It now lives on that record as `authority_requires`, and the envelope is v4.
+ * Measured through the real producer, before -> after (Android stored bytes):
  *
- *     NF weekly, map_ref null                1,991 -> 1,994   headroom 54
- *     BNF monthly, map_ref null              2,001 -> 2,004   headroom 44
- *     NF weekly, map_ref a dated path        2,014 -> 2,018   headroom 30
- *     BNF monthly, map_ref a content ref     2,031 -> 2,034   headroom 14
- *     the same plus a vendor timestamp              REFUSED BY THE STORE
+ *     NF weekly, map_ref null                1,994 -> 1,888   headroom  54 -> 160
+ *     BNF monthly, map_ref null              2,004 -> 1,898   headroom  44 -> 150
+ *     NF weekly, map_ref a dated path        2,018 -> 1,912   headroom  30 -> 136
+ *     BNF monthly, map_ref a content ref     2,034 -> 1,928   headroom  14 -> 120
+ *     the same plus a vendor timestamp     REFUSED -> 1,952   headroom  --  ->  96
  *
- * The last line is the overflow reached on the CURRENT build, not a projection. Note also that
- * these fixture envelopes are ~27 B smaller than the field's, so the floor below is calibrated
- * conservatively: the field runs tighter than this suite measures, and the refusal case above is
- * the guard that does not depend on that calibration.
- *
- * THE SMALLEST FIX, measured: `lot.lot_authority_requires` costs **106 bytes** per envelope and
- * has **one distinct value in the entire export** — a fixed policy string repeated 107 times,
- * already implied by `production_authority_ref`, which points at the per-session authority record
- * that the string describes. Moving it there takes the worst case to ~1,915 B and the
- * both-additions case to ~1,968 B, with no information lost. That is the same move that fixed
- * this before: take content out by reference rather than enlarge the cap.
+ * 106 bytes recovered per envelope, exactly the size of the constant that moved, and the payload
+ * that could not be stored now stores with 96 bytes to spare. v3 envelopes stay supported, so an
+ * in-place upgrade does not orphan evidence already on the phone.
  */
 class PremiumEnvelopeBudgetTest {
 
-    /** Measured stored sizes leave as little as 27 B, so the floor sits below that with margin. */
-    private val requiredHeadroomBytes = 16
+    /**
+     * The produced worst case now leaves 136 B (it left 30 before the constant moved), so the
+     * floor is raised to 64: comfortably under today's margin, comfortably over the 27 B the
+     * fleet was running on, and tight enough that the next field added to the envelope has to
+     * be justified rather than just fitted.
+     */
+    private val requiredHeadroomBytes = 64
 
     private fun rawFixture(id: String): JSONObject {
         val text = requireNotNull(
@@ -189,6 +191,139 @@ class PremiumEnvelopeBudgetTest {
                 "would not have noticed",
                 n <= PremiumCaptureStore.MAX_BYTES_PER_RECORD)
         }
+    }
+
+    // ───────────── the overflow, resolved on the real store path ─────────────
+
+    /**
+     * THE FIX, PROVEN. The payload that was refused before — BANKNIFTY monthly with `map_ref` as
+     * a content reference AND a vendor timestamp — now writes through the production path, with
+     * headroom, because `lot_authority_requires` is no longer carried per slot.
+     *
+     * Measured after the change (`jvm -> android stored`):
+     *
+     *     NF weekly, map_ref null                1,885 -> 1,888   headroom 160
+     *     BNF monthly, map_ref null              1,895 -> 1,898   headroom 150
+     *     NF weekly, map_ref a dated path        1,908 -> 1,912   headroom 136
+     *     BNF monthly, map_ref a content ref     1,925 -> 1,928   headroom 120
+     *     the same plus a vendor timestamp       1,949 -> 1,952   headroom  96  (was REFUSED)
+     *
+     * 106 bytes recovered per envelope, exactly the size of the constant that moved.
+     */
+    @Test
+    fun theLargestSupportedPayloadNowWritesThroughTheProductionPathWithHeadroom() {
+        for (index in listOf("NF", "BNF")) {
+            val lotRef = if (index == "NF") weeklyLotRef else monthlyLotRef
+            val e = envelope(lotRef + "/revision_2", hex32, hex32,
+                vendorTs = "2026-11-12T13:45:00+05:30", index = index)
+            assertTrue("$index: the largest supported payload must persist, not be refused",
+                e != null)
+            val n = androidStoredBytes(e!!)
+            val headroom = PremiumCaptureStore.MAX_BYTES_PER_RECORD - n
+            assertTrue("$index: $n B as Android stores it, only $headroom B left",
+                headroom >= 48)
+            assertTrue("$index: and it must verify its own digest",
+                PremiumObservationContract.verifyHash(e))
+            assertTrue("$index: the constant must be gone from the per-slot lot block",
+                !e.getJSONObject("lot").has("lot_authority_requires"))
+        }
+    }
+
+    /**
+     * And the authority it points at is still resolvable. The requirement moved onto that record,
+     * so it is still in the artifact — once per index/session instead of once per slot — and the
+     * envelope's content reference must still match the record the export resolves.
+     */
+    @Test
+    fun theAuthorityRecordStaysResolvableAndCarriesTheRequirement() {
+        val filesDir = Files.createTempDirectory("premcap-authority").toFile()
+        PremiumCaptureControl.setEnabled(filesDir, true)
+        PremiumCaptureWorker.resetForTest()
+        try {
+            val acqs = listOf("NF", "BNF").map { ix ->
+                val sn = rawFixture(if (ix == "NF") "mon_0920_entry_NF" else "mon_0920_entry_BNF")
+                PremiumCaptureCoordinator.ChainAcquisition(
+                    index = ix, rawChain = sn.getJSONObject("raw"),
+                    requestStartedMs = requestMs, responseReceivedMs = responseMs,
+                    requestedUnderlyingKey = PremiumCaptureCohort.INDEX_UNDERLYING[ix],
+                    expiry = "2026-10-27", receiptHhmm = "09:20")
+            }
+            PremiumCaptureCoordinator.onChainsAcquired(filesDir, "2026-10-19", "09:20", acqs,
+                PremiumCaptureCoordinator.PREPARE_BUDGET_MS_PER_POLL)
+            assertTrue(PremiumCaptureWorker.awaitIdle(30_000L))
+
+            val store = PremiumCaptureStore(PremiumCaptureControl.root(filesDir))
+            for (ix in listOf("NF", "BNF")) {
+                val auth = store.readLotAuthority(ix, "2026-10-19")
+                assertTrue("$ix: the authority record must exist", auth != null)
+                assertEquals("$ix: and must now carry the requirement that left the envelope",
+                    PremiumObservationContract.LOT_AUTHORITY_REQUIRES,
+                    auth!!.getString("authority_requires"))
+                val env = store.readEnvelopes(ix, "2026-10-19").first()
+                assertEquals("$ix: the envelope's reference must still resolve to that record",
+                    PremiumObservationContract.ref(PremiumObservationContract.contentHash(auth)),
+                    env.getJSONObject("lot").getString("production_authority_ref"))
+            }
+            // and the export resolves it, matching reference to record
+            val sec = PremiumExportSection.build(filesDir, "2026-10-19")
+            for (ix in listOf("NF", "BNF")) {
+                val pa = sec.getJSONObject("indices").getJSONObject(ix)
+                    .getJSONObject("references").getJSONObject("production_lot_authority")
+                assertTrue("$ix: the export must record the authority", pa.getBoolean("recorded"))
+                assertTrue("$ix: and the envelopes' reference must match it",
+                    pa.getBoolean("reference_matches_record"))
+                assertEquals("$ix: the requirement must be resolvable from the export",
+                    PremiumObservationContract.LOT_AUTHORITY_REQUIRES,
+                    pa.getJSONObject("authority").getString("authority_requires"))
+            }
+        } finally {
+            PremiumCaptureWorker.resetForTest()
+        }
+    }
+
+    /**
+     * An in-place upgrade must not orphan evidence already on the phone. A v3 envelope — the
+     * shape that carried the constant inline — still verifies its own digest and is still a
+     * supported version, so it continues to export.
+     */
+    @Test
+    fun anEnvelopeStoredBeforeTheUpgradeStillVerifiesAndIsStillSupported() {
+        assertTrue("v4 is what new envelopes declare",
+            PremiumObservationContract.ENVELOPE_VERSION.endsWith(".v4"))
+        assertTrue("and v3 must stay supported",
+            PremiumObservationContract.SUPPORTED_ENVELOPE_VERSIONS.contains(
+                PremiumObservationContract.ENVELOPE_VERSION_V3_WITH_INLINE_AUTHORITY_REQUIREMENT))
+        // a v3-shaped envelope: the v4 body, plus the inline constant, restamped as v3
+        val v4 = envelope(weeklyLotRef, null, hex32)!!
+        val v3 = JSONObject(v4.toString())
+            .put("record_version",
+                PremiumObservationContract.ENVELOPE_VERSION_V3_WITH_INLINE_AUTHORITY_REQUIREMENT)
+        v3.getJSONObject("lot").put("lot_authority_requires",
+            PremiumObservationContract.LOT_AUTHORITY_REQUIRES)
+        PremiumObservationContract.stampHash(v3)
+        assertTrue("a v3 envelope must still verify its own digest",
+            PremiumObservationContract.verifyHash(v3))
+        assertTrue("and still carry the constant it was stored with",
+            v3.getJSONObject("lot").has("lot_authority_requires"))
+    }
+
+    /**
+     * The cap still refuses oversized input with an exact reason. Slimming the envelope must not
+     * have softened the admission gate: a record genuinely over the per-record cap is refused,
+     * and the refusal names the kind, the size and the cap rather than failing vaguely.
+     */
+    @Test
+    fun oversizedInputIsStillRefusedWithAnExactDiagnostic() {
+        val filesDir = Files.createTempDirectory("premcap-oversize").toFile()
+        val store = PremiumCaptureStore(PremiumCaptureControl.root(filesDir).apply { mkdirs() })
+        val fat = JSONObject().put("pad", "x".repeat(4096))
+        val r = store.put("NF", "2026-10-19", "k1", fat)
+        assertEquals(PremiumCaptureStore.REFUSED_RECORD_TOO_LARGE, r.status)
+        val d = r.detail ?: ""
+        assertTrue("the refusal must name the size: $d",
+            d.contains("${PremiumCaptureStore.MAX_BYTES_PER_RECORD}"))
+        assertTrue("and must say it was neither truncated nor split: $d",
+            d.contains("not truncated") && d.contains("not split"))
     }
 
     // ───────────────────────── JSON null in the hashed body ─────────────────────────
