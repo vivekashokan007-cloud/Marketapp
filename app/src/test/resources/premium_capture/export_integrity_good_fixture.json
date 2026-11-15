@@ -1,0 +1,576 @@
+{
+ "_fixture": "premium_export_integrity_good_v1",
+ "_provenance": {
+  "derived_from": "an export produced by the REAL Kotlin pipeline in PremiumFullSessionTest (synthetic quotes, no device)",
+  "source_file_sha256": "89d1b11e3c4d86734784488c2860922f1ccbd4792d0f9461de70d4740bfc1a2a",
+  "synthetic": true,
+  "why": "the control for export_integrity_20261112_fixture.json. A verifier that fails everything is worthless, so the suite pins a case that MUST verify, taken from the real producer rather than constructed by the verifier itself."
+ },
+ "premium": {
+  "indices": {
+   "NF": {
+    "cohort": {
+     "cohort_id": "2026-11-16|NF|54fbde92ec88a9c0b3fa1ce49e475b68",
+     "cohort_rule_version": "premium_capture_cohort_v2_three_paired_strikes_validated",
+     "contracts_expected": 6,
+     "expiry": "2026-10-27",
+     "hash_basis": {
+      "authenticates": "RECORDED_BYTES_AND_IDENTITY_ONLY",
+      "authenticates_vendor_truth": false,
+      "omitted_field": "payload_sha256",
+      "serialization": "json_sorted_keys_compact_utf8_v1"
+     },
+     "index": "NF",
+     "paired_strikes": [
+      24500,
+      24550,
+      24600
+     ],
+     "payload_sha256": "6e35d337a5a420e621de80e695c25f0efea7881a9319881331ba82cfdb1de549",
+     "pinned_contracts": [
+      {
+       "expiry": "2026-10-27",
+       "index": "NF",
+       "instrument_key": "NSE_FO|51020",
+       "option_type": "CE",
+       "strike": 24500,
+       "underlying_key": "NSE_INDEX|Nifty 50"
+      },
+      {
+       "expiry": "2026-10-27",
+       "index": "NF",
+       "instrument_key": "NSE_FO|51021",
+       "option_type": "PE",
+       "strike": 24500,
+       "underlying_key": "NSE_INDEX|Nifty 50"
+      },
+      {
+       "expiry": "2026-10-27",
+       "index": "NF",
+       "instrument_key": "NSE_FO|51022",
+       "option_type": "CE",
+       "strike": 24550,
+       "underlying_key": "NSE_INDEX|Nifty 50"
+      },
+      {
+       "expiry": "2026-10-27",
+       "index": "NF",
+       "instrument_key": "NSE_FO|51023",
+       "option_type": "PE",
+       "strike": 24550,
+       "underlying_key": "NSE_INDEX|Nifty 50"
+      },
+      {
+       "expiry": "2026-10-27",
+       "index": "NF",
+       "instrument_key": "NSE_FO|51024",
+       "option_type": "CE",
+       "strike": 24600,
+       "underlying_key": "NSE_INDEX|Nifty 50"
+      },
+      {
+       "expiry": "2026-10-27",
+       "index": "NF",
+       "instrument_key": "NSE_FO|51025",
+       "option_type": "PE",
+       "strike": 24600,
+       "underlying_key": "NSE_INDEX|Nifty 50"
+      }
+     ],
+     "selection_basis": "THREE_STRIKES_NEAREST_THIS_RESPONSE_SPOT_WITH_BOTH_LEGS",
+     "selection_slot": "09:20",
+     "selection_spot": 24560,
+     "session_date": "2026-11-16",
+     "underlying_key": "NSE_INDEX|Nifty 50"
+    },
+    "records": [
+     {
+      "acquisition_id": "675116a8e06033db4a290c053c988626",
+      "bbo": {
+       "ask_qty_raw": {
+        "raw": 975,
+        "status": "PRESENT_VALID"
+       },
+       "ask_raw": {
+        "raw": 99.4,
+        "status": "PRESENT_VALID"
+       },
+       "bid_qty_raw": {
+        "raw": 975,
+        "status": "PRESENT_VALID"
+       },
+       "bid_raw": {
+        "raw": 98.4,
+        "status": "PRESENT_VALID"
+       },
+       "book_status": "TWO_SIDED",
+       "executable_mid_computed": false,
+       "ltp_raw": {
+        "raw": 98.9,
+        "status": "PRESENT_VALID"
+       },
+       "ltp_used_as_quote_fallback": false,
+       "quantity_unit_status": "UNKNOWN"
+      },
+      "cohort_ref": "a99ca8513f7782fd6ac6c741208623bd",
+      "envelope_join": "session_date+index+slot+acquisition_id",
+      "envelope_ref": "e8feaca4a49601df27a5b91595436c91",
+      "hash_basis": {
+       "authenticates": "RECORDED_BYTES_AND_IDENTITY_ONLY",
+       "authenticates_vendor_truth": false,
+       "omitted_field": "payload_sha256",
+       "serialization": "json_sorted_keys_compact_utf8_v1"
+      },
+      "identity": {
+       "identity_disagreements": [],
+       "identity_evidence_missing": [],
+       "identity_verified": true,
+       "observed_strike_raw": {
+        "raw": 24550,
+        "status": "PRESENT_VALID"
+       },
+       "pinned_resolves_via": "cohort.pinned_contracts[instrument_key]"
+      },
+      "index": "NF",
+      "instrument_key": "NSE_FO|51023",
+      "iv": {
+       "iv_authoritative_resolved": false,
+       "iv_greeks_raw": {
+        "raw": 14.2,
+        "status": "PRESENT_VALID"
+       },
+       "iv_market_data_raw": {
+        "raw": null,
+        "status": "ABSENT"
+       },
+       "iv_raw_field_comparison": null,
+       "iv_source": "GREEKS_PRESENT_ONLY",
+       "iv_unit_status": "UNKNOWN",
+       "iv_unit_verification": null
+      },
+      "outcome": "OBSERVED",
+      "payload_sha256": "1a52f18b218687179e136c0a329db0b62c57db3509fcd9a7694cc8166b0ffefb",
+      "record_version": "mr.premium_observation.v4",
+      "session_date": "2026-11-16",
+      "slot": "09:25"
+     },
+     {
+      "acquisition_id": "675116a8e06033db4a290c053c988626",
+      "bbo": {
+       "ask_qty_raw": {
+        "raw": 975,
+        "status": "PRESENT_VALID"
+       },
+       "ask_raw": {
+        "raw": 140.9,
+        "status": "PRESENT_VALID"
+       },
+       "bid_qty_raw": {
+        "raw": 975,
+        "status": "PRESENT_VALID"
+       },
+       "bid_raw": {
+        "raw": 139.9,
+        "status": "PRESENT_VALID"
+       },
+       "book_status": "TWO_SIDED",
+       "executable_mid_computed": false,
+       "ltp_raw": {
+        "raw": 140.4,
+        "status": "PRESENT_VALID"
+       },
+       "ltp_used_as_quote_fallback": false,
+       "quantity_unit_status": "UNKNOWN"
+      },
+      "cohort_ref": "a99ca8513f7782fd6ac6c741208623bd",
+      "envelope_join": "session_date+index+slot+acquisition_id",
+      "envelope_ref": "e8feaca4a49601df27a5b91595436c91",
+      "hash_basis": {
+       "authenticates": "RECORDED_BYTES_AND_IDENTITY_ONLY",
+       "authenticates_vendor_truth": false,
+       "omitted_field": "payload_sha256",
+       "serialization": "json_sorted_keys_compact_utf8_v1"
+      },
+      "identity": {
+       "identity_disagreements": [],
+       "identity_evidence_missing": [],
+       "identity_verified": true,
+       "observed_strike_raw": {
+        "raw": 24600,
+        "status": "PRESENT_VALID"
+       },
+       "pinned_resolves_via": "cohort.pinned_contracts[instrument_key]"
+      },
+      "index": "NF",
+      "instrument_key": "NSE_FO|51025",
+      "iv": {
+       "iv_authoritative_resolved": false,
+       "iv_greeks_raw": {
+        "raw": 14.2,
+        "status": "PRESENT_VALID"
+       },
+       "iv_market_data_raw": {
+        "raw": null,
+        "status": "ABSENT"
+       },
+       "iv_raw_field_comparison": null,
+       "iv_source": "GREEKS_PRESENT_ONLY",
+       "iv_unit_status": "UNKNOWN",
+       "iv_unit_verification": null
+      },
+      "outcome": "OBSERVED",
+      "payload_sha256": "e03e9665706264aa4f7d4285336d0c428a80ed34d34c25d41b529130916de3e5",
+      "record_version": "mr.premium_observation.v4",
+      "session_date": "2026-11-16",
+      "slot": "09:25"
+     },
+     {
+      "acquisition_id": "675116a8e06033db4a290c053c988626",
+      "bbo": {
+       "ask_qty_raw": {
+        "raw": 975,
+        "status": "PRESENT_VALID"
+       },
+       "ask_raw": {
+        "raw": 100.1,
+        "status": "PRESENT_VALID"
+       },
+       "bid_qty_raw": {
+        "raw": 975,
+        "status": "PRESENT_VALID"
+       },
+       "bid_raw": {
+        "raw": 99.1,
+        "status": "PRESENT_VALID"
+       },
+       "book_status": "TWO_SIDED",
+       "executable_mid_computed": false,
+       "ltp_raw": {
+        "raw": 99.6,
+        "status": "PRESENT_VALID"
+       },
+       "ltp_used_as_quote_fallback": false,
+       "quantity_unit_status": "UNKNOWN"
+      },
+      "cohort_ref": "a99ca8513f7782fd6ac6c741208623bd",
+      "envelope_join": "session_date+index+slot+acquisition_id",
+      "envelope_ref": "e8feaca4a49601df27a5b91595436c91",
+      "hash_basis": {
+       "authenticates": "RECORDED_BYTES_AND_IDENTITY_ONLY",
+       "authenticates_vendor_truth": false,
+       "omitted_field": "payload_sha256",
+       "serialization": "json_sorted_keys_compact_utf8_v1"
+      },
+      "identity": {
+       "identity_disagreements": [],
+       "identity_evidence_missing": [],
+       "identity_verified": true,
+       "observed_strike_raw": {
+        "raw": 24600,
+        "status": "PRESENT_VALID"
+       },
+       "pinned_resolves_via": "cohort.pinned_contracts[instrument_key]"
+      },
+      "index": "NF",
+      "instrument_key": "NSE_FO|51024",
+      "iv": {
+       "iv_authoritative_resolved": false,
+       "iv_greeks_raw": {
+        "raw": 14.2,
+        "status": "PRESENT_VALID"
+       },
+       "iv_market_data_raw": {
+        "raw": null,
+        "status": "ABSENT"
+       },
+       "iv_raw_field_comparison": null,
+       "iv_source": "GREEKS_PRESENT_ONLY",
+       "iv_unit_status": "UNKNOWN",
+       "iv_unit_verification": null
+      },
+      "outcome": "OBSERVED",
+      "payload_sha256": "ed19a8086683afbb5a4e0f5a220576266705ad12fa79b4594c73aacd874221e3",
+      "record_version": "mr.premium_observation.v4",
+      "session_date": "2026-11-16",
+      "slot": "09:25"
+     },
+     {
+      "acquisition_id": "675116a8e06033db4a290c053c988626",
+      "bbo": {
+       "ask_qty_raw": {
+        "raw": 975,
+        "status": "PRESENT_VALID"
+       },
+       "ask_raw": {
+        "raw": 109.05,
+        "status": "PRESENT_VALID"
+       },
+       "bid_qty_raw": {
+        "raw": 975,
+        "status": "PRESENT_VALID"
+       },
+       "bid_raw": {
+        "raw": 108.05,
+        "status": "PRESENT_VALID"
+       },
+       "book_status": "TWO_SIDED",
+       "executable_mid_computed": false,
+       "ltp_raw": {
+        "raw": 108.55,
+        "status": "PRESENT_VALID"
+       },
+       "ltp_used_as_quote_fallback": false,
+       "quantity_unit_status": "UNKNOWN"
+      },
+      "cohort_ref": "a99ca8513f7782fd6ac6c741208623bd",
+      "envelope_join": "session_date+index+slot+acquisition_id",
+      "envelope_ref": "e8feaca4a49601df27a5b91595436c91",
+      "hash_basis": {
+       "authenticates": "RECORDED_BYTES_AND_IDENTITY_ONLY",
+       "authenticates_vendor_truth": false,
+       "omitted_field": "payload_sha256",
+       "serialization": "json_sorted_keys_compact_utf8_v1"
+      },
+      "identity": {
+       "identity_disagreements": [],
+       "identity_evidence_missing": [],
+       "identity_verified": true,
+       "observed_strike_raw": {
+        "raw": 24550,
+        "status": "PRESENT_VALID"
+       },
+       "pinned_resolves_via": "cohort.pinned_contracts[instrument_key]"
+      },
+      "index": "NF",
+      "instrument_key": "NSE_FO|51022",
+      "iv": {
+       "iv_authoritative_resolved": false,
+       "iv_greeks_raw": {
+        "raw": 14.2,
+        "status": "PRESENT_VALID"
+       },
+       "iv_market_data_raw": {
+        "raw": null,
+        "status": "ABSENT"
+       },
+       "iv_raw_field_comparison": null,
+       "iv_source": "GREEKS_PRESENT_ONLY",
+       "iv_unit_status": "UNKNOWN",
+       "iv_unit_verification": null
+      },
+      "outcome": "OBSERVED",
+      "payload_sha256": "6bdd0e56ad9c98efe0fd18142433cf2930b8e66ff4ae3eb9ab466093b6f4a19a",
+      "record_version": "mr.premium_observation.v4",
+      "session_date": "2026-11-16",
+      "slot": "09:25"
+     },
+     {
+      "acquisition_id": "675116a8e06033db4a290c053c988626",
+      "bbo": {
+       "ask_qty_raw": {
+        "raw": 975,
+        "status": "PRESENT_VALID"
+       },
+       "ask_raw": {
+        "raw": 160.65,
+        "status": "PRESENT_VALID"
+       },
+       "bid_qty_raw": {
+        "raw": 975,
+        "status": "PRESENT_VALID"
+       },
+       "bid_raw": {
+        "raw": 159.65,
+        "status": "PRESENT_VALID"
+       },
+       "book_status": "TWO_SIDED",
+       "executable_mid_computed": false,
+       "ltp_raw": {
+        "raw": 160.15,
+        "status": "PRESENT_VALID"
+       },
+       "ltp_used_as_quote_fallback": false,
+       "quantity_unit_status": "UNKNOWN"
+      },
+      "cohort_ref": "a99ca8513f7782fd6ac6c741208623bd",
+      "envelope_join": "session_date+index+slot+acquisition_id",
+      "envelope_ref": "e8feaca4a49601df27a5b91595436c91",
+      "hash_basis": {
+       "authenticates": "RECORDED_BYTES_AND_IDENTITY_ONLY",
+       "authenticates_vendor_truth": false,
+       "omitted_field": "payload_sha256",
+       "serialization": "json_sorted_keys_compact_utf8_v1"
+      },
+      "identity": {
+       "identity_disagreements": [],
+       "identity_evidence_missing": [],
+       "identity_verified": true,
+       "observed_strike_raw": {
+        "raw": 24500,
+        "status": "PRESENT_VALID"
+       },
+       "pinned_resolves_via": "cohort.pinned_contracts[instrument_key]"
+      },
+      "index": "NF",
+      "instrument_key": "NSE_FO|51020",
+      "iv": {
+       "iv_authoritative_resolved": false,
+       "iv_greeks_raw": {
+        "raw": 14.2,
+        "status": "PRESENT_VALID"
+       },
+       "iv_market_data_raw": {
+        "raw": null,
+        "status": "ABSENT"
+       },
+       "iv_raw_field_comparison": null,
+       "iv_source": "GREEKS_PRESENT_ONLY",
+       "iv_unit_status": "UNKNOWN",
+       "iv_unit_verification": null
+      },
+      "outcome": "OBSERVED",
+      "payload_sha256": "8fdb81dd84e6a44989bd4bd8c10ec140959bffbd6994c284159e34a94ecf3c84",
+      "record_version": "mr.premium_observation.v4",
+      "session_date": "2026-11-16",
+      "slot": "09:25"
+     },
+     {
+      "acquisition_id": "675116a8e06033db4a290c053c988626",
+      "bbo": {
+       "ask_qty_raw": {
+        "raw": 975,
+        "status": "PRESENT_VALID"
+       },
+       "ask_raw": {
+        "raw": 101.35,
+        "status": "PRESENT_VALID"
+       },
+       "bid_qty_raw": {
+        "raw": 975,
+        "status": "PRESENT_VALID"
+       },
+       "bid_raw": {
+        "raw": 100.35,
+        "status": "PRESENT_VALID"
+       },
+       "book_status": "TWO_SIDED",
+       "executable_mid_computed": false,
+       "ltp_raw": {
+        "raw": 100.85,
+        "status": "PRESENT_VALID"
+       },
+       "ltp_used_as_quote_fallback": false,
+       "quantity_unit_status": "UNKNOWN"
+      },
+      "cohort_ref": "a99ca8513f7782fd6ac6c741208623bd",
+      "envelope_join": "session_date+index+slot+acquisition_id",
+      "envelope_ref": "e8feaca4a49601df27a5b91595436c91",
+      "hash_basis": {
+       "authenticates": "RECORDED_BYTES_AND_IDENTITY_ONLY",
+       "authenticates_vendor_truth": false,
+       "omitted_field": "payload_sha256",
+       "serialization": "json_sorted_keys_compact_utf8_v1"
+      },
+      "identity": {
+       "identity_disagreements": [],
+       "identity_evidence_missing": [],
+       "identity_verified": true,
+       "observed_strike_raw": {
+        "raw": 24500,
+        "status": "PRESENT_VALID"
+       },
+       "pinned_resolves_via": "cohort.pinned_contracts[instrument_key]"
+      },
+      "index": "NF",
+      "instrument_key": "NSE_FO|51021",
+      "iv": {
+       "iv_authoritative_resolved": false,
+       "iv_greeks_raw": {
+        "raw": 14.2,
+        "status": "PRESENT_VALID"
+       },
+       "iv_market_data_raw": {
+        "raw": null,
+        "status": "ABSENT"
+       },
+       "iv_raw_field_comparison": null,
+       "iv_source": "GREEKS_PRESENT_ONLY",
+       "iv_unit_status": "UNKNOWN",
+       "iv_unit_verification": null
+      },
+      "outcome": "OBSERVED",
+      "payload_sha256": "e689973d92cfa5d2ac0126df85cf18e64f8f1d40a0f92b75042f92908ce08822",
+      "record_version": "mr.premium_observation.v4",
+      "session_date": "2026-11-16",
+      "slot": "09:25"
+     }
+    ],
+    "slot_envelopes": [
+     {
+      "acquisition_id": "675116a8e06033db4a290c053c988626",
+      "attempt_distinguishable": true,
+      "batch_evidence_ref": "38f9fad70a7d71843de733758f4ef8eb",
+      "clocks": {
+       "acquisition_elapsed_ms": 1000,
+       "acquisition_request_ms": 1794801302000,
+       "acquisition_response_ms": 1794801303000,
+       "actual_acquisition_clock": "09:25",
+       "clock_basis": "LOCAL_ACQUISITION_RECEIPT",
+       "quote_event_clock_verified": false,
+       "scheduler_slot_agrees_with_clock": null,
+       "scheduler_slot_declared": null,
+       "slot_basis": "SCHEDULER_SLOT",
+       "vendor_event_semantics": "UNVERIFIED",
+       "vendor_source_ts": null,
+       "vendor_ts_status": "VENDOR_TS_ABSENT"
+      },
+      "cohort_id": "2026-11-16|NF|54fbde92ec88a9c0b3fa1ce49e475b68",
+      "cohort_ref": "a99ca8513f7782fd6ac6c741208623bd",
+      "hash_basis": {
+       "authenticates": "RECORDED_BYTES_AND_IDENTITY_ONLY",
+       "authenticates_vendor_truth": false,
+       "omitted_field": "payload_sha256",
+       "serialization": "json_sorted_keys_compact_utf8_v1"
+      },
+      "index": "NF",
+      "lot": {
+       "claimed_lot_positive_integer": true,
+       "claimed_source_in_accepted_set": true,
+       "contract_lot_table_ref": "contract_lot_table/NSE/2026-11-01",
+       "lot_authoritative_resolved": false,
+       "lot_authority_requires": "RESOLVER_VALIDATED_TABLE_ROW_FOR_THIS_UNDERLYING_EFFECTIVE_AT_THE_SESSION_DATE",
+       "lot_claimed_raw": {
+        "raw": 75,
+        "status": "PRESENT_VALID"
+       },
+       "lot_claimed_source": "CONTRACT_LOT_TABLE",
+       "lot_resolution": "UNRESOLVED_NO_METADATA_SUPPLIED",
+       "lot_status": "PRODUCER_CLAIM_UNRESOLVED",
+       "map_ref": "instrument_map/2026-11-01",
+       "production_authority_ref": null,
+       "reference_carries_real_date": true,
+       "reference_date": "2026-11-01"
+      },
+      "payload_sha256": "f5d4ab2559d4109748c536206f6dfd2db5dd00f26ff29d1d785fa68048f87080",
+      "record_version": "mr.premium_slot_envelope.v3",
+      "request_outcome": "RESPONSE_PRESENT",
+      "session_date": "2026-11-16",
+      "slot": "09:25",
+      "underlying": {
+       "basis": "SAME_ACQUISITION",
+       "carried_by_chain_response": true,
+       "skew_ms": null,
+       "source_field": "underlying_spot_price",
+       "spot_raw": {
+        "raw": 24561.52,
+        "status": "PRESENT_VALID"
+       },
+       "synchronisation_with_quote": "SAME_RESPONSE_PAYLOAD"
+      }
+     }
+    ]
+   }
+  },
+  "state": "PRESENT"
+ }
+}
