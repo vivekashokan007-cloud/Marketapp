@@ -42,6 +42,7 @@ import premium_export_verify as V          # noqa: E402
 
 GOOD = os.path.join(FIXTURES, 'export_integrity_good_fixture.json')
 NOV12 = os.path.join(FIXTURES, 'export_integrity_20261112_fixture.json')
+MIXED = os.path.join(FIXTURES, 'export_integrity_mixed_v1_v2_fixture.json')
 
 
 def load(path):
@@ -325,6 +326,146 @@ class ExitStatuses(unittest.TestCase):
         V.main([NOV12, '--quiet'])
         with open(NOV12, 'rb') as fh:
             self.assertEqual(before, fh.read())
+
+
+class VersionedEncoding(unittest.TestCase):
+    """v2: one string rule, declared per body, so an upgrade does not orphan older evidence.
+
+    v1 delegated to whichever org.json was present, which is why this file carries the correction
+    above and why the verifier needs two v1 profiles. v2 states the rule and implements it on both
+    sides, and every v2 body declares `json_sorted_keys_compact_utf8_v2_explicit_escaping` inside
+    `hash_basis` -- which is covered by that body's own digest. So a v2 body selects its own
+    encoder and the artifact profile governs only the v1 bodies beside it.
+    """
+
+    def test_the_three_rules_are_distinct_exactly_where_v1_diverged(self):
+        self.assertEqual('"a\\/b"', V.QUOTERS[V.PROFILE_ANDROID]('a/b'))
+        self.assertEqual('"a/b"', V.QUOTERS[V.PROFILE_DESKTOP]('a/b'))
+        self.assertEqual('"a/b"', V.QUOTERS[V.PROFILE_V2]('a/b'))
+        # the second half of the documented divergence: `/` after `<`, and the escaped ranges
+        self.assertEqual('"<\\/x"', V.QUOTERS[V.PROFILE_DESKTOP]('</x'))
+        self.assertEqual('"</x"', V.QUOTERS[V.PROFILE_V2]('</x'))
+        self.assertEqual('"a\\u0085b"', V.QUOTERS[V.PROFILE_DESKTOP]('a\u0085b'))
+        self.assertEqual('"a\u0085b"', V.QUOTERS[V.PROFILE_V2]('a\u0085b'))
+        self.assertEqual('"a\u0085b"', V.QUOTERS[V.PROFILE_ANDROID]('a\u0085b'))
+
+    def test_the_python_v2_rule_is_the_committed_mirror_the_kotlin_is_tested_against(self):
+        """Not a second implementation of v2: the verifier imports the mirror the Kotlin's own
+        vector test asserts against, so agreement here is agreement with the producer."""
+        import premium_capture_vectors as M
+        self.assertIs(V.QUOTERS[V.PROFILE_V2], M._quote)
+        self.assertEqual(V.SERIALIZATION_V2, M.CANONICAL_SERIALIZATION)
+        self.assertEqual(V.SERIALIZATION_V1, M.CANONICAL_SERIALIZATION_V1)
+
+    def _body(self, serialization, content):
+        """One correctly stamped body, under the rule it declares."""
+        prof = V.PROFILE_V2 if serialization == V.SERIALIZATION_V2 else V.PROFILE_DESKTOP
+        b = dict(content)
+        b['hash_basis'] = {'serialization': serialization, 'omitted_field': 'payload_sha256',
+                           'authenticates': 'RECORDED_BYTES_AND_IDENTITY_ONLY',
+                           'authenticates_vendor_truth': False}
+        b['payload_sha256'] = V.sha256_hex(V.canonical(b, prof))
+        return b
+
+    def test_a_body_is_recomputed_under_the_rule_it_declares_not_the_profile(self):
+        """The case that bites: content the two rules encode differently. A verifier pinned to one
+        encoder would reject one of these two correctly stamped bodies."""
+        content = {'note': 'a\u0085b', 'ref': 'x</y'}
+        v1b = self._body(V.SERIALIZATION_V1, content)
+        v2b = self._body(V.SERIALIZATION_V2, content)
+        self.assertNotEqual(v1b['payload_sha256'], v2b['payload_sha256'])
+        for fallback in (V.PROFILE_DESKTOP, V.PROFILE_ANDROID, V.PROFILE_V2):
+            self.assertEqual(v2b['payload_sha256'], V.payload_digest(v2b, fallback),
+                             'a v2 body must ignore the profile entirely')
+        self.assertEqual(v1b['payload_sha256'], V.payload_digest(v1b, V.PROFILE_DESKTOP))
+        self.assertNotEqual(v1b['payload_sha256'], V.payload_digest(v1b, V.PROFILE_V2),
+                            'and a v1 body must NOT be read with the v2 rule')
+
+    def test_a_switched_serialization_tag_fails_the_digest_it_chose(self):
+        """`hash_basis` is inside the hashed body, so relabelling a body to borrow another
+        encoder breaks the digest rather than changing what verifies."""
+        v1b = self._body(V.SERIALIZATION_V1, {'note': 'a\u0085b'})
+        forged = copy.deepcopy(v1b)
+        forged['hash_basis']['serialization'] = V.SERIALIZATION_V2
+        self.assertNotEqual(forged['payload_sha256'], V.payload_digest(forged, V.PROFILE_DESKTOP))
+        self.assertNotEqual(forged['payload_sha256'], V.payload_digest(forged, V.PROFILE_V2))
+
+    def test_one_export_holding_both_encodings_verifies_every_digest(self):
+        """The in-place upgrade, from the real producer: the 09:20 acquisition and the pinned
+        cohort stamped v1, the 09:25 acquisition stamped v2, one session, one export. Its own
+        `canonical_quote_impl` declares the JVM rule, which is how the v1 half is selected --
+        its `source_kind` says LIVE_DEVICE_CAPTURE because the producer writes that string, and
+        the declaration is what makes the artifact readable without guessing."""
+        lines, rc = V.report(MIXED)
+        self.assertEqual(0, rc, '\n'.join(lines))
+        self.assertIn('ALL 30 RECOMPUTED DIGESTS MATCH', lines[-1])
+        sec = V.premium_section(load(MIXED))
+        self.assertEqual((7, 8), V.body_counts(sec))
+        tags = {e['hash_basis']['serialization']
+                for e in sec['indices']['NF']['slot_envelopes']}
+        self.assertEqual({V.SERIALIZATION_V1, V.SERIALIZATION_V2}, tags)
+        c = counts(MIXED)
+        self.assertEqual({'VERIFIED': 12}, c['record_payload'])
+        self.assertEqual({'VERIFIED': 2}, c['envelope_payload'])
+        self.assertEqual({'VERIFIED': 2}, c['acquisition_id'])
+        self.assertEqual({'VERIFIED': 12}, c['envelope_ref'])
+
+    def test_a_tamper_in_the_v1_half_of_a_mixed_export_still_fails(self):
+        """The reader is not a rescue path: a changed value in the pre-upgrade acquisition fails
+        its own digest, and only it."""
+        doc = load(MIXED)
+        nf = doc['premium']['indices']['NF']
+        v1env = next(e for e in nf['slot_envelopes']
+                     if e['hash_basis']['serialization'] == V.SERIALIZATION_V1)
+        v1env['underlying']['spot'] = (v1env['underlying'].get('spot') or 0) + 1
+        p = write_temp(doc)
+        try:
+            lines, rc = V.report(p)
+            self.assertEqual(1, rc)
+            c = counts(doc)
+            self.assertEqual(1, c['envelope_payload'].get('MISMATCH'))
+            self.assertEqual(1, c['envelope_payload'].get('VERIFIED'),
+                             'the v2 acquisition must be unaffected')
+        finally:
+            os.unlink(p)
+
+    def test_an_all_v2_artifact_does_not_depend_on_an_undecidable_profile(self):
+        """Conflicting declarations are exit 5 only when a body depends on the choice. With every
+        body self-describing, nothing is guessed -- and the conflict is still reported."""
+        body = self._body(V.SERIALIZATION_V2, {'note': 'a\u0085b', 'slot': '09:20'})
+        doc = {'premium': {'state': 'PRESENT', 'indices': {
+            'NF': {'canonical_quote_impl': V.QUOTE_DECL_ANDROID,
+                   'slot_envelopes': [body], 'records': []},
+            'BNF': {'canonical_quote_impl': V.QUOTE_DECL_REFERENCE,
+                    'slot_envelopes': [], 'records': []}}}}
+        p = write_temp(doc)
+        try:
+            lines, rc = V.report(p)
+            self.assertEqual(4, rc, '\n'.join(lines))     # INCOMPLETE: no cohort to hash
+            self.assertTrue(any('DIFFERENT quoters' in ln for ln in lines),
+                            'the conflict must still be reported')
+            self.assertTrue(any('no profile was guessed' in ln for ln in lines))
+        finally:
+            os.unlink(p)
+
+    def test_a_v1_body_beside_them_makes_the_same_conflict_fatal(self):
+        """One body that needs the profile, and the undecidable declaration decides nothing: the
+        verdict goes back to exit 5 with nothing recomputed."""
+        v2b = self._body(V.SERIALIZATION_V2, {'note': 'n', 'slot': '09:20'})
+        v1b = self._body(V.SERIALIZATION_V1, {'note': 'n', 'slot': '09:25'})
+        doc = {'premium': {'state': 'PRESENT', 'indices': {
+            'NF': {'canonical_quote_impl': V.QUOTE_DECL_ANDROID,
+                   'slot_envelopes': [v2b, v1b], 'records': []},
+            'BNF': {'canonical_quote_impl': V.QUOTE_DECL_REFERENCE,
+                    'slot_envelopes': [], 'records': []}}}}
+        p = write_temp(doc)
+        try:
+            lines, rc = V.report(p)
+            self.assertEqual(5, rc)
+            self.assertIn('PROFILE UNUSABLE', lines[-1])
+            self.assertIn('nothing was recomputed', lines[-1])
+        finally:
+            os.unlink(p)
 
 
 if __name__ == '__main__':

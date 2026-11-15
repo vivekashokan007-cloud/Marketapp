@@ -40,15 +40,22 @@ the stored digest exactly.
 
 | profile | string rule | used for |
 | --- | --- | --- |
-| `android-legacy` | escape `"` `\` and **every** `/`; five short forms; other < U+0020 as lowercase `\u00xx`; everything else literal | artifacts produced on the phone |
-| `desktop` | the reference org.json 20240303 rule | artifacts produced by a JVM run |
+| `android-legacy` | escape `"` `\` and **every** `/`; five short forms; other < U+0020 as lowercase `\u00xx`; everything else literal | v1 artifacts produced on the phone |
+| `desktop` | the reference org.json 20240303 rule | v1 artifacts produced by a JVM run |
+| `explicit-v2` | the v2 rule below | an undeclared body known to have been written under it |
 
-The `hash_basis.serialization` tag is **shared** between both — both say
+The **v1** `hash_basis.serialization` tag is **shared** between the first two — both say
 `json_sorted_keys_compact_utf8_v1` — so it cannot select the profile. What can is the provenance
 the export already carries: `evidence_context.source_kind` of `LIVE_DEVICE_CAPTURE` means
 Android's org.json; anything synthetic or replayed means a JVM run. `--profile` overrides it, and
 **the decision and its reason are printed** rather than assumed. One profile is applied to every
-digest in an artifact.
+v1 digest in an artifact.
+
+A **v2** body needs none of that: it declares
+`json_sorted_keys_compact_utf8_v2_explicit_escaping`, a rule that is the same on every runtime, so
+it is always recomputed under that rule whatever profile was selected or passed — and the report
+states how many bodies are self-describing and how many the profile governs. That is also what
+lets one artifact hold both, which an in-place upgrade mid-session produces.
 
 When the selected profile mismatches, the report adds a **diagnostic** naming the profile that
 does reproduce the digests. It is a diagnostic only: the verdict and exit status stay with the
@@ -71,10 +78,15 @@ VERDICT: ALL 1603 RECOMPUTED DIGESTS MATCH (profile android-legacy)
 | 2 | `UNREADABLE` — unreadable, or no premium section |
 | 3 | `NOTHING_TO_VERIFY` — a premium section with no records and no envelopes |
 | 4 | `INCOMPLETE` — a required binding is absent, so verification could not complete |
+| 5 | `PROFILE_UNUSABLE` — the artifact's own declarations conflict or name a rule this verifier does not implement, no profile was given, **and** at least one body depends on that choice. Nothing is recomputed |
 
-Precedence across files and indices: **1 > 4 > 3 > 0**. An older export missing a binding reports
-4, never 1 — absent is not wrong, and only present-and-wrong fails. An empty export is **not**
-0: 13 November has nothing to recompute and must not read like a day that was checked.
+Precedence across files and indices: **1 > 2 > 5 > 4 > 3 > 0**. An older export missing a binding
+reports 4, never 1 — absent is not wrong, and only present-and-wrong fails. An empty export is
+**not** 0: 13 November has nothing to recompute and must not read like a day that was checked.
+Exit 5 exists because guessing an encoding invents the verdict: a copy of the 12 November export
+with NIFTY declaring Android and BANKNIFTY declaring the JVM rule used to warn, pick one and exit
+0. It now recomputes nothing. If every body in such an artifact declares v2, no profile is
+consulted, so it verifies and the conflicting declaration is reported rather than being fatal.
 
 **Run it before the eligibility checks**, not after: there is no point scoring an artifact whose
 digests have not been shown to cover its bytes.
@@ -85,6 +97,16 @@ python3 -I preflight_export.py <export.json>              # then the R7 capture 
 ```
 
 The frozen R7 package and the eligibility and scoring rules are untouched.
+
+**Monday, 16 November, pass the profile explicitly.** The installed signed b530
+(`398e1ab2250c4cdbe97e83c78f0b13795493c9df`) predates `canonical_quote_impl` — that field landed
+four commits later, in `4052c3e` — so its export declares no quoter and selection would fall back
+to provenance. For a known Android build, say so:
+
+```
+python3 -I tools/premium_export_verify.py --profile android-legacy \
+    mr_session_evidence_2026-11-16.json
+```
 
 ## Still true, and still worth keeping
 
@@ -133,17 +155,41 @@ that the string describes. Moving it onto that record takes the real worst case 
 about 1,915 B, and the both-additions case to about 1,968 B, with nothing lost. This is the move
 that fixed the same problem before: take content out by reference rather than enlarge the cap.
 
-Not applied here — it changes the envelope shape and therefore every future digest, so it belongs
-in a reviewed next-build change alongside the encoding fix below, not in a verifier patch.
+**Applied** on `review/claude-premium-evidence-20261115`: the constant now lives on the authority
+record as `authority_requires`, the envelope is `mr.premium_slot_envelope.v4`, v3 stays supported,
+and the payload the store refused outright now stores at 1,952 B with 96 B to spare. Measured
+through the real producer, 106 B recovered per envelope — exactly the size of the constant that
+moved. Next-build, so Monday's capture still runs on the installed b530.
 
-## The app-side fix this points to
+## The app-side fix, applied
 
-The verifier's `android-legacy` profile reads existing exports. It does not remove the cause: the
-contract still delegates to `JSONObject.quote`, so the device and every off-device verifier will
-keep disagreeing by construction.
+The verifier's `android-legacy` profile reads existing exports. It did not remove the cause: the
+contract delegated to `JSONObject.quote`, so the device and every off-device verifier disagreed by
+construction.
 
-The fix is the one `Pc2CompactBatch` already made — implement the string rule explicitly instead
-of delegating — together with a serialization tag bump, so that future artifacts are
-self-describing (`hash_basis.serialization` would then select the profile instead of provenance
-having to), and `android-legacy` remains for everything written before it. Prepared as a separate
-reviewed change; it is a next-build item, and the verifier works on today's evidence without it.
+The cause is now removed, as `Pc2CompactBatch` removed it for PC2 telemetry in round 3. The rule
+is written out and implemented without delegation, in the Kotlin and in the committed Python
+mirror the Kotlin's vectors are asserted against:
+
+> escape `"` and `\`; the short forms `\b \f \n \r \t`; every other character below U+0020 as
+> lowercase `\u00xx`; lone surrogates as lowercase `\uXXXX`; everything else literal, **including
+> `/` and all non-ASCII**.
+
+`CANONICAL_SERIALIZATION` becomes `json_sorted_keys_compact_utf8_v2_explicit_escaping`, and it is
+declared inside `hash_basis`, which each body's own digest covers — so relabelling a body to
+borrow another encoder breaks its digest instead of changing what verifies.
+
+**Nothing already stored is rewritten.** `canonicalJsonV1` is kept verbatim, and every
+verification path — `verifyHash`, `contentHash`, `acquisitionId`, `batchEvidenceRef` — now reads
+the rule the body it is checking DECLARES instead of assuming today's. Two of those were
+genuinely load-bearing: the acquisition basis contains `lot`, whose table reference carries
+slashes, so recomputing a stored id under the new rule would have reported every envelope on the
+phone as not derived from its own basis. A real mixed session (committed as
+`export_integrity_mixed_v1_v2_fixture.json`: 09:20 and the pinned cohort v1, 09:25 v2, one
+export) reports both acquisitions `VERIFIED` with no integrity reasons, and the offline verifier
+recomputes all 30 of its digests.
+
+One honest limit: on a JVM the v1 and v2 encodings of a premium body coincide — the characters
+they disagree about are not in this evidence — so the character-level proof is on constructed
+bodies (`U+0085`, `</`) in both suites, and the proof against real Android bytes remains the
+`android-legacy` profile on the 12 November export.

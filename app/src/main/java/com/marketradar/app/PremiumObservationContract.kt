@@ -65,7 +65,25 @@ object PremiumObservationContract {
      */
     const val LOT_AUTHORITY_REQUIRES =
         "RESOLVER_VALIDATED_TABLE_ROW_FOR_THIS_UNDERLYING_EFFECTIVE_AT_THE_SESSION_DATE"
-    const val CANONICAL_SERIALIZATION = "json_sorted_keys_compact_utf8_v1"
+    /**
+     * The serialization a NEW record declares, and the rule its digest is taken over.
+     *
+     * v1 delegated string escaping to `JSONObject.quote`, which is **not the same function on
+     * Android as on the JVM** — Android escapes every `/` as `\/` and leaves U+0080–U+009F and
+     * U+2000–U+20FF literal; the reference org.json escapes `/` only after `<` and escapes those
+     * ranges as `\uXXXX`. So the same object hashed on the phone and in a verifier produced
+     * different digests, and a premium envelope carries slashes in its lot reference. The 12
+     * November 2026 export has 648 `\/` sequences, and verifying it off-device needed Android's
+     * rule to be reimplemented from the outside.
+     *
+     * v2 states the rule here and implements it without delegating, so the bytes no longer depend
+     * on which org.json is present. `Pc2CompactBatch` did the same for PC2 telemetry in round 3;
+     * this is the premium contract catching up.
+     */
+    const val CANONICAL_SERIALIZATION = "json_sorted_keys_compact_utf8_v2_explicit_escaping"
+
+    /** The legacy tag. Records stamped with it are verified with [canonicalJsonV1]. */
+    const val CANONICAL_SERIALIZATION_V1 = "json_sorted_keys_compact_utf8_v1"
 
     /**
      * Linkage reference length. A binding reference is the first 32 hex characters (128 bits) of a
@@ -538,29 +556,95 @@ object PremiumObservationContract {
      */
     private fun canonicalNumber(n: Number): String {
         val d = n.toDouble()
-        // defensive: a bare NaN/Infinity is not valid JSON and org.json refuses to hold one
-        if (d.isNaN() || d.isInfinite()) return JSONObject.quote(NON_FINITE_NAN)
+        // defensive: a bare NaN/Infinity is not valid JSON and org.json refuses to hold one.
+        // Quoted with [canonicalString], not with `JSONObject.quote`: the number path is shared by
+        // both serializations, so the last delegation in it is removed too. The bytes are
+        // unchanged — this marker is plain ASCII, which every rule writes identically.
+        if (d.isNaN() || d.isInfinite()) return canonicalString(NON_FINITE_NAN)
         val stripped = try {
             java.math.BigDecimal(n.toString()).stripTrailingZeros()
         } catch (e: NumberFormatException) {
-            return JSONObject.quote(NON_FINITE_NAN)
+            return canonicalString(NON_FINITE_NAN)
         }
         return if (stripped.scale() <= 0) stripped.toBigInteger().toString()
         else stripped.toPlainString()
+    }
+
+    /**
+     * THE PINNED STRING RULE for [CANONICAL_SERIALIZATION], written here and implemented without
+     * delegation, because delegation is what made the bytes platform-dependent.
+     *
+     *  - escape `"` and `\`;
+     *  - the short forms `\b \f \n \r \t`;
+     *  - every other character below U+0020 as lowercase `\u00xx`;
+     *  - lone surrogates as lowercase `\uXXXX`, so the bytes are always well-formed UTF-8;
+     *  - everything else literal, **including `/` and all non-ASCII**.
+     *
+     * This is the rule `Pc2CompactBatch.canonicalString` already uses, deliberately: one project,
+     * one canonical string rule.
+     */
+    fun canonicalString(value: String): String {
+        val out = StringBuilder(value.length + 2)
+        out.append('"')
+        var i = 0
+        while (i < value.length) {
+            val c = value[i]
+            when {
+                c == '"' -> out.append("\\\"")
+                c == '\\' -> out.append("\\\\")
+                c == '\b' -> out.append("\\b")
+                c == '\u000C' -> out.append("\\f")
+                c == '\n' -> out.append("\\n")
+                c == '\r' -> out.append("\\r")
+                c == '\t' -> out.append("\\t")
+                c < ' ' -> out.append("\\u%04x".format(c.code))
+                Character.isHighSurrogate(c) ->
+                    if (i + 1 < value.length && Character.isLowSurrogate(value[i + 1])) {
+                        out.append(c).append(value[i + 1]); i++
+                    } else out.append("\\u%04x".format(c.code))
+                Character.isLowSurrogate(c) -> out.append("\\u%04x".format(c.code))
+                else -> out.append(c)
+            }
+            i++
+        }
+        return out.append('"').toString()
     }
 
     /** Canonical JSON with sorted keys, compact separators, UTF-8 — the hashed representation. */
     fun canonicalJson(o: Any?): String = when (o) {
         null, JSONObject.NULL -> "null"
         is JSONObject -> o.keys().asSequence().sorted().joinToString(",", "{", "}") { k ->
-            JSONObject.quote(k) + ":" + canonicalJson(o.opt(k))
+            canonicalString(k) + ":" + canonicalJson(o.opt(k))
         }
         is JSONArray -> (0 until o.length()).joinToString(",", "[", "]") { canonicalJson(o.opt(it)) }
+        is String -> canonicalString(o)
+        is Boolean -> o.toString()
+        is Number -> canonicalNumber(o)
+        else -> canonicalString(o.toString())
+    }
+
+    /**
+     * The v1 form, kept EXACTLY as it was, so a record stamped before the upgrade still verifies
+     * against the bytes it was actually hashed over. On the phone this delegates to Android's
+     * `JSONObject.quote` and therefore reproduces the phone's own v1 digests; off the device the
+     * same job is done by the verifier's `android-legacy` profile.
+     */
+    fun canonicalJsonV1(o: Any?): String = when (o) {
+        null, JSONObject.NULL -> "null"
+        is JSONObject -> o.keys().asSequence().sorted().joinToString(",", "{", "}") { k ->
+            JSONObject.quote(k) + ":" + canonicalJsonV1(o.opt(k))
+        }
+        is JSONArray ->
+            (0 until o.length()).joinToString(",", "[", "]") { canonicalJsonV1(o.opt(it)) }
         is String -> JSONObject.quote(o)
         is Boolean -> o.toString()
         is Number -> canonicalNumber(o)
         else -> JSONObject.quote(o.toString())
     }
+
+    /** The encoder a stored object declares. Absent means v1: it predates the tag being used. */
+    fun canonicalJsonFor(serialization: String?): (Any?) -> String =
+        if (serialization == CANONICAL_SERIALIZATION) ::canonicalJson else ::canonicalJsonV1
 
     // ── which org.json actually escaped these strings ──────────────────────────────────────────
     const val QUOTE_ANDROID = "ANDROID_ORG_JSON_SLASH_ESCAPED"
@@ -614,7 +698,11 @@ object PremiumObservationContract {
         if (claimed.isEmpty()) return false
         val rebuilt = JSONObject(record.toString())
         rebuilt.remove(HASH_OMITTED_FIELD)
-        return claimed == sha256Hex(canonicalJson(rebuilt))
+        // THE RECORD'S OWN DECLARED RULE, not whatever this build stamps today. An upgrade that
+        // changed the encoding without reading this would fail every record already on the phone.
+        val encoder = canonicalJsonFor(
+            record.optJSONObject("hash_basis")?.optString("serialization"))
+        return claimed == sha256Hex(encoder(rebuilt))
     }
 
     // ── outcome statuses for one pinned contract in one slot ───────────────────────────────────
@@ -676,7 +764,16 @@ object PremiumObservationContract {
      * Idempotence is preserved: byte-identical evidence re-presented gives the same id and a
      * duplicate no-op, which is the correct outcome for a genuine retry of the same response.
      */
-    fun acquisitionId(envelopeBody: JSONObject): String {
+    /**
+     * @param serialization the encoding the id was (or will be) minted under. Minting uses
+     *   today's rule, which is the default; RECOMPUTING the id of an envelope already on the
+     *   phone must use the rule that envelope declares, or an in-place upgrade to a new encoding
+     *   would make every stored envelope look as though its id did not derive from its own basis.
+     */
+    @JvmOverloads
+    fun acquisitionId(envelopeBody: JSONObject,
+                      serialization: String? = CANONICAL_SERIALIZATION): String {
+        val encoder = canonicalJsonFor(serialization)
         val basis = JSONObject()
             .put("session_date", envelopeBody.opt("session_date"))
             .put("index", envelopeBody.opt("index"))
@@ -687,8 +784,12 @@ object PremiumObservationContract {
             .put("lot", envelopeBody.opt("lot"))
             .put("batch_evidence_ref", envelopeBody.opt("batch_evidence_ref"))
             .put("request_outcome", envelopeBody.opt("request_outcome"))
-        return ref(sha256Hex(canonicalJson(basis)))
+        return ref(sha256Hex(encoder(basis)))
     }
+
+    /** The id as it was minted for an envelope already stored, under the rule it declares. */
+    fun acquisitionIdAsStored(envelope: JSONObject): String =
+        acquisitionId(envelope, envelope.optJSONObject("hash_basis")?.optString("serialization"))
 
     /**
      * The versions the current VERIFIED contract covers. Anything else is retained and exported,
@@ -745,10 +846,14 @@ object PremiumObservationContract {
      * Digest of the COMPLETE prepared batch, in pinned order. Taken before persistence, so a
      * partially written batch cannot be completed from a different response under the same id.
      */
-    fun batchEvidenceRef(evidence: List<JSONObject>): String {
+    @JvmOverloads
+    fun batchEvidenceRef(evidence: List<JSONObject>,
+                         serialization: String? = CANONICAL_SERIALIZATION): String {
         val arr = JSONArray()
         evidence.forEach { arr.put(it) }
-        return ref(sha256Hex(canonicalJson(arr)))
+        // the evidence bodies carry no basis of their own: the rule is the one the envelope that
+        // stores this ref declares, so a v1 envelope's batch ref stays recomputable under v2
+        return ref(sha256Hex(canonicalJsonFor(serialization)(arr)))
     }
 
     /**
@@ -756,10 +861,13 @@ object PremiumObservationContract {
      * and an unstamped copy of the same content hash identically.
      */
     fun contentHash(o: JSONObject): String {
+        // the object's own declared rule, read BEFORE hash_basis is stripped, so a reference to a
+        // v1 object stays recomputable after this build moved to v2
+        val encoder = canonicalJsonFor(o.optJSONObject("hash_basis")?.optString("serialization"))
         val body = JSONObject(o.toString())
         body.remove(HASH_OMITTED_FIELD)
         body.remove("hash_basis")
-        return sha256Hex(canonicalJson(body))
+        return sha256Hex(encoder(body))
     }
 
     /**

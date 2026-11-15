@@ -484,14 +484,17 @@ class PremiumCaptureSession(private val store: PremiumCaptureStore) {
                 if (ordered.any { it == null }) why.put("batch_incomplete_cannot_bind")
                 else {
                     val recomputed = PremiumObservationContract.batchEvidenceRef(
-                        ordered.map { PremiumObservationContract.evidenceFromRecord(it!!) })
+                        ordered.map { PremiumObservationContract.evidenceFromRecord(it!!) },
+                        e.optJSONObject("hash_basis")?.optString("serialization"))
                     if (recomputed != storedBatchRef) why.put("batch_evidence_ref_mismatch")
                 }
             }
 
-            // (3) RECOMPUTE the acquisition id from the envelope's declared basis. Non-circular:
-            // the basis excludes the id and both hash fields.
-            val recomputedAcq = PremiumObservationContract.acquisitionId(e)
+            // (3) RECOMPUTE the acquisition id from the envelope's declared basis, UNDER THE
+            // ENCODING THAT ENVELOPE DECLARES. Non-circular: the basis excludes the id and both
+            // hash fields. Using today's encoding here instead would fail every envelope stored
+            // before an encoding upgrade, which is evidence loss dressed up as a defect.
+            val recomputedAcq = PremiumObservationContract.acquisitionIdAsStored(e)
             if (recomputedAcq != id) why.put("acquisition_id_not_derived_from_its_own_basis")
 
             // (4) the envelope itself must belong to the session and index being exported, and to

@@ -1801,6 +1801,12 @@ class PremiumCaptureTest {
             mc.getString("hash_omitted_field"))
         assertEquals(PremiumObservationContract.NON_FINITE_NAN, mc.getString("non_finite_nan"))
         assertEquals(PremiumObservationContract.REF_HEX_LEN, mc.getInt("ref_hex_len"))
+        assertEquals(PremiumObservationContract.CANONICAL_SERIALIZATION,
+            mc.getString("canonical_serialization"))
+        // the legacy tag drifts just as badly: the verification path selects the v1 encoder by
+        // matching this string, so a rename on either side must fail here
+        assertEquals(PremiumObservationContract.CANONICAL_SERIALIZATION_V1,
+            mc.getString("canonical_serialization_v1"))
 
         val vectors = doc.getJSONArray("vectors")
         assertTrue("expected a non-trivial vector set", vectors.length() >= 19)

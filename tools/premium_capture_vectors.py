@@ -16,10 +16,20 @@ the canonical encoding, so the Kotlin is checked against something rather than o
 itself. The vectors are data, and `PremiumCaptureTest.canonicalSerializationMatchesTheCommitted
 PythonMirrorVectors` makes the real producer verify them.
 
-`_quote` now implements org.json 20240303's `JSONObject.quote` exactly, including the two rules
-that were previously DECLARED AS GAPS rather than closed: '/' is escaped when preceded by '<', and
-U+0080-U+009F together with U+2000-U+20FF are escaped as \\uXXXX. Those cases are now exact
-vectors, because a raw malformed vendor string can contain them.
+THE ENCODING IS NOW VERSIONED, and this file carries both rules.
+
+`_quote` is the v2 rule: escape '"' and '\\', the five short forms, anything else below U+0020 as
+lowercase \\u00xx, lone surrogates as lowercase \\uXXXX, everything else literal -- INCLUDING '/'
+and all non-ASCII. It delegates to nothing, which is the point. v1 delegated to `JSONObject.quote`
+and that is not the same function on Android as on the JVM (Android escapes every '/' and leaves
+U+0080-U+009F and U+2000-U+20FF literal; the JVM's escapes '/' only after '<' and escapes those
+ranges as \\uXXXX), so the same object hashed in two places produced two digests. The characters
+that diverged are asserted here as exact vectors, because a raw malformed vendor string can
+contain them.
+
+`_quote_reference_org_json` is the JVM half of the v1 rule, kept verbatim: the offline verifier
+needs it to read artifacts stamped `json_sorted_keys_compact_utf8_v1` on a JVM, and
+`premium_export_verify.py`'s `android-legacy` profile implements the device half.
 
 Derived decimals are covered as ROUND-TRIP vectors instead of exact-string vectors, and that
 distinction is deliberate: Java's `Double.toString` only guarantees a shortest-round-trip rendering
@@ -47,13 +57,14 @@ VECTORS_PATH = 'app/src/test/resources/premium_capture/canonical_vectors.json'
 RECORD_VERSION = 'mr.premium_observation.v4'
 ENVELOPE_VERSION = 'mr.premium_slot_envelope.v4'
 COHORT_RULE_VERSION = 'premium_capture_cohort_v2_three_paired_strikes_validated'
-CANONICAL_SERIALIZATION = 'json_sorted_keys_compact_utf8_v1'
+CANONICAL_SERIALIZATION = 'json_sorted_keys_compact_utf8_v2_explicit_escaping'
+CANONICAL_SERIALIZATION_V1 = 'json_sorted_keys_compact_utf8_v1'
 HASH_OMITTED_FIELD = 'payload_sha256'
 NON_FINITE_NAN = 'NON_FINITE_NAN'
 REF_HEX_LEN = 32
 
 
-def _quote(s):
+def _quote_reference_org_json(s):
     """Exact port of org.json 20240303 JSONObject.quote(String).
 
     Both previously-declared gaps are implemented rather than declared:
@@ -61,6 +72,12 @@ def _quote(s):
       - U+0080..U+009F and U+2000..U+20FF are escaped as \\uXXXX
     Everything else outside the explicit escapes is written literally, including ordinary
     non-ASCII such as U+00E9 or U+4E2D.
+
+    THIS IS THE v1 RULE, and only half of it: it is what the JVM's org.json does, while Android's
+    escapes every '/' and leaves those two Unicode ranges literal. v1 digests are therefore
+    platform-dependent, which is why v2 exists and why this function is no longer what `canonical`
+    uses. It is kept because the offline verifier still needs it to read v1 artifacts produced on
+    a JVM (`premium_export_verify.py`, profile `desktop`).
     """
     out = ['"']
     prev = ''
@@ -86,6 +103,50 @@ def _quote(s):
             else:
                 out.append(c)
         prev = c
+    out.append('"')
+    return ''.join(out)
+
+
+def _quote(s):
+    """Mirror of PremiumObservationContract.canonicalString -- the v2 rule.
+
+    Escape '"' and '\\'; the short forms \\b \\f \\n \\r \\t; every other character below
+    U+0020 as lowercase \\u00xx; lone surrogates as lowercase \\uXXXX; everything else literal,
+    INCLUDING '/' and all non-ASCII.
+
+    No delegation anywhere, on either side, which is the whole point: the bytes cannot depend on
+    which org.json is present, so a phone and a verifier agree by construction instead of by
+    reimplementation.
+    """
+    out = ['"']
+    i = 0
+    while i < len(s):
+        c = s[i]
+        o = ord(c)
+        if c in ('"', '\\'):
+            out.append('\\' + c)
+        elif c == '\b':
+            out.append('\\b')
+        elif c == '\f':
+            out.append('\\f')
+        elif c == '\n':
+            out.append('\\n')
+        elif c == '\r':
+            out.append('\\r')
+        elif c == '\t':
+            out.append('\\t')
+        elif o < 0x20:
+            out.append('\\u%04x' % o)
+        elif 0xd800 <= o <= 0xdbff:          # high surrogate
+            if i + 1 < len(s) and 0xdc00 <= ord(s[i + 1]) <= 0xdfff:
+                out.append(c); out.append(s[i + 1]); i += 1
+            else:
+                out.append('\\u%04x' % o)
+        elif 0xdc00 <= o <= 0xdfff:          # lone low surrogate
+            out.append('\\u%04x' % o)
+        else:
+            out.append(c)
+        i += 1
     out.append('"')
     return ''.join(out)
 
@@ -155,13 +216,20 @@ def build_vectors():
         ('empty_containers', {'o': {}, 'l': []}),
         ('escapes_quote_backslash_newline_tab', {'s': 'a"b\\c\nd\te'}),
         ('control_characters_are_escaped', {'s': '\u0001\u001f\b\f\r'}),
-        # PREVIOUSLY A DECLARED GAP, now an exact vector: org.json escapes '/' only after '<'
-        ('slash_escaped_only_after_angle_bracket',
+        # THE v1 PLATFORM DIVERGENCE, now pinned as ONE answer on both platforms. Under v1 these
+        # bytes depended on which org.json was present: Android's escaped every '/' and left
+        # U+0080-U+009F / U+2000-U+20FF literal, while org.json:json:20240303 escaped '/' only
+        # after '<' and escaped those two ranges as \uXXXX. v2 delegates to neither, so a phone
+        # and a verifier agree by construction. Slashes are never escaped:
+        ('slash_is_never_escaped',
          {'a': '</script>', 'b': 'a/b', 'c': 'http://x/y', 'd': '<<//'}),
-        # PREVIOUSLY A DECLARED GAP: these two ranges are escaped, ordinary non-ASCII is not
-        ('non_ascii_escaped_ranges_only',
-         {'c1': '\u0080\u009f', 'punct': ' ’€⃿',
-          'literal': '\u007f é中℀'}),
+        # and nothing at or above U+0020 is escaped, in any range:
+        ('non_ascii_is_always_literal',
+         {'c1': '\u0080\u0085\u009f', 'punct': ' ’€⃿',
+          'literal': '\u007f é中℀', 'line_seps': '  '}),
+        # an astral character is a surrogate PAIR in Kotlin and a single code point in Python;
+        # both sides emit it literally, so the UTF-8 bytes agree
+        ('astral_characters_pass_through_as_utf8', {'s': '😀x𝄞'}),
         ('malformed_vendor_string_shapes',
          {'raw': '</n/a>', 'status': 'OBSERVED_MALFORMED', 'note': 'n’a'}),
         ('numeric_string_is_not_reformatted', {'raw': '61.250', 'status': 'PRESENT_VALID'}),
@@ -192,15 +260,24 @@ def build_vectors():
                     'checked against something other than itself. This mirror does NOT model the '
                     'record shape and does NOT produce the acceptance export: both come from the '
                     'real Kotlin classes in CI.'),
-        'closed_gaps': ("org.json's '/'-after-'<' rule and its U+0080-U+009F / U+2000-U+20FF "
-                        'escaping are now implemented here and asserted as exact vectors, rather '
-                        'than declared as untested divergences.'),
+        'closed_gaps': ('v1 delegated string quoting to whichever org.json was on the runtime, so '
+                        "the same object hashed differently on a phone (every '/' escaped, "
+                        'U+0080-U+009F and U+2000-U+20FF literal) and on a JVM test run. v2 '
+                        'implements the rule explicitly on both sides -- never escape a slash, '
+                        'never escape anything at or above U+0020 -- and the divergent characters '
+                        'are asserted here as exact vectors. v1 artifacts stay verifiable: the '
+                        'reader picks the encoder from each body\'s declared '
+                        'hash_basis.serialization.'),
         'remaining_limit': ("Java's Double.toString only guarantees shortest-round-trip rendering "
                             'from JDK 19 and CI runs JDK 17, so a DERIVED non-exact double is '
                             'carried as a round_trip vector: the Kotlin asserts stability under a '
                             'text round trip and value preservation, not a cross-runtime digit '
                             'string. Nothing here claims that equivalence.'),
         'mirrored_constants': {
+            'canonical_serialization': CANONICAL_SERIALIZATION,
+            # the legacy tag is mirrored too: a rename on either side must fail CI, because the
+            # verification path selects the v1 encoder by matching it
+            'canonical_serialization_v1': CANONICAL_SERIALIZATION_V1,
             'record_version': RECORD_VERSION,
             'envelope_version': ENVELOPE_VERSION,
             'cohort_rule_version': COHORT_RULE_VERSION,

@@ -1,7 +1,9 @@
 {
-  "closed_gaps": "org.json's '/'-after-'<' rule and its U+0080-U+009F / U+2000-U+20FF escaping are now implemented here and asserted as exact vectors, rather than declared as untested divergences.",
+  "closed_gaps": "v1 delegated string quoting to whichever org.json was on the runtime, so the same object hashed differently on a phone (every '/' escaped, U+0080-U+009F and U+2000-U+20FF literal) and on a JVM test run. v2 implements the rule explicitly on both sides -- never escape a slash, never escape anything at or above U+0020 -- and the divergent characters are asserted here as exact vectors. v1 artifacts stay verifiable: the reader picks the encoder from each body's declared hash_basis.serialization.",
   "generator": "tools/premium_capture_vectors.py",
   "mirrored_constants": {
+    "canonical_serialization": "json_sorted_keys_compact_utf8_v2_explicit_escaping",
+    "canonical_serialization_v1": "json_sorted_keys_compact_utf8_v1",
     "cohort_rule_version": "premium_capture_cohort_v2_three_paired_strikes_validated",
     "envelope_version": "mr.premium_slot_envelope.v4",
     "hash_omitted_field": "payload_sha256",
@@ -11,7 +13,7 @@
   },
   "purpose": "An INDEPENDENT implementation of the canonical encoding, so the Kotlin is checked against something other than itself. This mirror does NOT model the record shape and does NOT produce the acceptance export: both come from the real Kotlin classes in CI.",
   "remaining_limit": "Java's Double.toString only guarantees shortest-round-trip rendering from JDK 19 and CI runs JDK 17, so a DERIVED non-exact double is carried as a round_trip vector: the Kotlin asserts stability under a text round trip and value preservation, not a cross-runtime digit string. Nothing here claims that equivalence.",
-  "serialization": "json_sorted_keys_compact_utf8_v1",
+  "serialization": "json_sorted_keys_compact_utf8_v2_explicit_escaping",
   "vectors": [
     {
       "canonical": "{\"a\":1,\"b\":24650}",
@@ -135,7 +137,7 @@
       "sha256": "0252d28d8e35cf87464c5c845bf15416970a802ee44fedff26e8619a8ba4e615"
     },
     {
-      "canonical": "{\"a\":\"<\\/script>\",\"b\":\"a/b\",\"c\":\"http://x/y\",\"d\":\"<<\\//\"}",
+      "canonical": "{\"a\":\"</script>\",\"b\":\"a/b\",\"c\":\"http://x/y\",\"d\":\"<<//\"}",
       "input": {
         "a": "</script>",
         "b": "a/b",
@@ -143,22 +145,32 @@
         "d": "<<//"
       },
       "mode": "exact",
-      "name": "slash_escaped_only_after_angle_bracket",
-      "sha256": "3ccee918228b239d84908b1623aacdbb9d1d98d55ec7fd24855de36b9a8d2c37"
+      "name": "slash_is_never_escaped",
+      "sha256": "6c6d9e0aae2cabf93aabb1b1a49aa431aec9eda8185c2173bfb63201d1bf357a"
     },
     {
-      "canonical": "{\"c1\":\"\\u0080\\u009f\",\"literal\":\" é中℀\",\"punct\":\"\\u2000\\u2019\\u20ac\\u20ff\"}",
+      "canonical": "{\"c1\":\"\",\"line_seps\":\"  \",\"literal\":\" é中℀\",\"punct\":\" ’€⃿\"}",
       "input": {
-        "c1": "",
+        "c1": "",
+        "line_seps": "  ",
         "literal": " é中℀",
         "punct": " ’€⃿"
       },
       "mode": "exact",
-      "name": "non_ascii_escaped_ranges_only",
-      "sha256": "e13e3ffac4c879b816ba850466a521152c222d21c4e083419c27656589eee9d4"
+      "name": "non_ascii_is_always_literal",
+      "sha256": "c6c7e762b1700021ff45ca1346155fff94be59482fa092746798c5d55ae01587"
     },
     {
-      "canonical": "{\"note\":\"n\\u2019a\",\"raw\":\"<\\/n/a>\",\"status\":\"OBSERVED_MALFORMED\"}",
+      "canonical": "{\"s\":\"😀x𝄞\"}",
+      "input": {
+        "s": "😀x𝄞"
+      },
+      "mode": "exact",
+      "name": "astral_characters_pass_through_as_utf8",
+      "sha256": "e4064034ef64933b65ca754dff9df1972fcdb7e0c14be7c4831e9a1224c9f5eb"
+    },
+    {
+      "canonical": "{\"note\":\"n’a\",\"raw\":\"</n/a>\",\"status\":\"OBSERVED_MALFORMED\"}",
       "input": {
         "note": "n’a",
         "raw": "</n/a>",
@@ -166,7 +178,7 @@
       },
       "mode": "exact",
       "name": "malformed_vendor_string_shapes",
-      "sha256": "91778d78c9e53c121623f65821fbba3c98a3e6e73e4fb071e0307aba4b4f0fc7"
+      "sha256": "4ee48a4f02ef0ecefd70ea3d33ca11a2df48f87e0a0a4dabc2aeefc790301544"
     },
     {
       "canonical": "{\"raw\":\"61.250\",\"status\":\"PRESENT_VALID\"}",

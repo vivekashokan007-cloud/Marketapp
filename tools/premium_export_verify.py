@@ -31,9 +31,21 @@ EXIT STATUS (documented, so automation can branch on it)
   3  NOTHING_TO_VERIFY  a premium section with no records and no envelopes: nothing to recompute
   4  INCOMPLETE         a required binding is absent, so verification could not be completed
   5  PROFILE_UNUSABLE   the artifact's own encoding declarations conflict, or name a rule this
-                        verifier does not implement, and no profile was given explicitly. Nothing
-                        is recomputed: guessing a rule would invent the verdict. Rerun with
-                        --profile only if you know which rule produced the bytes.
+                        verifier does not implement, no profile was given explicitly, AND at
+                        least one body depends on that choice. Nothing is recomputed: guessing a
+                        rule would invent the verdict. Rerun with --profile only if you know
+                        which rule produced the bytes. An artifact whose every body declares the
+                        v2 rule does not depend on the profile and is verified regardless, with
+                        the undecidable declaration reported.
+
+ENCODING PROFILES. `hash_basis.serialization` v2 names a platform-independent string rule, so a
+v2 body is always recomputed under that rule and no profile applies to it. The profile governs
+only the v1 bodies, whose tag cannot say which org.json escaped them:
+  android-legacy  every `/` escaped, U+0080-U+009F and U+2000-U+20FF literal   (the phone)
+  desktop         `/` escaped only after `<`, those ranges as \\uXXXX          (a JVM run)
+  explicit-v2     the v2 rule, for an undeclared body known to have been written under it
+One profile applies to a whole artifact; a single artifact may still mix v1 and v2 bodies, which
+is what an in-place encoding upgrade mid-session produces.
 
 Precedence when a run covers several files or indices: 1 beats 4 beats 3 beats 0. An older export
 missing a binding reports 4, never 1: absent is not wrong. Only present-and-wrong is a failure.
@@ -49,11 +61,18 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-# The committed INDEPENDENT mirror. Its `_quote` is the REFERENCE org.json (20240303) rule used by
-# the JVM; its number rule is platform-independent and is reused as-is rather than re-implemented.
-from premium_capture_vectors import _canonical_number, _quote as _quote_desktop, sha256_hex  # noqa: E402,E501
+# The committed INDEPENDENT mirror, reused rather than re-implemented:
+#   `_quote`                    -- the v2 rule, which no longer depends on any org.json
+#   `_quote_reference_org_json` -- the v1 rule as the JVM's org.json 20240303 performs it
+#   `_canonical_number`         -- platform-independent, shared by every profile
+from premium_capture_vectors import (  # noqa: E402
+    _canonical_number,
+    _quote as _quote_v2,
+    _quote_reference_org_json as _quote_desktop,
+    sha256_hex,
+)
 
-# ── the two string rules, and why there are two ────────────────────────────────────────────────
+# ── the three string rules, and why there are three ────────────────────────────────────────────
 #
 # `PremiumObservationContract.canonicalJson` delegates string escaping to `JSONObject.quote`, and
 # THAT IS NOT THE SAME FUNCTION ON ANDROID AND ON THE JVM. This project already found and fixed
@@ -63,13 +82,21 @@ from premium_capture_vectors import _canonical_number, _quote as _quote_desktop,
 #    literal. The reference org.json used by the JVM tests escapes `/` only after `<`, and escapes
 #    U+0080-U+009F and U+2000-U+20FF as `\uXXXX`."
 #
-# Premium capture still delegates, so a phone export's digests are over ANDROID-escaped bytes
+# Under v1 the contract delegated, so a phone export's digests are over ANDROID-escaped bytes
 # while any JVM or desktop verifier recomputes over reference-escaped bytes. Every premium string
 # that contains a slash -- `lot.contract_lot_table_ref`, for one -- therefore hashes differently
 # off the device. The 12 November 2026 export carries 648 `\/` sequences, which is the divergence
 # in the artifact itself.
 #
-# So the profile is not a preference. It is a property of the producer, and it is reported.
+# So for a v1 body the profile is not a preference. It is a property of the producer, and it is
+# reported.
+#
+# v2 ENDS THE CHOICE. `CANONICAL_SERIALIZATION` v2 states the string rule and implements it on
+# both sides without delegating, and every v2 body declares that tag inside `hash_basis` -- which
+# is covered by its own digest. So a v2 body selects its own encoder and no profile applies to it;
+# the profile below governs ONLY the bodies that predate the tag. That is what lets one artifact
+# hold both: an in-place upgrade leaves the morning's v1 envelopes verifiable beside the
+# afternoon's v2 ones.
 
 
 def _quote_android_legacy(value):
@@ -100,7 +127,33 @@ QUOTE_DECLARATIONS = (QUOTE_DECL_ANDROID, QUOTE_DECL_REFERENCE)
 
 PROFILE_DESKTOP = 'desktop'
 PROFILE_ANDROID = 'android-legacy'
-QUOTERS = {PROFILE_DESKTOP: _quote_desktop, PROFILE_ANDROID: _quote_android_legacy}
+PROFILE_V2 = 'explicit-v2'
+QUOTERS = {PROFILE_DESKTOP: _quote_desktop, PROFILE_ANDROID: _quote_android_legacy,
+           PROFILE_V2: _quote_v2}
+
+# PremiumObservationContract.CANONICAL_SERIALIZATION / _V1
+SERIALIZATION_V2 = 'json_sorted_keys_compact_utf8_v2_explicit_escaping'
+SERIALIZATION_V1 = 'json_sorted_keys_compact_utf8_v1'
+
+
+def declared_serialization(obj):
+    """The `hash_basis.serialization` a stored body carries, or None."""
+    basis = obj.get(BASIS_FIELD) if isinstance(obj, dict) else None
+    tag = basis.get('serialization') if isinstance(basis, dict) else None
+    return tag if isinstance(tag, str) and tag else None
+
+
+def body_profile(obj, fallback):
+    """The encoder for ONE stored body: its own declared rule if that rule is self-describing.
+
+    A v2 body names a platform-independent rule, so it is recomputed under that rule whatever
+    profile the artifact was given -- including an explicit `--profile`, because the tag is a
+    fact covered by the body's own digest and the profile is at best an inference about a
+    producer. A v1 body names a rule that two implementations perform differently, so it falls
+    back to the artifact's profile. This is the same selection
+    `PremiumObservationContract.canonicalJsonFor` makes on the phone.
+    """
+    return PROFILE_V2 if declared_serialization(obj) == SERIALIZATION_V2 else fallback
 
 
 def canonical(o, profile=PROFILE_ANDROID):
@@ -141,19 +194,24 @@ def ref(hex_digest):
 
 def payload_digest(obj, profile=PROFILE_ANDROID):
     """sha256 over the canonical object WITHOUT its own digest field. `hash_basis` IS covered:
-    it is stamped before the digest is taken, so it cannot be altered undetected."""
-    return sha256_hex(canonical({k: v for k, v in obj.items() if k != HASH_FIELD}, profile))
+    it is stamped before the digest is taken, so it cannot be altered undetected -- including the
+    serialization tag that selects the encoder, so a switched tag fails the digest it chose."""
+    p = body_profile(obj, profile)
+    return sha256_hex(canonical({k: v for k, v in obj.items() if k != HASH_FIELD}, p))
 
 
 def content_hash(obj, profile=PROFILE_ANDROID):
     """PremiumObservationContract.contentHash: ignores the digest and basis fields, so a stamped
-    and an unstamped copy of the same content hash identically."""
+    and an unstamped copy of the same content hash identically. The basis is read for the encoder
+    BEFORE it is stripped, so a reference to a v1 object stays recomputable under v2."""
+    p = body_profile(obj, profile)
     return sha256_hex(canonical({k: v for k, v in obj.items()
-                                 if k not in (HASH_FIELD, BASIS_FIELD)}, profile))
+                                 if k not in (HASH_FIELD, BASIS_FIELD)}, p))
 
 
 def acquisition_id(envelope, profile=PROFILE_ANDROID):
-    return ref(sha256_hex(canonical({k: envelope.get(k) for k in ACQ_BASIS}, profile)))
+    p = body_profile(envelope, profile)
+    return ref(sha256_hex(canonical({k: envelope.get(k) for k in ACQ_BASIS}, p)))
 
 
 def check(kind, where, claimed, recomputed):
@@ -173,14 +231,43 @@ def premium_section(doc):
     return None
 
 
-def choose_profile(sec, explicit=None):
-    """Which producer wrote these bytes, and how that was decided.
+def body_counts(sec):
+    """(self-describing v2 bodies, bodies governed by the artifact profile).
 
-    The `hash_basis.serialization` tag is SHARED between a phone export and a desktop fixture --
-    both say `json_sorted_keys_compact_utf8_v1` -- so the tag cannot select the profile. What can
-    is the provenance the export already carries: `LIVE_DEVICE_CAPTURE` came from Android's
-    org.json, anything synthetic or replayed came from a JVM run. An explicit `--profile` always
-    wins, and the decision is reported either way rather than assumed.
+    The second number is the only one the artifact-level profile applies to. If it is zero, the
+    profile is never consulted and an undecidable profile cannot affect the verdict.
+    """
+    v2 = v1 = 0
+    for blk in (sec.get('indices') or {}).values():
+        if not isinstance(blk, dict):
+            continue
+        bodies = list(blk.get('records') or []) + list(blk.get('slot_envelopes') or [])
+        if isinstance(blk.get('cohort'), dict):
+            bodies.append(blk['cohort'])
+        for b in bodies:
+            if not isinstance(b, dict):
+                continue
+            if declared_serialization(b) == SERIALIZATION_V2:
+                v2 += 1
+            else:
+                v1 += 1
+    return v2, v1
+
+
+def bodies_needing_fallback(sec):
+    """How many stored bodies do NOT declare a self-describing encoding."""
+    return body_counts(sec)[1]
+
+
+def choose_profile(sec, explicit=None):
+    """Which producer wrote the artifact's V1 bodies, and how that was decided.
+
+    A v2 body declares a platform-independent rule and needs none of this (see [body_profile]).
+    The v1 tag, though, is SHARED between a phone export and a desktop fixture -- both say
+    `json_sorted_keys_compact_utf8_v1` -- so for those bodies the tag cannot select the encoder.
+    What can is the provenance the export already carries: `LIVE_DEVICE_CAPTURE` came from
+    Android's org.json, anything synthetic or replayed came from a JVM run. An explicit
+    `--profile` always wins, and the decision is reported either way rather than assumed.
     """
     if explicit:
         return explicit, 'explicitly requested', None
@@ -295,13 +382,24 @@ def report(path, max_examples=4, explicit_profile=None):
 
     profile, why, unusable = choose_profile(sec, explicit_profile)
     say.append('section state    %s' % sec.get('state'))
-    if unusable:
+    selfdesc, legacy = body_counts(sec)
+    if unusable and legacy:
         say.append('encoding profile UNUSABLE   (%s)' % why)
         say.append('')
-        say.append('VERDICT: PROFILE UNUSABLE (%s) - nothing was recomputed. Rerun with '
-                   '--profile only if you know which rule produced these bytes.' % unusable)
+        say.append('VERDICT: PROFILE UNUSABLE (%s) - nothing was recomputed, and %d bodies in '
+                   'this artifact need a profile. Rerun with --profile only if you know which '
+                   'rule produced these bytes.' % (unusable, legacy))
         return say, 5
-    say.append('encoding profile %s   (%s)' % (profile, why))
+    if unusable:
+        # The declarations are undecidable, but no body depends on them: every body here declares
+        # the self-describing v2 rule, so nothing was guessed. Reported, not swallowed.
+        profile = PROFILE_V2
+        say.append('encoding profile per-body (v2)   (%s -- but no body in this artifact is '
+                   'hashed under a v1 rule, so no profile was guessed)' % why)
+    else:
+        say.append('encoding profile %s   (%s)' % (profile, why))
+    say.append('declared rules   %d bodies self-describing (v2), %d governed by the profile (v1)'
+               % (selfdesc, legacy))
     worst = 0
     checked = 0
     missing = 0
@@ -348,14 +446,16 @@ def report(path, max_examples=4, explicit_profile=None):
             # produced by that encoder and the wrong profile was selected. This is reported to
             # make triage immediate; it does NOT change the verdict or the exit status, because
             # a verifier that retries until something passes verifies nothing.
-            other = PROFILE_DESKTOP if profile == PROFILE_ANDROID else PROFILE_ANDROID
-            alt = verify_index(ix, blk, other)
-            alt_bad = sum(1 for r in alt if r['state'] == MISMATCH)
-            if alt_bad == 0:
+            for other in [p for p in (PROFILE_ANDROID, PROFILE_DESKTOP, PROFILE_V2)
+                          if p != profile]:
+                alt = verify_index(ix, blk, other)
+                if any(r['state'] == MISMATCH for r in alt):
+                    continue
                 say.append('    DIAGNOSTIC: every one of these digests reproduces under the '
                            '%s profile. The artifact was produced by that encoder; rerun with '
                            '--profile %s. The verdict below is still the selected profile\'s.'
                            % (other, other))
+                break
     say.append('')
     # A VACUOUS PASS IS NOT A PASS. An export with no records and no envelopes -- 13 November
     # 2026, where capture was refused before a cohort could be pinned -- has nothing to
@@ -387,7 +487,9 @@ def main(argv=None):
     ap.add_argument('exports', nargs='+')
     ap.add_argument('--quiet', action='store_true', help='verdict lines only')
     ap.add_argument('--profile', choices=sorted(QUOTERS), default=None,
-                    help='force the canonical string rule instead of reading the provenance')
+                    help='force the string rule for bodies that do not declare one (v1 bodies) '
+                         'instead of reading the provenance; a v2 body always uses its own '
+                         'declared rule')
     a = ap.parse_args(argv)
     worst = 0
     for p in a.exports:
