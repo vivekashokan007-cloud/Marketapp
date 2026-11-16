@@ -7,6 +7,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
 import java.nio.file.Files
+import java.util.Locale
 
 /**
  * The canonical encoding is VERSIONED, and both versions stay verifiable.
@@ -129,6 +130,41 @@ class PremiumCanonicalVersioningTest {
         assertEquals("on a phone v1 would have escaped it, and that is what the verifier's " +
             "android-legacy profile reproduces", "{\"ref\":\"a/b\"}",
             PremiumObservationContract.canonicalJson(slash))
+    }
+
+    /**
+     * A device's locale must not reach the bytes. `java.util.Formatter` localizes digits for
+     * `%d`, and the escape and digest paths render hex — so a phone set to Hindi with Devanagari
+     * digits, which is a configuration a user in India can actually have, must still produce the
+     * same canonical string and the same digest. Measured here rather than assumed, across the
+     * numbering systems that would break a localized `%d`.
+     */
+    @Test
+    fun theEncodingDoesNotDependOnTheDeviceLocale() {
+        val original = Locale.getDefault()
+        try {
+            val content = JSONObject().put("s", "\u001f\u0001").put("n", 24650.0)
+            Locale.setDefault(Locale.forLanguageTag("en-US"))
+            val baseCanonical = PremiumObservationContract.canonicalJson(content)
+            val baseDigest = PremiumObservationContract.sha256Hex("x")
+            assertEquals("{\"n\":24650,\"s\":\"\\u001f\\u0001\"}", baseCanonical)
+            for (tag in listOf("hi-IN-u-nu-deva", "ar-SA-u-nu-arab", "th-TH-u-nu-thai", "fa-IR")) {
+                Locale.setDefault(Locale.forLanguageTag(tag))
+                // the hazard is real on these very locales, which is what makes the assertions
+                // below meaningful rather than vacuous: a DECIMAL conversion does change here
+                assertNotEquals("$tag: %d is localized; the encoder must not use one",
+                    String.format(Locale.ROOT, "%d", 31), String.format("%d", 31))
+                assertEquals("$tag: the canonical form must be locale-independent",
+                    baseCanonical, PremiumObservationContract.canonicalJson(content))
+                assertEquals("$tag: and so must the digest string",
+                    baseDigest, PremiumObservationContract.sha256Hex("x"))
+                val e = PremiumObservationContract.stampHash(JSONObject(content.toString()))
+                assertTrue("$tag: a body stamped under this locale must verify",
+                    PremiumObservationContract.verifyHash(e))
+            }
+        } finally {
+            Locale.setDefault(original)
+        }
     }
 
     /** A lone surrogate is escaped, so the canonical bytes are always well-formed UTF-8. */

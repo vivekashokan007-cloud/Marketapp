@@ -583,6 +583,17 @@ object PremiumObservationContract {
      * This is the rule `Pc2CompactBatch.canonicalString` already uses, deliberately: one project,
      * one canonical string rule.
      */
+    /**
+     * `Locale.ROOT` explicitly, as `Pc2CompactBatch.unicodeEscape` already does. Measured rather
+     * than assumed: `java.util.Formatter` localizes digits for `%d` but not for `%x`, so
+     * `"%04x".format(31)` stays `001f` even under `hi-IN-u-nu-deva` or `ar-SA-u-nu-arab` — a
+     * phone configured that way therefore produces the same bytes. Pinning the locale costs
+     * nothing and removes the question, and [theEncodingDoesNotDependOnTheDeviceLocale] asserts
+     * it on the canonical form and on the digest string.
+     */
+    private fun unicodeEscape(c: Char): String =
+        "\\u" + String.format(java.util.Locale.ROOT, "%04x", c.code)
+
     fun canonicalString(value: String): String {
         val out = StringBuilder(value.length + 2)
         out.append('"')
@@ -597,12 +608,12 @@ object PremiumObservationContract {
                 c == '\n' -> out.append("\\n")
                 c == '\r' -> out.append("\\r")
                 c == '\t' -> out.append("\\t")
-                c < ' ' -> out.append("\\u%04x".format(c.code))
+                c < ' ' -> out.append(unicodeEscape(c))
                 Character.isHighSurrogate(c) ->
                     if (i + 1 < value.length && Character.isLowSurrogate(value[i + 1])) {
                         out.append(c).append(value[i + 1]); i++
-                    } else out.append("\\u%04x".format(c.code))
-                Character.isLowSurrogate(c) -> out.append("\\u%04x".format(c.code))
+                    } else out.append(unicodeEscape(c))
+                Character.isLowSurrogate(c) -> out.append(unicodeEscape(c))
                 else -> out.append(c)
             }
             i++
@@ -670,7 +681,10 @@ object PremiumObservationContract {
 
     fun sha256Hex(s: String): String =
         java.security.MessageDigest.getInstance("SHA-256").digest(s.toByteArray(Charsets.UTF_8))
-            .joinToString("") { "%02x".format(it) }
+            // Locale.ROOT for the same reason as [unicodeEscape]: the digest STRING is compared
+            // across devices and against a server, so it must not be rendered in a locale's own
+            // digits. `%x` is not localized today; pinning it costs nothing and is asserted.
+            .joinToString("") { String.format(java.util.Locale.ROOT, "%02x", it) }
 
     /**
      * Stamp `payload_sha256` over the canonical record WITHOUT that field, and record exactly how
