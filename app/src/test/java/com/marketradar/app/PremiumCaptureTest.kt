@@ -4071,6 +4071,14 @@ class PremiumCaptureTest {
             "NativeBridge.kt",
             // the native operator control in the existing settings dialog
             "MainActivity.kt",
+            /*
+             * The SEPARATELY IDENTIFIED follow-on research capture: its own two windows
+             * (15:10-15:30 and 09:15-09:45), its own store root and its own export key, calling
+             * the same `observeSlot` through the same acquisition path. Added to this allowlist
+             * deliberately rather than by hiding its references, which is what the allowlist is
+             * for. It does not move the pilot window and is not wired into the service here.
+             */
+            "PremiumFollowOnCapture.kt",
         )
         val dir = File("src/main/java/com/marketradar/app")
         val referrers = (dir.listFiles() ?: emptyArray()).filter { f ->

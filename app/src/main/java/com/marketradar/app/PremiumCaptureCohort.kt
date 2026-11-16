@@ -47,6 +47,24 @@ object PremiumCaptureCohort {
     const val WINDOW_CLOSE_MIN = 15 * 60 + 5    // 15:05
 
     /**
+     * A capture window, so a SEPARATE research capture can declare its own without moving the
+     * pilot's. [PILOT_WINDOW] is exactly the two constants above, and every existing caller
+     * takes it by default — the installed b530 behaviour is unchanged.
+     */
+    data class CaptureWindow(val id: String, val openMin: Int, val closeMin: Int,
+                             val closeInclusive: Boolean = false) {
+        fun contains(minuteOfDay: Int): Boolean =
+            minuteOfDay >= openMin && (if (closeInclusive) minuteOfDay <= closeMin
+                                       else minuteOfDay < closeMin)
+        val label: String
+            get() = "%02d:%02d-%02d:%02d%s".format(openMin / 60, openMin % 60,
+                closeMin / 60, closeMin % 60, if (closeInclusive) " inclusive" else " exclusive")
+    }
+
+    val PILOT_WINDOW = CaptureWindow("pilot_premium_0920_1505", WINDOW_OPEN_MIN,
+        WINDOW_CLOSE_MIN, closeInclusive = false)
+
+    /**
      * The only index labels this capture accepts, each bound to its underlying key. An index label
      * is never trusted on its own: the response row's `underlying_key` must match, and so must the
      * caller's requested key when one is supplied.
@@ -66,6 +84,14 @@ object PremiumCaptureCohort {
     const val INDEX_UNDERLYING_MISMATCH = "INDEX_UNDERLYING_MISMATCH"
     const val MIXED_EXPIRY = "MIXED_EXPIRY_IN_RESPONSE"
     const val CONTRADICTORY_ROWS = "CONTRADICTORY_ROWS_FOR_STRIKE"
+
+    /**
+     * A caller required specific strikes — the follow-on research capture carrying yesterday's
+     * contracts into today — and the response does not carry one of them as a fully paired
+     * strike. Refused rather than substituted with a neighbour: a different strike is a
+     * different contract, and pairing across it would not be the same position.
+     */
+    const val REQUIRED_STRIKE_ABSENT = "REQUIRED_STRIKE_NOT_PAIRED_IN_RESPONSE"
     const val DUPLICATE_INSTRUMENT_KEYS = "DUPLICATE_INSTRUMENT_KEYS"
 
     data class PinnedContract(
@@ -120,9 +146,10 @@ object PremiumCaptureCohort {
      * True only inside `[WINDOW_OPEN_MIN, WINDOW_CLOSE_MIN)`. Enforced on EVERY attempt, not only
      * at selection — the old code let a pinned cohort keep producing observations after 15:05.
      */
-    fun inWindow(hhmm: String?): Boolean {
+    @JvmOverloads
+    fun inWindow(hhmm: String?, window: CaptureWindow = PILOT_WINDOW): Boolean {
         val mod = minuteOfDay(hhmm) ?: return false
-        return mod >= WINDOW_OPEN_MIN && mod < WINDOW_CLOSE_MIN
+        return window.contains(mod)
     }
 
     /** The nominal five-minute slot an acquisition clock falls in. */
@@ -163,16 +190,20 @@ object PremiumCaptureCohort {
     }
 
     /** Pin the cohort from ONE response, validating every identity claim it carries. */
+    @JvmOverloads
     fun select(rawChain: JSONObject?, index: String, sessionDate: String,
                acquisitionHhmm: String?, requestedUnderlyingKey: String?,
-               existingCohort: JSONObject? = null): Selection {
+               existingCohort: JSONObject? = null,
+               window: CaptureWindow = PILOT_WINDOW,
+               requireStrikes: List<Double>? = null): Selection {
         if (existingCohort != null) return Selection(ALREADY_PINNED, existingCohort)
         val idx = index.trim().uppercase()
         val expectedUnderlying = INDEX_UNDERLYING[idx]
             ?: return Selection(UNKNOWN_INDEX, null,
                 "index '$index' is not one of ${INDEX_UNDERLYING.keys}")
-        if (!inWindow(acquisitionHhmm))
-            return Selection(OUTSIDE_WINDOW, null, "acquisition=$acquisitionHhmm")
+        if (!inWindow(acquisitionHhmm, window))
+            return Selection(OUTSIDE_WINDOW, null,
+                "acquisition=$acquisitionHhmm outside ${window.id} (${window.label})")
         val requested = (requestedUnderlyingKey ?: "").trim()
         if (requested.isNotEmpty() && requested != expectedUnderlying)
             return Selection(INDEX_UNDERLYING_MISMATCH, null,
@@ -230,9 +261,23 @@ object PremiumCaptureCohort {
             return Selection(INCOMPLETE_PAIRED_STRIKES, null,
                 "${paired.size} fully paired strikes available, need $PAIRED_STRIKES")
 
-        val chosen = paired.sortedWith(compareBy({ Math.abs(it.strike - s) }, { it.strike }))
-            .take(PAIRED_STRIKES)
-            .sortedBy { it.strike }
+        val chosen = if (requireStrikes == null) {
+            paired.sortedWith(compareBy({ Math.abs(it.strike - s) }, { it.strike }))
+                .take(PAIRED_STRIKES)
+                .sortedBy { it.strike }
+        } else {
+            // REQUIRED strikes, not nearest-to-spot: the follow-on capture must observe the same
+            // contracts it observed yesterday, whatever the spot has done overnight.
+            val byK = paired.associateBy { it.strike }
+            val missing = requireStrikes.filter { byK[it] == null }
+            if (missing.isNotEmpty())
+                return Selection(REQUIRED_STRIKE_ABSENT, null,
+                    "required strikes $missing are not fully paired in this response")
+            if (requireStrikes.size != PAIRED_STRIKES)
+                return Selection(INCOMPLETE_PAIRED_STRIKES, null,
+                    "${requireStrikes.size} strikes required, need $PAIRED_STRIKES")
+            requireStrikes.sorted().map { byK.getValue(it) }
+        }
 
         val pinned = JSONArray()
         val keys = HashSet<String>()
@@ -259,7 +304,10 @@ object PremiumCaptureCohort {
             .put("paired_strikes", JSONArray().also { a -> chosen.forEach { a.put(it.strike) } })
             .put("selection_spot", s)
             .put("selection_slot", derivedSlot(acquisitionHhmm) ?: JSONObject.NULL)
-            .put("selection_basis", "THREE_STRIKES_NEAREST_THIS_RESPONSE_SPOT_WITH_BOTH_LEGS")
+            .put("selection_basis", if (requireStrikes == null)
+                "THREE_STRIKES_NEAREST_THIS_RESPONSE_SPOT_WITH_BOTH_LEGS"
+                else "THREE_STRIKES_REQUIRED_BY_CALLER_VALIDATED_IN_THIS_RESPONSE")
+            .put("capture_window", window.id)
             .put("contracts_expected", CONTRACTS_PER_COHORT)
             .put("pinned_contracts", pinned)
         // P4: pinned identity is pinned BY CONTENT, so altering it cannot silently reinterpret a

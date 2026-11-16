@@ -135,6 +135,17 @@ class PremiumCaptureSession(private val store: PremiumCaptureStore) {
          * supply a conflicting `schedulerSlot` is still refused, which is the accepted behaviour.
          */
         declaredSchedulerSlot: String? = null,
+        /**
+         * The capture window this attempt belongs to. Defaults to the pilot's 09:20-15:05, so
+         * every existing caller is unchanged; the follow-on research capture passes its own.
+         */
+        window: PremiumCaptureCohort.CaptureWindow = PremiumCaptureCohort.PILOT_WINDOW,
+        /**
+         * Strikes this attempt must observe, instead of the three nearest the response spot.
+         * The follow-on capture carries yesterday's strikes here so a reselection cannot
+         * quietly move the contracts between the two halves of one overnight mark.
+         */
+        requireStrikes: List<Double>? = null,
     ): SlotResult {
         fun refuse(status: String, detail: String?, counter: String): SlotResult {
             val sw = store.bumpCounters(index, sessionDate, mapOf("refused_$counter" to 1L))
@@ -151,8 +162,9 @@ class PremiumCaptureSession(private val store: PremiumCaptureStore) {
         // P5: the window is enforced on EVERY attempt, not only while selecting. The acquisition
         // clock is preferred; with none, the slot itself must be inside the window.
         val windowClock = slotId.actualClock?.takeIf { it.isNotEmpty() } ?: slotId.slot
-        if (!PremiumCaptureCohort.inWindow(windowClock))
-            return refuse(OUTSIDE_WINDOW, "clock=$windowClock is outside the experiment window",
+        if (!PremiumCaptureCohort.inWindow(windowClock, window))
+            return refuse(OUTSIDE_WINDOW,
+                "clock=$windowClock is outside ${window.id} (${window.label})",
                 "outside_window")
 
         val loaded = loadCohort(index, sessionDate)
@@ -167,7 +179,7 @@ class PremiumCaptureSession(private val store: PremiumCaptureStore) {
             // acquisition identified only by a scheduler slot — a legitimate case, with no
             // acquisition clock at all — was refused OUTSIDE_WINDOW and could never pin a cohort.
             val sel = PremiumCaptureCohort.select(rawChain, index, sessionDate, windowClock,
-                requestedUnderlyingKey, null)
+                requestedUnderlyingKey, null, window, requireStrikes)
             if (sel.status != PremiumCaptureCohort.SELECTED || sel.cohort == null)
                 return refuse(sel.status, sel.reason, "cohort_not_selected")
             val cr = store.putCohort(index, sessionDate, sel.cohort)

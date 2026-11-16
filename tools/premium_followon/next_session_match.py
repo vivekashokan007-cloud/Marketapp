@@ -51,14 +51,18 @@ import os
 import re
 import sys
 
-SPEC_VERSION = 'premium_followon_stage_g_next_session_match_v1'
+SPEC_VERSION = 'premium_followon_stage_g_next_session_match_v2_verified_clocks'
+SPEC_VERSION_V1 = 'premium_followon_stage_g_next_session_match_v1'
 
 OPEN_CLOCK = '09:15'
 CLOSE_CLOCK = '15:30'
 NEAR_CLOSE_FROM = '15:10'          # the window the close mark must come from
-MAX_OPEN_DELAY_MIN = 30            # a first usable quote later than this is marked
+OPENING_TOLERANCE_MIN = 30         # a scored opening mark must be within this of the open
 MAX_QUOTE_STALE_S = 120            # only checkable against a VERIFIED exchange timestamp
 POST_OPEN_OFFSETS_MIN = (5, 15, 30)
+# the session's own trading clock: a receipt outside it cannot belong to that session
+SESSION_FIRST_MIN = 9 * 60 + 15
+SESSION_LAST_MIN = 15 * 60 + 30
 
 # every reason a pair can be refused, declared up front and counted
 REFUSALS = (
@@ -70,6 +74,8 @@ REFUSALS = (
     'calendar_not_covered',
     'next_session_not_adjacent',
     'close_quote_unusable',
+    'first_usable_outside_opening_tolerance',
+    'impossible_receipt_order',
 )
 # NOTE: there is deliberately no separate `open_quote_unusable`. Every unusable open-side quote
 # resolves to `no_usable_open_quote`, which carries the per-slot reasons in its evidence, and a
@@ -83,8 +89,13 @@ UNUSABLE = (
     'book_non_positive',
     'book_crossed',
     'receipt_clock_missing',
+    'receipt_date_not_in_session',
+    'receipt_outside_session_clock',
     'identity_unverified',
     'identity_disagreement',
+    'identity_incomplete',
+    'exchange_clock_flag_without_timestamp',
+    'exchange_ts_after_its_own_receipt',
     'stale_against_verified_exchange_ts',
 )
 
@@ -181,11 +192,22 @@ def identity(obs):
 
 
 def usability(obs):
-    """Why this observation cannot be used, or an empty list.
+    """Why this observation cannot be used for a SCORED mark, or an empty list.
 
-    Staleness is checked ONLY against a verified exchange timestamp. With none, the reading is
-    usable and `exchange_ts_verified` is reported false, so a later reader can see that the
-    staleness of this quote was never established — rather than inferring it was fine.
+    THREE CORRECTIONS over v1, each of which let a bad mark through:
+
+      1. `identity_verified` had to be exactly `False` to refuse, so a record that never
+         carried the field at all was accepted as verified. A scored mark now requires the flag
+         to be **explicitly true**, with no disagreements and all five identity fields present.
+      2. The receipt clock was only required to parse. It must also belong to the session it
+         claims: same date, and inside the session's own trading clock. A 09:10 receipt is not
+         a session quote, whatever the slot label says.
+      3. A verified-clock FLAG with no exchange timestamp was treated as a verified clock. The
+         two must agree: a flag without a timestamp is a contradiction, and an exchange
+         timestamp after its own receipt is impossible. Both fail closed.
+
+    Unknown exchange freshness stays explicit: with no flag and no timestamp the quote is still
+    usable, and the pair records that staleness was never established.
     """
     why = []
     bid, ask = obs.get('bid'), obs.get('ask')
@@ -202,18 +224,49 @@ def usability(obs):
                 why.append('book_crossed')
         except (TypeError, ValueError):
             why.append('book_missing')
-    if parse_ts(obs.get('receipt_ts')) is None:
+
+    rec = parse_ts(obs.get('receipt_ts'))
+    if rec is None:
         why.append('receipt_clock_missing')
-    if obs.get('identity_verified') is False:
+    else:
+        session = str(obs.get('session_date') or '')
+        if session and rec.date().isoformat() != session:
+            why.append('receipt_date_not_in_session')
+        mod = rec.hour * 60 + rec.minute
+        if not (SESSION_FIRST_MIN <= mod <= SESSION_LAST_MIN):
+            why.append('receipt_outside_session_clock')
+
+    # identity: explicitly verified, undisputed, and complete
+    if obs.get('identity_verified') is not True:
         why.append('identity_unverified')
     if obs.get('identity_disagreements'):
         why.append('identity_disagreement')
+    if any(obs.get(k) in (None, '') for k in ('index', 'instrument_key', 'expiry', 'side')) \
+            or obs.get('strike') is None:
+        why.append('identity_incomplete')
+
+    # the two exchange-clock fields must agree with each other
     ex = parse_ts(obs.get('exchange_ts'))
-    rec = parse_ts(obs.get('receipt_ts'))
-    if obs.get('exchange_ts_verified') and ex and rec:
-        if (rec - ex).total_seconds() > MAX_QUOTE_STALE_S:
+    flagged = bool(obs.get('exchange_ts_verified'))
+    if flagged and ex is None:
+        why.append('exchange_clock_flag_without_timestamp')
+    if ex is not None and rec is not None:
+        if ex > rec:
+            why.append('exchange_ts_after_its_own_receipt')
+        elif flagged and (rec - ex).total_seconds() > MAX_QUOTE_STALE_S:
             why.append('stale_against_verified_exchange_ts')
     return why
+
+
+def staleness_established(*observations):
+    """True only when every mark carries a verified flag AND a timestamp inside the bound."""
+    for o in observations:
+        ex, rec = parse_ts(o.get('exchange_ts')), parse_ts(o.get('receipt_ts'))
+        if not o.get('exchange_ts_verified') or ex is None or rec is None:
+            return False
+        if (rec - ex).total_seconds() > MAX_QUOTE_STALE_S:
+            return False
+    return True
 
 
 def mid(obs):
@@ -248,23 +301,42 @@ def close_mark(observations, near_close_from=NEAR_CLOSE_FROM, close=CLOSE_CLOCK)
     return None, 'close_quote_unusable', evidence
 
 
-def open_mark(observations, open_clock=OPEN_CLOCK, max_delay=MAX_OPEN_DELAY_MIN):
-    """The first usable observation of a session, with its delay after the open."""
+def open_mark(observations, open_clock=OPEN_CLOCK, tolerance=OPENING_TOLERANCE_MIN):
+    """The first usable observation of a session, if it can be a SCORED opening mark.
+
+    CORRECTED: v1 accepted any first usable quote and merely marked a late one, and it accepted
+    a quote BEFORE the open — a 09:10 record paired with a delay of -5 minutes. A scored mark
+    must now sit inside `[open, open + tolerance]`. Anything outside is refused and kept as
+    LABELLED DIAGNOSTIC EVIDENCE, with its delay, so the observation is retained without being
+    scored as the open.
+    """
     ordered = sorted(observations, key=lambda o: (minutes(o['slot']), str(o.get('receipt_ts'))))
     evidence = {'observations': len(ordered),
-                'first_observed_slot': ordered[0]['slot'] if ordered else None}
+                'first_observed_slot': ordered[0]['slot'] if ordered else None,
+                'declared_tolerance_min': tolerance}
     unusable = {}
     for o in ordered:
         why = usability(o)
         if why:
             unusable[o['slot']] = why
             continue
-        delay = minutes(o['slot']) - minutes(open_clock)
-        evidence.update({'delay_after_open_min': delay,
-                         'later_than_declared_bound': delay > max_delay,
-                         'declared_bound_min': max_delay})
+        # the delay is measured on the RECEIPT instant, not the slot label: the slot records
+        # scheduling intent and the receipt records when the quote was in hand. A quote whose
+        # receipt is outside the session clock has already been refused above, so a negative
+        # delay cannot survive to here.
+        rec = parse_ts(o['receipt_ts'])
+        delay = (rec.hour * 60 + rec.minute) - minutes(open_clock)
+        evidence['delay_after_open_min'] = delay
+        evidence['slot_label_delay_min'] = minutes(o['slot']) - minutes(open_clock)
+        evidence['slot_agrees_with_receipt'] = (
+            abs(evidence['slot_label_delay_min'] - delay) <= 5)
         if unusable:
             evidence['skipped_unusable'] = unusable
+        if delay > tolerance:
+            evidence['diagnostic_quote'] = {'kind': 'LATE_OPEN_DIAGNOSTIC_NOT_A_MARK',
+                                            'slot': o['slot'], 'delay_after_open_min': delay,
+                                            'mid': mid(o)}
+            return None, 'first_usable_outside_opening_tolerance', evidence
         return o, None, evidence
     evidence['unusable'] = unusable
     return None, 'no_usable_open_quote', evidence
@@ -330,6 +402,10 @@ def pair_contract(close_obs, next_obs, calendar, close_date, next_date):
         return result
 
     rec_c, rec_o = parse_ts(c['receipt_ts']), parse_ts(o['receipt_ts'])
+    if rec_o <= rec_c:
+        result.update(paired=False, refusal='impossible_receipt_order',
+                      close_receipt_ts=c['receipt_ts'], open_receipt_ts=o['receipt_ts'])
+        return result
     elapsed_min = (rec_o - rec_c).total_seconds() / 60.0
     result.update({
         'paired': True,
@@ -338,12 +414,18 @@ def pair_contract(close_obs, next_obs, calendar, close_date, next_date):
         'open': observation_view(o),
         'elapsed_min': elapsed_min,
         'delay_after_open_min': o_ev['delay_after_open_min'],
-        'delay_later_than_declared_bound': o_ev['later_than_declared_bound'],
-        'overnight_mid_move': mid(o) - mid(c),
+        'declared_tolerance_min': o_ev['declared_tolerance_min'],
+        # the two movements are reported APART, and named for what they measure
+        'close_to_first_usable_mid_move': mid(o) - mid(c),
         'calendar_gap': calendar.gap(close_date, next_date),
-        'post_open': post_open_marks(next_obs, o),
-        'staleness_established': bool(c.get('exchange_ts_verified')
-                                      and o.get('exchange_ts_verified')),
+        'post_open_movement': post_open_marks(next_obs, o),
+        # CORRECTED: a verified FLAG alone is not an established clock; the timestamp must be
+        # present on both marks and inside the staleness bound
+        'staleness_established': staleness_established(c, o),
+        'exchange_clock': {'close_verified': bool(c.get('exchange_ts_verified')),
+                           'close_ts': c.get('exchange_ts'),
+                           'open_verified': bool(o.get('exchange_ts_verified')),
+                           'open_ts': o.get('exchange_ts')},
     })
     return result
 
@@ -574,8 +656,9 @@ def main(argv=None):
     print('=' * 100)
     print('calendar: app NSE_HOLIDAYS, %d dates, covered years %s, last holiday %s'
           % (len(holidays), cal.covered_years, cal.last_holiday))
-    print('close window %s-%s   open %s   open-delay bound %d min   staleness bound %d s'
-          % (NEAR_CLOSE_FROM, CLOSE_CLOCK, OPEN_CLOCK, MAX_OPEN_DELAY_MIN, MAX_QUOTE_STALE_S))
+    print('close window %s-%s   open %s   opening tolerance %d min   staleness bound %d s'
+          % (NEAR_CLOSE_FROM, CLOSE_CLOCK, OPEN_CLOCK, OPENING_TOLERANCE_MIN,
+             MAX_QUOTE_STALE_S))
     found = session_dates_of(docs)
     print('index %s   exports %d   sessions %s' % (a.index, len(docs),
           ', '.join('%s (%s)' % (d, src) for d, src in sorted(found.items()))))
@@ -589,10 +672,12 @@ def main(argv=None):
                      or r.get('expected_next_trading_day') or ''))
             continue
         i = r['identity']
-        print('  PAIRED   %-26s %s %s %s  overnight mid %+.2f  elapsed %.1f min  '
-              'delay after open %d min'
+        print('  PAIRED   %-26s %s %s %s  close->first usable %+.2f  elapsed %.1f min  '
+              'delay after open %d min  staleness %s'
               % (head, i['instrument_key'], i['strike'], i['side'],
-                 r['overnight_mid_move'], r['elapsed_min'], r['delay_after_open_min']))
+                 r['close_to_first_usable_mid_move'], r['elapsed_min'],
+                 r['delay_after_open_min'],
+                 'established' if r['staleness_established'] else 'unknown'))
     if refused:
         print('\nrefusals by reason:')
         for why, n in sorted(refused.items()):

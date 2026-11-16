@@ -1,0 +1,2738 @@
+{
+ "_fixture": "premium_followon_export_20261016",
+ "_provenance": {
+  "carries_production_lot_authority": true,
+  "note": "the section declares LIVE_DEVICE_CAPTURE because PremiumExportSection uses the device context; this file is NOT a live capture, and this provenance block is what the input inventory reads to label it SYNTHETIC",
+  "produced_by": "PremiumFollowOnCapture.observe + .exportSection, the real Kotlin producer, from the committed chain fixture contracts/x1_upstox_raw_chains.json",
+  "producer_output_sha256": "7de0b2943bd7a884f6c70acf580973f0cf8a47f2ab474a9d0ef00170d8f4e577",
+  "session_date": "2026-10-16",
+  "synthetic": true,
+  "why": "the Stage G matcher and the Stage D lot path are asserted against the bytes the follow-on capture actually writes, not an approximation of them",
+  "windows": {
+   "close": "followon_close_1510_1530 at 15:20",
+   "reopen": "followon_reopen_0915_0945 at 09:20 and 09:25"
+  }
+ },
+ "manifest": {
+  "created_at": "2026-10-16T15:40:00+05:30"
+ },
+ "premium": {
+  "capture_enabled": true,
+  "concurrent_capture_write_detected": false,
+  "has_data": true,
+  "indices": {
+   "BNF": {
+    "accounting": {
+     "conflicts_retained": 0,
+     "corrupt_files": 0,
+     "envelope_hash_verified": 1,
+     "global_bytes": 77446,
+     "hash_verified": 6,
+     "orphan_temp_files": 0,
+     "records": 6,
+     "session_bytes": 13498,
+     "slot_envelopes": 1
+    },
+    "acquisitions": {
+     "duplicate_acquisition_ids": [],
+     "hash_failure_identifiers": [],
+     "partial_or_empty_batches": 0,
+     "rows": [
+      {
+       "acquisition_id": "41d93a5b6656ff465a804df8de7d0231",
+       "attempt_distinguishable": true,
+       "batch_evidence_ref": "8149c386726676fa17b68ac7156f9961",
+       "envelope_hash_verified": true,
+       "envelope_ref": "4d338ee0748ced593c130ee0ec0dd47b",
+       "integrity_reasons": [],
+       "observations": 6,
+       "observations_expected": 6,
+       "observations_linked_to_this_envelope": 6,
+       "records_with_invalid_hash": 0,
+       "request_outcome": "RESPONSE_PRESENT",
+       "slot": "15:20",
+       "structural_state": "COMPLETE_STRUCTURAL",
+       "unique_instrument_keys": 6,
+       "verified_state": "VERIFIED"
+      }
+     ],
+     "structurally_complete_batches": 1,
+     "unresolved_record_groups": [],
+     "usable_evidence_acquisitions": 1,
+     "verified_batches": 1,
+     "verified_contract": {
+      "checks": [
+       "record_and_envelope_payload_hashes",
+       "supported_record_and_envelope_versions",
+       "batch_evidence_ref_recomputed_from_records_in_pinned_order",
+       "acquisition_id_recomputed_from_the_envelope_basis",
+       "expected_pinned_key_set_and_no_duplicate_keys",
+       "envelope_session_index_against_the_requested_export",
+       "record_to_envelope_and_cohort_joins",
+       "no_duplicate_envelope_acquisition_ids"
+      ],
+      "supported_envelope_versions": [
+       "mr.premium_slot_envelope.v3"
+      ],
+      "supported_record_versions": [
+       "mr.premium_observation.v4"
+      ],
+      "verified_does_not_mean": [
+       "valid_or_executable_quotes",
+       "a_usable_forecast_label",
+       "authoritative_lot_resolution",
+       "a_tradeable_contract"
+      ],
+      "verified_means": "INTEGRITY_AND_LINKAGE_UNDER_THIS_CONTRACT_ONLY"
+     }
+    },
+    "caps": {
+     "admission_measures": "ACTUAL_FINAL_BYTES_INCLUDING_CONFLICT_WRAPPERS",
+     "admission_serialized_per_root": true,
+     "caps_are": "PROPOSED_INITIAL_IMPLEMENTATION_CAPS_NOT_MEASURED_TYPICAL_PAYLOADS",
+     "conflict_archives_inside_caps": true,
+     "max_bytes_global": 4194304,
+     "max_bytes_per_index_session": 1048576,
+     "max_bytes_per_record": 2048,
+     "max_cohorts_per_index_session": 1,
+     "max_conflicts_per_index_session": 32,
+     "max_envelopes_per_index_session": 78,
+     "max_outcomes_per_index_session": 468,
+     "outcome_cap_counts": "PRIMARY_CONTRACT_SLOT_OUTCOMES_ONLY",
+     "retained_evidence_policy": "FIRST_WRITE_WINS_CONFLICT_ARCHIVED",
+     "retention_deletion": "NONE_IN_THIS_DELIVERY",
+     "store_version": "premium_capture_store_v2_root_scoped_admission",
+     "summary_reserve_bytes": 16384,
+     "writes_covered_by_admission": "RECORDS_ENVELOPES_COHORT_CONFLICT_ARCHIVES_AND_SUMMARY"
+    },
+    "claims": {
+     "a_supplied_offline_table_can_confer_authority": false,
+     "authoritative_lot_resolved": true,
+     "executable_fills": false,
+     "forecast_of_future_inputs": false,
+     "lot_authority_basis": "PRODUCTION_CONTRACT_LOT_TABLE_RECORDED_RESOLVED_AND_REFERENCED_BY_CONTENT",
+     "offline_resolution_of_instrument_map": false,
+     "offline_resolution_of_lot_table": false,
+     "purpose": "EVIDENCE_PREPARATION_FOR_FUTURE_IV_FORECASTING",
+     "synchronised_exchange_quotes": false
+    },
+    "cohort": {
+     "capture_window": "followon_close_1510_1530",
+     "cohort_id": "2026-10-16|BNF|a86908811cf8a0db98c84d664304e47f",
+     "cohort_rule_version": "premium_capture_cohort_v2_three_paired_strikes_validated",
+     "contracts_expected": 6,
+     "expiry": "2026-10-27",
+     "hash_basis": {
+      "authenticates": "RECORDED_BYTES_AND_IDENTITY_ONLY",
+      "authenticates_vendor_truth": false,
+      "omitted_field": "payload_sha256",
+      "serialization": "json_sorted_keys_compact_utf8_v1"
+     },
+     "index": "BNF",
+     "paired_strikes": [
+      54900,
+      55000,
+      55100
+     ],
+     "payload_sha256": "8a777a2728b39025ca8f39075fe9ed2bc176444299626dc54903c3c47638d8b0",
+     "pinned_contracts": [
+      {
+       "expiry": "2026-10-27",
+       "index": "BNF",
+       "instrument_key": "NSE_FO|61038",
+       "option_type": "CE",
+       "strike": 54900,
+       "underlying_key": "NSE_INDEX|Nifty Bank"
+      },
+      {
+       "expiry": "2026-10-27",
+       "index": "BNF",
+       "instrument_key": "NSE_FO|61039",
+       "option_type": "PE",
+       "strike": 54900,
+       "underlying_key": "NSE_INDEX|Nifty Bank"
+      },
+      {
+       "expiry": "2026-10-27",
+       "index": "BNF",
+       "instrument_key": "NSE_FO|61040",
+       "option_type": "CE",
+       "strike": 55000,
+       "underlying_key": "NSE_INDEX|Nifty Bank"
+      },
+      {
+       "expiry": "2026-10-27",
+       "index": "BNF",
+       "instrument_key": "NSE_FO|61041",
+       "option_type": "PE",
+       "strike": 55000,
+       "underlying_key": "NSE_INDEX|Nifty Bank"
+      },
+      {
+       "expiry": "2026-10-27",
+       "index": "BNF",
+       "instrument_key": "NSE_FO|61042",
+       "option_type": "CE",
+       "strike": 55100,
+       "underlying_key": "NSE_INDEX|Nifty Bank"
+      },
+      {
+       "expiry": "2026-10-27",
+       "index": "BNF",
+       "instrument_key": "NSE_FO|61043",
+       "option_type": "PE",
+       "strike": 55100,
+       "underlying_key": "NSE_INDEX|Nifty Bank"
+      }
+     ],
+     "selection_basis": "THREE_STRIKES_NEAREST_THIS_RESPONSE_SPOT_WITH_BOTH_LEGS",
+     "selection_slot": "15:20",
+     "selection_spot": 55000,
+     "session_date": "2026-10-16",
+     "underlying_key": "NSE_INDEX|Nifty Bank"
+    },
+    "cohort_state": {
+     "cohort_ref": "5ebb70cc8979c77ad7adc507be10b1ae",
+     "hash_verified": true,
+     "reason": null,
+     "reselection_on_invalid": false,
+     "state": "VALID"
+    },
+    "conflicts": {
+     "evidence": [],
+     "retained": 0
+    },
+    "device_evidence": true,
+    "durable_counters": {
+     "batches_attempted": 1,
+     "batches_complete": 1,
+     "envelope_written": 1,
+     "write_written": 6
+    },
+    "evidence_context": {
+     "clock_provenance": "DEVICE_LOCAL_ACQUISITION_RECEIPT_EXCHANGE_EVENT_SEMANTICS_UNVERIFIED",
+     "device_evidence": true,
+     "lot_table_provenance": "CONTRACT_LOT_TABLE:contract_lot_table_v3_20260914",
+     "note": "device evidence does not mean synchronised exchange ticks or executable fills",
+     "quote_provenance": "VENDOR_OPTION_CHAIN_RESPONSE_AS_RECEIVED",
+     "slot_provenance": "DERIVED_FROM_EACH_INDEX_OWN_ACQUISITION_CLOCK",
+     "source_kind": "LIVE_DEVICE_CAPTURE",
+     "synthetic_fields": []
+    },
+    "export_version": "premium_capture_export_v3_verified_and_resolved",
+    "index": "BNF",
+    "integrity": {
+     "corrupt_conflict_files": [],
+     "corrupt_envelope_files": [],
+     "corrupt_record_files": [],
+     "orphan_temp_files": [],
+     "summary_readable": true
+    },
+    "is_synthetic": false,
+    "record_join": {
+     "acquisition_identity_covers": [
+      "session_date",
+      "index",
+      "slot",
+      "cohort_ref",
+      "clocks",
+      "underlying",
+      "lot",
+      "batch_evidence_ref",
+      "request_outcome"
+     ],
+     "envelope_carries": [
+      "clocks",
+      "underlying",
+      "lot",
+      "batch_evidence_ref",
+      "request_outcome",
+      "attempt_distinguishable"
+     ],
+     "keys": "session_date+index+slot+acquisition_id",
+     "measured_by": "PremiumCaptureTest.measuredRecordSizesAgainstTheCommittedRawVendorFixture (the Kotlin producer; the Python mirror no longer measures sizes)",
+     "observation_carries": [
+      "identity",
+      "iv",
+      "bbo",
+      "acquisition_id",
+      "envelope_ref",
+      "cohort_ref"
+     ],
+     "rationale": "a flat record exceeded the 2048 B per-record cap and 78 slots of them exceeded the session budget; the per-acquisition facts are identical for all six contracts in one acquisition, so they are written once"
+    },
+    "records": [
+     {
+      "acquisition_id": "41d93a5b6656ff465a804df8de7d0231",
+      "bbo": {
+       "ask_qty_raw": {
+        "raw": 975,
+        "status": "PRESENT_VALID"
+       },
+       "ask_raw": {
+        "raw": 200.5,
+        "status": "PRESENT_VALID"
+       },
+       "bid_qty_raw": {
+        "raw": 975,
+        "status": "PRESENT_VALID"
+       },
+       "bid_raw": {
+        "raw": 199.5,
+        "status": "PRESENT_VALID"
+       },
+       "book_status": "TWO_SIDED",
+       "executable_mid_computed": false,
+       "ltp_raw": {
+        "raw": 200,
+        "status": "PRESENT_VALID"
+       },
+       "ltp_used_as_quote_fallback": false,
+       "quantity_unit_status": "UNKNOWN"
+      },
+      "cohort_ref": "5ebb70cc8979c77ad7adc507be10b1ae",
+      "envelope_join": "session_date+index+slot+acquisition_id",
+      "envelope_ref": "4d338ee0748ced593c130ee0ec0dd47b",
+      "hash_basis": {
+       "authenticates": "RECORDED_BYTES_AND_IDENTITY_ONLY",
+       "authenticates_vendor_truth": false,
+       "omitted_field": "payload_sha256",
+       "serialization": "json_sorted_keys_compact_utf8_v1"
+      },
+      "identity": {
+       "identity_disagreements": [],
+       "identity_evidence_missing": [],
+       "identity_verified": true,
+       "observed_strike_raw": {
+        "raw": 54900,
+        "status": "PRESENT_VALID"
+       },
+       "pinned_resolves_via": "cohort.pinned_contracts[instrument_key]"
+      },
+      "index": "BNF",
+      "instrument_key": "NSE_FO|61038",
+      "iv": {
+       "iv_authoritative_resolved": false,
+       "iv_greeks_raw": {
+        "raw": 14.2,
+        "status": "PRESENT_VALID"
+       },
+       "iv_market_data_raw": {
+        "raw": null,
+        "status": "ABSENT"
+       },
+       "iv_raw_field_comparison": null,
+       "iv_source": "GREEKS_PRESENT_ONLY",
+       "iv_unit_status": "UNKNOWN",
+       "iv_unit_verification": null
+      },
+      "outcome": "OBSERVED",
+      "payload_sha256": "f2ef34cefdc6476a6e4b9c0d6b8ac4f8f7babba5dda47b8c65b58d1470fad91f",
+      "record_version": "mr.premium_observation.v4",
+      "session_date": "2026-10-16",
+      "slot": "15:20"
+     },
+     {
+      "acquisition_id": "41d93a5b6656ff465a804df8de7d0231",
+      "bbo": {
+       "ask_qty_raw": {
+        "raw": 975,
+        "status": "PRESENT_VALID"
+       },
+       "ask_raw": {
+        "raw": 200.5,
+        "status": "PRESENT_VALID"
+       },
+       "bid_qty_raw": {
+        "raw": 975,
+        "status": "PRESENT_VALID"
+       },
+       "bid_raw": {
+        "raw": 199.5,
+        "status": "PRESENT_VALID"
+       },
+       "book_status": "TWO_SIDED",
+       "executable_mid_computed": false,
+       "ltp_raw": {
+        "raw": 200,
+        "status": "PRESENT_VALID"
+       },
+       "ltp_used_as_quote_fallback": false,
+       "quantity_unit_status": "UNKNOWN"
+      },
+      "cohort_ref": "5ebb70cc8979c77ad7adc507be10b1ae",
+      "envelope_join": "session_date+index+slot+acquisition_id",
+      "envelope_ref": "4d338ee0748ced593c130ee0ec0dd47b",
+      "hash_basis": {
+       "authenticates": "RECORDED_BYTES_AND_IDENTITY_ONLY",
+       "authenticates_vendor_truth": false,
+       "omitted_field": "payload_sha256",
+       "serialization": "json_sorted_keys_compact_utf8_v1"
+      },
+      "identity": {
+       "identity_disagreements": [],
+       "identity_evidence_missing": [],
+       "identity_verified": true,
+       "observed_strike_raw": {
+        "raw": 55100,
+        "status": "PRESENT_VALID"
+       },
+       "pinned_resolves_via": "cohort.pinned_contracts[instrument_key]"
+      },
+      "index": "BNF",
+      "instrument_key": "NSE_FO|61043",
+      "iv": {
+       "iv_authoritative_resolved": false,
+       "iv_greeks_raw": {
+        "raw": 14.2,
+        "status": "PRESENT_VALID"
+       },
+       "iv_market_data_raw": {
+        "raw": null,
+        "status": "ABSENT"
+       },
+       "iv_raw_field_comparison": null,
+       "iv_source": "GREEKS_PRESENT_ONLY",
+       "iv_unit_status": "UNKNOWN",
+       "iv_unit_verification": null
+      },
+      "outcome": "OBSERVED",
+      "payload_sha256": "56be901c3f3f37c52af041875faec6ebef742273061931dc2dd65b04f28c8f0d",
+      "record_version": "mr.premium_observation.v4",
+      "session_date": "2026-10-16",
+      "slot": "15:20"
+     },
+     {
+      "acquisition_id": "41d93a5b6656ff465a804df8de7d0231",
+      "bbo": {
+       "ask_qty_raw": {
+        "raw": 975,
+        "status": "PRESENT_VALID"
+       },
+       "ask_raw": {
+        "raw": 100.5,
+        "status": "PRESENT_VALID"
+       },
+       "bid_qty_raw": {
+        "raw": 975,
+        "status": "PRESENT_VALID"
+       },
+       "bid_raw": {
+        "raw": 99.5,
+        "status": "PRESENT_VALID"
+       },
+       "book_status": "TWO_SIDED",
+       "executable_mid_computed": false,
+       "ltp_raw": {
+        "raw": 100,
+        "status": "PRESENT_VALID"
+       },
+       "ltp_used_as_quote_fallback": false,
+       "quantity_unit_status": "UNKNOWN"
+      },
+      "cohort_ref": "5ebb70cc8979c77ad7adc507be10b1ae",
+      "envelope_join": "session_date+index+slot+acquisition_id",
+      "envelope_ref": "4d338ee0748ced593c130ee0ec0dd47b",
+      "hash_basis": {
+       "authenticates": "RECORDED_BYTES_AND_IDENTITY_ONLY",
+       "authenticates_vendor_truth": false,
+       "omitted_field": "payload_sha256",
+       "serialization": "json_sorted_keys_compact_utf8_v1"
+      },
+      "identity": {
+       "identity_disagreements": [],
+       "identity_evidence_missing": [],
+       "identity_verified": true,
+       "observed_strike_raw": {
+        "raw": 55000,
+        "status": "PRESENT_VALID"
+       },
+       "pinned_resolves_via": "cohort.pinned_contracts[instrument_key]"
+      },
+      "index": "BNF",
+      "instrument_key": "NSE_FO|61041",
+      "iv": {
+       "iv_authoritative_resolved": false,
+       "iv_greeks_raw": {
+        "raw": 14.2,
+        "status": "PRESENT_VALID"
+       },
+       "iv_market_data_raw": {
+        "raw": null,
+        "status": "ABSENT"
+       },
+       "iv_raw_field_comparison": null,
+       "iv_source": "GREEKS_PRESENT_ONLY",
+       "iv_unit_status": "UNKNOWN",
+       "iv_unit_verification": null
+      },
+      "outcome": "OBSERVED",
+      "payload_sha256": "b458f288a5dcf93f2babe69e32832f3a92166e497cee6b475a67e90ffb6832c7",
+      "record_version": "mr.premium_observation.v4",
+      "session_date": "2026-10-16",
+      "slot": "15:20"
+     },
+     {
+      "acquisition_id": "41d93a5b6656ff465a804df8de7d0231",
+      "bbo": {
+       "ask_qty_raw": {
+        "raw": 975,
+        "status": "PRESENT_VALID"
+       },
+       "ask_raw": {
+        "raw": 100.5,
+        "status": "PRESENT_VALID"
+       },
+       "bid_qty_raw": {
+        "raw": 975,
+        "status": "PRESENT_VALID"
+       },
+       "bid_raw": {
+        "raw": 99.5,
+        "status": "PRESENT_VALID"
+       },
+       "book_status": "TWO_SIDED",
+       "executable_mid_computed": false,
+       "ltp_raw": {
+        "raw": 100,
+        "status": "PRESENT_VALID"
+       },
+       "ltp_used_as_quote_fallback": false,
+       "quantity_unit_status": "UNKNOWN"
+      },
+      "cohort_ref": "5ebb70cc8979c77ad7adc507be10b1ae",
+      "envelope_join": "session_date+index+slot+acquisition_id",
+      "envelope_ref": "4d338ee0748ced593c130ee0ec0dd47b",
+      "hash_basis": {
+       "authenticates": "RECORDED_BYTES_AND_IDENTITY_ONLY",
+       "authenticates_vendor_truth": false,
+       "omitted_field": "payload_sha256",
+       "serialization": "json_sorted_keys_compact_utf8_v1"
+      },
+      "identity": {
+       "identity_disagreements": [],
+       "identity_evidence_missing": [],
+       "identity_verified": true,
+       "observed_strike_raw": {
+        "raw": 55000,
+        "status": "PRESENT_VALID"
+       },
+       "pinned_resolves_via": "cohort.pinned_contracts[instrument_key]"
+      },
+      "index": "BNF",
+      "instrument_key": "NSE_FO|61040",
+      "iv": {
+       "iv_authoritative_resolved": false,
+       "iv_greeks_raw": {
+        "raw": 14.2,
+        "status": "PRESENT_VALID"
+       },
+       "iv_market_data_raw": {
+        "raw": null,
+        "status": "ABSENT"
+       },
+       "iv_raw_field_comparison": null,
+       "iv_source": "GREEKS_PRESENT_ONLY",
+       "iv_unit_status": "UNKNOWN",
+       "iv_unit_verification": null
+      },
+      "outcome": "OBSERVED",
+      "payload_sha256": "3f3b8543af7abd9fc078a71c6608a313d213692fecd5eae5d72deace472657c2",
+      "record_version": "mr.premium_observation.v4",
+      "session_date": "2026-10-16",
+      "slot": "15:20"
+     },
+     {
+      "acquisition_id": "41d93a5b6656ff465a804df8de7d0231",
+      "bbo": {
+       "ask_qty_raw": {
+        "raw": 975,
+        "status": "PRESENT_VALID"
+       },
+       "ask_raw": {
+        "raw": 100.5,
+        "status": "PRESENT_VALID"
+       },
+       "bid_qty_raw": {
+        "raw": 975,
+        "status": "PRESENT_VALID"
+       },
+       "bid_raw": {
+        "raw": 99.5,
+        "status": "PRESENT_VALID"
+       },
+       "book_status": "TWO_SIDED",
+       "executable_mid_computed": false,
+       "ltp_raw": {
+        "raw": 100,
+        "status": "PRESENT_VALID"
+       },
+       "ltp_used_as_quote_fallback": false,
+       "quantity_unit_status": "UNKNOWN"
+      },
+      "cohort_ref": "5ebb70cc8979c77ad7adc507be10b1ae",
+      "envelope_join": "session_date+index+slot+acquisition_id",
+      "envelope_ref": "4d338ee0748ced593c130ee0ec0dd47b",
+      "hash_basis": {
+       "authenticates": "RECORDED_BYTES_AND_IDENTITY_ONLY",
+       "authenticates_vendor_truth": false,
+       "omitted_field": "payload_sha256",
+       "serialization": "json_sorted_keys_compact_utf8_v1"
+      },
+      "identity": {
+       "identity_disagreements": [],
+       "identity_evidence_missing": [],
+       "identity_verified": true,
+       "observed_strike_raw": {
+        "raw": 54900,
+        "status": "PRESENT_VALID"
+       },
+       "pinned_resolves_via": "cohort.pinned_contracts[instrument_key]"
+      },
+      "index": "BNF",
+      "instrument_key": "NSE_FO|61039",
+      "iv": {
+       "iv_authoritative_resolved": false,
+       "iv_greeks_raw": {
+        "raw": 14.2,
+        "status": "PRESENT_VALID"
+       },
+       "iv_market_data_raw": {
+        "raw": null,
+        "status": "ABSENT"
+       },
+       "iv_raw_field_comparison": null,
+       "iv_source": "GREEKS_PRESENT_ONLY",
+       "iv_unit_status": "UNKNOWN",
+       "iv_unit_verification": null
+      },
+      "outcome": "OBSERVED",
+      "payload_sha256": "472840a6c4d149536d9e9d8e12273ec1585b30c2f647cd5949bc109647958e5a",
+      "record_version": "mr.premium_observation.v4",
+      "session_date": "2026-10-16",
+      "slot": "15:20"
+     },
+     {
+      "acquisition_id": "41d93a5b6656ff465a804df8de7d0231",
+      "bbo": {
+       "ask_qty_raw": {
+        "raw": 975,
+        "status": "PRESENT_VALID"
+       },
+       "ask_raw": {
+        "raw": 100.5,
+        "status": "PRESENT_VALID"
+       },
+       "bid_qty_raw": {
+        "raw": 975,
+        "status": "PRESENT_VALID"
+       },
+       "bid_raw": {
+        "raw": 99.5,
+        "status": "PRESENT_VALID"
+       },
+       "book_status": "TWO_SIDED",
+       "executable_mid_computed": false,
+       "ltp_raw": {
+        "raw": 100,
+        "status": "PRESENT_VALID"
+       },
+       "ltp_used_as_quote_fallback": false,
+       "quantity_unit_status": "UNKNOWN"
+      },
+      "cohort_ref": "5ebb70cc8979c77ad7adc507be10b1ae",
+      "envelope_join": "session_date+index+slot+acquisition_id",
+      "envelope_ref": "4d338ee0748ced593c130ee0ec0dd47b",
+      "hash_basis": {
+       "authenticates": "RECORDED_BYTES_AND_IDENTITY_ONLY",
+       "authenticates_vendor_truth": false,
+       "omitted_field": "payload_sha256",
+       "serialization": "json_sorted_keys_compact_utf8_v1"
+      },
+      "identity": {
+       "identity_disagreements": [],
+       "identity_evidence_missing": [],
+       "identity_verified": true,
+       "observed_strike_raw": {
+        "raw": 55100,
+        "status": "PRESENT_VALID"
+       },
+       "pinned_resolves_via": "cohort.pinned_contracts[instrument_key]"
+      },
+      "index": "BNF",
+      "instrument_key": "NSE_FO|61042",
+      "iv": {
+       "iv_authoritative_resolved": false,
+       "iv_greeks_raw": {
+        "raw": 14.2,
+        "status": "PRESENT_VALID"
+       },
+       "iv_market_data_raw": {
+        "raw": null,
+        "status": "ABSENT"
+       },
+       "iv_raw_field_comparison": null,
+       "iv_source": "GREEKS_PRESENT_ONLY",
+       "iv_unit_status": "UNKNOWN",
+       "iv_unit_verification": null
+      },
+      "outcome": "OBSERVED",
+      "payload_sha256": "d45ceafbd8070a32dedc3caa22e12d31ba5e1b1267a21416fbbca423e3703809",
+      "record_version": "mr.premium_observation.v4",
+      "session_date": "2026-10-16",
+      "slot": "15:20"
+     }
+    ],
+    "references": {
+     "contract_lot_table": {
+      "metadata": null,
+      "metadata_present": false,
+      "metadata_provenance": null,
+      "metadata_ref": null,
+      "per_acquisition": [
+       {
+        "acquisition_id": "41d93a5b6656ff465a804df8de7d0231",
+        "as_of_session": "2026-10-16",
+        "detail": null,
+        "expected_table_ref": "contract_lot_table/contract_lot_table_v3_20260914/FAOP70616_BNF_monthly_revised/2026-10-16",
+        "lot_authoritative_resolved": false,
+        "lot_resolution": "UNRESOLVED_NO_METADATA_SUPPLIED",
+        "resolved_lot": null,
+        "underlying_key": "NSE_INDEX|Nifty Bank"
+       }
+      ],
+      "referenced_names": [
+       "contract_lot_table/contract_lot_table_v3_20260914/FAOP70616_BNF_monthly_revised/2026-10-16"
+      ],
+      "resolution": "UNRESOLVED_REFERENCE",
+      "resolution_coverage": {
+       "acquisitions": 1,
+       "conflicting_with_claim": 0,
+       "resolved": 0,
+       "unresolved": 1
+      }
+     },
+     "instrument_map": {
+      "metadata": null,
+      "metadata_present": false,
+      "metadata_provenance": null,
+      "metadata_ref": null,
+      "referenced_names": [],
+      "resolution": "NO_REFERENCE_RECORDED"
+     },
+     "pinned_contracts": [
+      {
+       "expiry": "2026-10-27",
+       "index": "BNF",
+       "instrument_key": "NSE_FO|61038",
+       "option_type": "CE",
+       "strike": 54900,
+       "underlying_key": "NSE_INDEX|Nifty Bank"
+      },
+      {
+       "expiry": "2026-10-27",
+       "index": "BNF",
+       "instrument_key": "NSE_FO|61039",
+       "option_type": "PE",
+       "strike": 54900,
+       "underlying_key": "NSE_INDEX|Nifty Bank"
+      },
+      {
+       "expiry": "2026-10-27",
+       "index": "BNF",
+       "instrument_key": "NSE_FO|61040",
+       "option_type": "CE",
+       "strike": 55000,
+       "underlying_key": "NSE_INDEX|Nifty Bank"
+      },
+      {
+       "expiry": "2026-10-27",
+       "index": "BNF",
+       "instrument_key": "NSE_FO|61041",
+       "option_type": "PE",
+       "strike": 55000,
+       "underlying_key": "NSE_INDEX|Nifty Bank"
+      },
+      {
+       "expiry": "2026-10-27",
+       "index": "BNF",
+       "instrument_key": "NSE_FO|61042",
+       "option_type": "CE",
+       "strike": 55100,
+       "underlying_key": "NSE_INDEX|Nifty Bank"
+      },
+      {
+       "expiry": "2026-10-27",
+       "index": "BNF",
+       "instrument_key": "NSE_FO|61043",
+       "option_type": "PE",
+       "strike": 55100,
+       "underlying_key": "NSE_INDEX|Nifty Bank"
+      }
+     ],
+     "production_lot_authority": {
+      "authoritative": true,
+      "authority": {
+       "authoritative": true,
+       "authority": "CONTRACT_LOT_TABLE",
+       "contract_lot_size": 30,
+       "expiry": "2026-10-27",
+       "expiry_cycle": null,
+       "flattened_to_one_lot_per_underlying": false,
+       "index_key": "BNF",
+       "index_known": true,
+       "lot_as_of": "2026-10-16",
+       "lot_conflict": false,
+       "lot_source": "authoritative_contract_rule",
+       "lot_table_version": "contract_lot_table_v3_20260914",
+       "matched_rule_id": "FAOP70616_BNF_monthly_revised",
+       "operational_current_allowed": false,
+       "requested_expiry": "2026-10-27",
+       "requested_index": "BNF",
+       "requested_session_date": "2026-10-16",
+       "resolved": true,
+       "rule_contract_lot": null,
+       "unavailable_reason": null
+      },
+      "authority_holds": true,
+      "block_kind": "THE_APPLICATIONS_OWN_CONTRACT_LOT_TABLE",
+      "coverage": {
+       "complete": true,
+       "envelopes": 1,
+       "matched": 1,
+       "missing_reference": 0,
+       "per_acquisition": [
+        {
+         "acquisition_id": "41d93a5b6656ff465a804df8de7d0231",
+         "production_authority_ref": "c2f3e762bbd931d5a5f55edad2af17e4",
+         "slot": "15:20",
+         "state": "MATCHED"
+        }
+       ],
+       "reference_mismatched": 0
+      },
+      "generic_supplied_table_substituted": false,
+      "is_the_applications_own_contract_table": true,
+      "lot_conflict": false,
+      "pinned_context": {
+       "agrees": true,
+       "authority_requested_expiry": "2026-10-27",
+       "authority_requested_index": "BNF",
+       "authority_requested_session_date": "2026-10-16",
+       "current_table_version": "contract_lot_table_v3_20260914",
+       "pinned_expiry": "2026-10-27",
+       "reasons": []
+      },
+      "recorded": true,
+      "reference_matches_record": true,
+      "referenced_by_envelopes": [
+       "c2f3e762bbd931d5a5f55edad2af17e4"
+      ],
+      "resolved": true
+     },
+     "read_from": "SLOT_ENVELOPES"
+    },
+    "session_date": "2026-10-16",
+    "session_version": "premium_capture_session_v3_response_evidence_bound",
+    "slot_envelopes": [
+     {
+      "acquisition_id": "41d93a5b6656ff465a804df8de7d0231",
+      "attempt_distinguishable": true,
+      "batch_evidence_ref": "8149c386726676fa17b68ac7156f9961",
+      "clocks": {
+       "acquisition_elapsed_ms": 120,
+       "acquisition_request_ms": 1792144206880,
+       "acquisition_response_ms": 1792144207000,
+       "actual_acquisition_clock": "15:20",
+       "clock_basis": "LOCAL_ACQUISITION_RECEIPT",
+       "quote_event_clock_verified": false,
+       "scheduler_slot_agrees_with_clock": null,
+       "scheduler_slot_declared": null,
+       "slot_basis": "SCHEDULER_SLOT",
+       "vendor_event_semantics": "UNVERIFIED",
+       "vendor_source_ts": null,
+       "vendor_ts_status": "VENDOR_TS_ABSENT"
+      },
+      "cohort_id": "2026-10-16|BNF|a86908811cf8a0db98c84d664304e47f",
+      "cohort_ref": "5ebb70cc8979c77ad7adc507be10b1ae",
+      "hash_basis": {
+       "authenticates": "RECORDED_BYTES_AND_IDENTITY_ONLY",
+       "authenticates_vendor_truth": false,
+       "omitted_field": "payload_sha256",
+       "serialization": "json_sorted_keys_compact_utf8_v1"
+      },
+      "index": "BNF",
+      "lot": {
+       "claimed_lot_positive_integer": true,
+       "claimed_source_in_accepted_set": true,
+       "contract_lot_table_ref": "contract_lot_table/contract_lot_table_v3_20260914/FAOP70616_BNF_monthly_revised/2026-10-16",
+       "lot_authoritative_resolved": false,
+       "lot_authority_requires": "RESOLVER_VALIDATED_TABLE_ROW_FOR_THIS_UNDERLYING_EFFECTIVE_AT_THE_SESSION_DATE",
+       "lot_claimed_raw": {
+        "raw": 30,
+        "status": "PRESENT_VALID"
+       },
+       "lot_claimed_source": "CONTRACT_LOT_TABLE",
+       "lot_resolution": "UNRESOLVED_NO_METADATA_SUPPLIED",
+       "lot_status": "PRODUCER_CLAIM_UNRESOLVED",
+       "map_ref": null,
+       "production_authority_ref": "c2f3e762bbd931d5a5f55edad2af17e4",
+       "reference_carries_real_date": true,
+       "reference_date": "2026-10-16"
+      },
+      "payload_sha256": "536b4bf2e093e00396978429d5c9103f6758329497086c2fe0cf989734842310",
+      "record_version": "mr.premium_slot_envelope.v3",
+      "request_outcome": "RESPONSE_PRESENT",
+      "session_date": "2026-10-16",
+      "slot": "15:20",
+      "underlying": {
+       "basis": "SAME_ACQUISITION",
+       "carried_by_chain_response": true,
+       "skew_ms": null,
+       "source_field": "underlying_spot_price",
+       "spot_raw": {
+        "raw": 55000,
+        "status": "PRESENT_VALID"
+       },
+       "synchronisation_with_quote": "SAME_RESPONSE_PAYLOAD"
+      }
+     }
+    ],
+    "slot_manifest": {
+     "capture_started_slot": null,
+     "expected_slots": 69,
+     "observed_slots": 1,
+     "rows": [
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "09:20",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "09:25",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "09:30",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "09:35",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "09:40",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "09:45",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "09:50",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "09:55",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "10:00",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "10:05",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "10:10",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "10:15",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "10:20",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "10:25",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "10:30",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "10:35",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "10:40",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "10:45",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "10:50",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "10:55",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "11:00",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "11:05",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "11:10",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "11:15",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "11:20",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "11:25",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "11:30",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "11:35",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "11:40",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "11:45",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "11:50",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "11:55",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "12:00",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "12:05",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "12:10",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "12:15",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "12:20",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "12:25",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "12:30",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "12:35",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "12:40",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "12:45",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "12:50",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "12:55",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "13:00",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "13:05",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "13:10",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "13:15",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "13:20",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "13:25",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "13:30",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "13:35",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "13:40",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "13:45",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "13:50",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "13:55",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "14:00",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "14:05",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "14:10",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "14:15",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "14:20",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "14:25",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "14:30",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "14:35",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "14:40",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "14:45",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "14:50",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "14:55",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "15:00",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      }
+     ]
+    },
+    "view_attempts": 1,
+    "view_consistency_basis": "STORE_REVISION_EVEN_AND_UNCHANGED_ACROSS_READ_ODD_MEANS_WRITE_IN_PROGRESS",
+    "view_consistent": true
+   },
+   "NF": {
+    "accounting": {
+     "conflicts_retained": 0,
+     "corrupt_files": 0,
+     "envelope_hash_verified": 1,
+     "global_bytes": 77446,
+     "hash_verified": 6,
+     "orphan_temp_files": 0,
+     "records": 6,
+     "session_bytes": 13461,
+     "slot_envelopes": 1
+    },
+    "acquisitions": {
+     "duplicate_acquisition_ids": [],
+     "hash_failure_identifiers": [],
+     "partial_or_empty_batches": 0,
+     "rows": [
+      {
+       "acquisition_id": "e21a6e89e2cd4a217fe1049874b35c0c",
+       "attempt_distinguishable": true,
+       "batch_evidence_ref": "89762d9bb4752d89ad945459693ac01f",
+       "envelope_hash_verified": true,
+       "envelope_ref": "0f1ed47f5a142bc3c9b9841eaa8eff56",
+       "integrity_reasons": [],
+       "observations": 6,
+       "observations_expected": 6,
+       "observations_linked_to_this_envelope": 6,
+       "records_with_invalid_hash": 0,
+       "request_outcome": "RESPONSE_PRESENT",
+       "slot": "15:20",
+       "structural_state": "COMPLETE_STRUCTURAL",
+       "unique_instrument_keys": 6,
+       "verified_state": "VERIFIED"
+      }
+     ],
+     "structurally_complete_batches": 1,
+     "unresolved_record_groups": [],
+     "usable_evidence_acquisitions": 1,
+     "verified_batches": 1,
+     "verified_contract": {
+      "checks": [
+       "record_and_envelope_payload_hashes",
+       "supported_record_and_envelope_versions",
+       "batch_evidence_ref_recomputed_from_records_in_pinned_order",
+       "acquisition_id_recomputed_from_the_envelope_basis",
+       "expected_pinned_key_set_and_no_duplicate_keys",
+       "envelope_session_index_against_the_requested_export",
+       "record_to_envelope_and_cohort_joins",
+       "no_duplicate_envelope_acquisition_ids"
+      ],
+      "supported_envelope_versions": [
+       "mr.premium_slot_envelope.v3"
+      ],
+      "supported_record_versions": [
+       "mr.premium_observation.v4"
+      ],
+      "verified_does_not_mean": [
+       "valid_or_executable_quotes",
+       "a_usable_forecast_label",
+       "authoritative_lot_resolution",
+       "a_tradeable_contract"
+      ],
+      "verified_means": "INTEGRITY_AND_LINKAGE_UNDER_THIS_CONTRACT_ONLY"
+     }
+    },
+    "caps": {
+     "admission_measures": "ACTUAL_FINAL_BYTES_INCLUDING_CONFLICT_WRAPPERS",
+     "admission_serialized_per_root": true,
+     "caps_are": "PROPOSED_INITIAL_IMPLEMENTATION_CAPS_NOT_MEASURED_TYPICAL_PAYLOADS",
+     "conflict_archives_inside_caps": true,
+     "max_bytes_global": 4194304,
+     "max_bytes_per_index_session": 1048576,
+     "max_bytes_per_record": 2048,
+     "max_cohorts_per_index_session": 1,
+     "max_conflicts_per_index_session": 32,
+     "max_envelopes_per_index_session": 78,
+     "max_outcomes_per_index_session": 468,
+     "outcome_cap_counts": "PRIMARY_CONTRACT_SLOT_OUTCOMES_ONLY",
+     "retained_evidence_policy": "FIRST_WRITE_WINS_CONFLICT_ARCHIVED",
+     "retention_deletion": "NONE_IN_THIS_DELIVERY",
+     "store_version": "premium_capture_store_v2_root_scoped_admission",
+     "summary_reserve_bytes": 16384,
+     "writes_covered_by_admission": "RECORDS_ENVELOPES_COHORT_CONFLICT_ARCHIVES_AND_SUMMARY"
+    },
+    "claims": {
+     "a_supplied_offline_table_can_confer_authority": false,
+     "authoritative_lot_resolved": true,
+     "executable_fills": false,
+     "forecast_of_future_inputs": false,
+     "lot_authority_basis": "PRODUCTION_CONTRACT_LOT_TABLE_RECORDED_RESOLVED_AND_REFERENCED_BY_CONTENT",
+     "offline_resolution_of_instrument_map": false,
+     "offline_resolution_of_lot_table": false,
+     "purpose": "EVIDENCE_PREPARATION_FOR_FUTURE_IV_FORECASTING",
+     "synchronised_exchange_quotes": false
+    },
+    "cohort": {
+     "capture_window": "followon_close_1510_1530",
+     "cohort_id": "2026-10-16|NF|448e06ee4ff1496eddd352169c5e719d",
+     "cohort_rule_version": "premium_capture_cohort_v2_three_paired_strikes_validated",
+     "contracts_expected": 6,
+     "expiry": "2026-10-27",
+     "hash_basis": {
+      "authenticates": "RECORDED_BYTES_AND_IDENTITY_ONLY",
+      "authenticates_vendor_truth": false,
+      "omitted_field": "payload_sha256",
+      "serialization": "json_sorted_keys_compact_utf8_v1"
+     },
+     "index": "NF",
+     "paired_strikes": [
+      24450,
+      24500,
+      24550
+     ],
+     "payload_sha256": "8ab534adb39533a2dee2ec15a951c1489149518873ea1272f7173ab7d5736876",
+     "pinned_contracts": [
+      {
+       "expiry": "2026-10-27",
+       "index": "NF",
+       "instrument_key": "NSE_FO|51018",
+       "option_type": "CE",
+       "strike": 24450,
+       "underlying_key": "NSE_INDEX|Nifty 50"
+      },
+      {
+       "expiry": "2026-10-27",
+       "index": "NF",
+       "instrument_key": "NSE_FO|51019",
+       "option_type": "PE",
+       "strike": 24450,
+       "underlying_key": "NSE_INDEX|Nifty 50"
+      },
+      {
+       "expiry": "2026-10-27",
+       "index": "NF",
+       "instrument_key": "NSE_FO|51020",
+       "option_type": "CE",
+       "strike": 24500,
+       "underlying_key": "NSE_INDEX|Nifty 50"
+      },
+      {
+       "expiry": "2026-10-27",
+       "index": "NF",
+       "instrument_key": "NSE_FO|51021",
+       "option_type": "PE",
+       "strike": 24500,
+       "underlying_key": "NSE_INDEX|Nifty 50"
+      },
+      {
+       "expiry": "2026-10-27",
+       "index": "NF",
+       "instrument_key": "NSE_FO|51022",
+       "option_type": "CE",
+       "strike": 24550,
+       "underlying_key": "NSE_INDEX|Nifty 50"
+      },
+      {
+       "expiry": "2026-10-27",
+       "index": "NF",
+       "instrument_key": "NSE_FO|51023",
+       "option_type": "PE",
+       "strike": 24550,
+       "underlying_key": "NSE_INDEX|Nifty 50"
+      }
+     ],
+     "selection_basis": "THREE_STRIKES_NEAREST_THIS_RESPONSE_SPOT_WITH_BOTH_LEGS",
+     "selection_slot": "15:20",
+     "selection_spot": 24500,
+     "session_date": "2026-10-16",
+     "underlying_key": "NSE_INDEX|Nifty 50"
+    },
+    "cohort_state": {
+     "cohort_ref": "22b409ad2f69057f5aca0003a794663c",
+     "hash_verified": true,
+     "reason": null,
+     "reselection_on_invalid": false,
+     "state": "VALID"
+    },
+    "conflicts": {
+     "evidence": [],
+     "retained": 0
+    },
+    "device_evidence": true,
+    "durable_counters": {
+     "batches_attempted": 1,
+     "batches_complete": 1,
+     "envelope_written": 1,
+     "write_written": 6
+    },
+    "evidence_context": {
+     "clock_provenance": "DEVICE_LOCAL_ACQUISITION_RECEIPT_EXCHANGE_EVENT_SEMANTICS_UNVERIFIED",
+     "device_evidence": true,
+     "lot_table_provenance": "CONTRACT_LOT_TABLE:contract_lot_table_v3_20260914",
+     "note": "device evidence does not mean synchronised exchange ticks or executable fills",
+     "quote_provenance": "VENDOR_OPTION_CHAIN_RESPONSE_AS_RECEIVED",
+     "slot_provenance": "DERIVED_FROM_EACH_INDEX_OWN_ACQUISITION_CLOCK",
+     "source_kind": "LIVE_DEVICE_CAPTURE",
+     "synthetic_fields": []
+    },
+    "export_version": "premium_capture_export_v3_verified_and_resolved",
+    "index": "NF",
+    "integrity": {
+     "corrupt_conflict_files": [],
+     "corrupt_envelope_files": [],
+     "corrupt_record_files": [],
+     "orphan_temp_files": [],
+     "summary_readable": true
+    },
+    "is_synthetic": false,
+    "record_join": {
+     "acquisition_identity_covers": [
+      "session_date",
+      "index",
+      "slot",
+      "cohort_ref",
+      "clocks",
+      "underlying",
+      "lot",
+      "batch_evidence_ref",
+      "request_outcome"
+     ],
+     "envelope_carries": [
+      "clocks",
+      "underlying",
+      "lot",
+      "batch_evidence_ref",
+      "request_outcome",
+      "attempt_distinguishable"
+     ],
+     "keys": "session_date+index+slot+acquisition_id",
+     "measured_by": "PremiumCaptureTest.measuredRecordSizesAgainstTheCommittedRawVendorFixture (the Kotlin producer; the Python mirror no longer measures sizes)",
+     "observation_carries": [
+      "identity",
+      "iv",
+      "bbo",
+      "acquisition_id",
+      "envelope_ref",
+      "cohort_ref"
+     ],
+     "rationale": "a flat record exceeded the 2048 B per-record cap and 78 slots of them exceeded the session budget; the per-acquisition facts are identical for all six contracts in one acquisition, so they are written once"
+    },
+    "records": [
+     {
+      "acquisition_id": "e21a6e89e2cd4a217fe1049874b35c0c",
+      "bbo": {
+       "ask_qty_raw": {
+        "raw": 975,
+        "status": "PRESENT_VALID"
+       },
+       "ask_raw": {
+        "raw": 150.5,
+        "status": "PRESENT_VALID"
+       },
+       "bid_qty_raw": {
+        "raw": 975,
+        "status": "PRESENT_VALID"
+       },
+       "bid_raw": {
+        "raw": 149.5,
+        "status": "PRESENT_VALID"
+       },
+       "book_status": "TWO_SIDED",
+       "executable_mid_computed": false,
+       "ltp_raw": {
+        "raw": 150,
+        "status": "PRESENT_VALID"
+       },
+       "ltp_used_as_quote_fallback": false,
+       "quantity_unit_status": "UNKNOWN"
+      },
+      "cohort_ref": "22b409ad2f69057f5aca0003a794663c",
+      "envelope_join": "session_date+index+slot+acquisition_id",
+      "envelope_ref": "0f1ed47f5a142bc3c9b9841eaa8eff56",
+      "hash_basis": {
+       "authenticates": "RECORDED_BYTES_AND_IDENTITY_ONLY",
+       "authenticates_vendor_truth": false,
+       "omitted_field": "payload_sha256",
+       "serialization": "json_sorted_keys_compact_utf8_v1"
+      },
+      "identity": {
+       "identity_disagreements": [],
+       "identity_evidence_missing": [],
+       "identity_verified": true,
+       "observed_strike_raw": {
+        "raw": 24550,
+        "status": "PRESENT_VALID"
+       },
+       "pinned_resolves_via": "cohort.pinned_contracts[instrument_key]"
+      },
+      "index": "NF",
+      "instrument_key": "NSE_FO|51023",
+      "iv": {
+       "iv_authoritative_resolved": false,
+       "iv_greeks_raw": {
+        "raw": 14.2,
+        "status": "PRESENT_VALID"
+       },
+       "iv_market_data_raw": {
+        "raw": null,
+        "status": "ABSENT"
+       },
+       "iv_raw_field_comparison": null,
+       "iv_source": "GREEKS_PRESENT_ONLY",
+       "iv_unit_status": "UNKNOWN",
+       "iv_unit_verification": null
+      },
+      "outcome": "OBSERVED",
+      "payload_sha256": "b729873476e41b16cfd0b09019685d209344d84c9eac0c7f1e126fd5da803e1f",
+      "record_version": "mr.premium_observation.v4",
+      "session_date": "2026-10-16",
+      "slot": "15:20"
+     },
+     {
+      "acquisition_id": "e21a6e89e2cd4a217fe1049874b35c0c",
+      "bbo": {
+       "ask_qty_raw": {
+        "raw": 975,
+        "status": "PRESENT_VALID"
+       },
+       "ask_raw": {
+        "raw": 100.5,
+        "status": "PRESENT_VALID"
+       },
+       "bid_qty_raw": {
+        "raw": 975,
+        "status": "PRESENT_VALID"
+       },
+       "bid_raw": {
+        "raw": 99.5,
+        "status": "PRESENT_VALID"
+       },
+       "book_status": "TWO_SIDED",
+       "executable_mid_computed": false,
+       "ltp_raw": {
+        "raw": 100,
+        "status": "PRESENT_VALID"
+       },
+       "ltp_used_as_quote_fallback": false,
+       "quantity_unit_status": "UNKNOWN"
+      },
+      "cohort_ref": "22b409ad2f69057f5aca0003a794663c",
+      "envelope_join": "session_date+index+slot+acquisition_id",
+      "envelope_ref": "0f1ed47f5a142bc3c9b9841eaa8eff56",
+      "hash_basis": {
+       "authenticates": "RECORDED_BYTES_AND_IDENTITY_ONLY",
+       "authenticates_vendor_truth": false,
+       "omitted_field": "payload_sha256",
+       "serialization": "json_sorted_keys_compact_utf8_v1"
+      },
+      "identity": {
+       "identity_disagreements": [],
+       "identity_evidence_missing": [],
+       "identity_verified": true,
+       "observed_strike_raw": {
+        "raw": 24500,
+        "status": "PRESENT_VALID"
+       },
+       "pinned_resolves_via": "cohort.pinned_contracts[instrument_key]"
+      },
+      "index": "NF",
+      "instrument_key": "NSE_FO|51020",
+      "iv": {
+       "iv_authoritative_resolved": false,
+       "iv_greeks_raw": {
+        "raw": 14.2,
+        "status": "PRESENT_VALID"
+       },
+       "iv_market_data_raw": {
+        "raw": null,
+        "status": "ABSENT"
+       },
+       "iv_raw_field_comparison": null,
+       "iv_source": "GREEKS_PRESENT_ONLY",
+       "iv_unit_status": "UNKNOWN",
+       "iv_unit_verification": null
+      },
+      "outcome": "OBSERVED",
+      "payload_sha256": "2fa3b88ad6b25e357690b4a90a7563813d0c65e4c32a23a512ca9b9410470ecd",
+      "record_version": "mr.premium_observation.v4",
+      "session_date": "2026-10-16",
+      "slot": "15:20"
+     },
+     {
+      "acquisition_id": "e21a6e89e2cd4a217fe1049874b35c0c",
+      "bbo": {
+       "ask_qty_raw": {
+        "raw": 975,
+        "status": "PRESENT_VALID"
+       },
+       "ask_raw": {
+        "raw": 100.5,
+        "status": "PRESENT_VALID"
+       },
+       "bid_qty_raw": {
+        "raw": 975,
+        "status": "PRESENT_VALID"
+       },
+       "bid_raw": {
+        "raw": 99.5,
+        "status": "PRESENT_VALID"
+       },
+       "book_status": "TWO_SIDED",
+       "executable_mid_computed": false,
+       "ltp_raw": {
+        "raw": 100,
+        "status": "PRESENT_VALID"
+       },
+       "ltp_used_as_quote_fallback": false,
+       "quantity_unit_status": "UNKNOWN"
+      },
+      "cohort_ref": "22b409ad2f69057f5aca0003a794663c",
+      "envelope_join": "session_date+index+slot+acquisition_id",
+      "envelope_ref": "0f1ed47f5a142bc3c9b9841eaa8eff56",
+      "hash_basis": {
+       "authenticates": "RECORDED_BYTES_AND_IDENTITY_ONLY",
+       "authenticates_vendor_truth": false,
+       "omitted_field": "payload_sha256",
+       "serialization": "json_sorted_keys_compact_utf8_v1"
+      },
+      "identity": {
+       "identity_disagreements": [],
+       "identity_evidence_missing": [],
+       "identity_verified": true,
+       "observed_strike_raw": {
+        "raw": 24500,
+        "status": "PRESENT_VALID"
+       },
+       "pinned_resolves_via": "cohort.pinned_contracts[instrument_key]"
+      },
+      "index": "NF",
+      "instrument_key": "NSE_FO|51021",
+      "iv": {
+       "iv_authoritative_resolved": false,
+       "iv_greeks_raw": {
+        "raw": 14.2,
+        "status": "PRESENT_VALID"
+       },
+       "iv_market_data_raw": {
+        "raw": null,
+        "status": "ABSENT"
+       },
+       "iv_raw_field_comparison": null,
+       "iv_source": "GREEKS_PRESENT_ONLY",
+       "iv_unit_status": "UNKNOWN",
+       "iv_unit_verification": null
+      },
+      "outcome": "OBSERVED",
+      "payload_sha256": "e06beb693b980f3cea2d8cae37b5d7e9e524380b6af821d9a2bb469f786013c6",
+      "record_version": "mr.premium_observation.v4",
+      "session_date": "2026-10-16",
+      "slot": "15:20"
+     },
+     {
+      "acquisition_id": "e21a6e89e2cd4a217fe1049874b35c0c",
+      "bbo": {
+       "ask_qty_raw": {
+        "raw": 975,
+        "status": "PRESENT_VALID"
+       },
+       "ask_raw": {
+        "raw": 100.5,
+        "status": "PRESENT_VALID"
+       },
+       "bid_qty_raw": {
+        "raw": 975,
+        "status": "PRESENT_VALID"
+       },
+       "bid_raw": {
+        "raw": 99.5,
+        "status": "PRESENT_VALID"
+       },
+       "book_status": "TWO_SIDED",
+       "executable_mid_computed": false,
+       "ltp_raw": {
+        "raw": 100,
+        "status": "PRESENT_VALID"
+       },
+       "ltp_used_as_quote_fallback": false,
+       "quantity_unit_status": "UNKNOWN"
+      },
+      "cohort_ref": "22b409ad2f69057f5aca0003a794663c",
+      "envelope_join": "session_date+index+slot+acquisition_id",
+      "envelope_ref": "0f1ed47f5a142bc3c9b9841eaa8eff56",
+      "hash_basis": {
+       "authenticates": "RECORDED_BYTES_AND_IDENTITY_ONLY",
+       "authenticates_vendor_truth": false,
+       "omitted_field": "payload_sha256",
+       "serialization": "json_sorted_keys_compact_utf8_v1"
+      },
+      "identity": {
+       "identity_disagreements": [],
+       "identity_evidence_missing": [],
+       "identity_verified": true,
+       "observed_strike_raw": {
+        "raw": 24450,
+        "status": "PRESENT_VALID"
+       },
+       "pinned_resolves_via": "cohort.pinned_contracts[instrument_key]"
+      },
+      "index": "NF",
+      "instrument_key": "NSE_FO|51019",
+      "iv": {
+       "iv_authoritative_resolved": false,
+       "iv_greeks_raw": {
+        "raw": 14.2,
+        "status": "PRESENT_VALID"
+       },
+       "iv_market_data_raw": {
+        "raw": null,
+        "status": "ABSENT"
+       },
+       "iv_raw_field_comparison": null,
+       "iv_source": "GREEKS_PRESENT_ONLY",
+       "iv_unit_status": "UNKNOWN",
+       "iv_unit_verification": null
+      },
+      "outcome": "OBSERVED",
+      "payload_sha256": "21384b76f8d57d4cdebcc4c914762257594491c231561086c66c8be4bcb05bc5",
+      "record_version": "mr.premium_observation.v4",
+      "session_date": "2026-10-16",
+      "slot": "15:20"
+     },
+     {
+      "acquisition_id": "e21a6e89e2cd4a217fe1049874b35c0c",
+      "bbo": {
+       "ask_qty_raw": {
+        "raw": 975,
+        "status": "PRESENT_VALID"
+       },
+       "ask_raw": {
+        "raw": 100.5,
+        "status": "PRESENT_VALID"
+       },
+       "bid_qty_raw": {
+        "raw": 975,
+        "status": "PRESENT_VALID"
+       },
+       "bid_raw": {
+        "raw": 99.5,
+        "status": "PRESENT_VALID"
+       },
+       "book_status": "TWO_SIDED",
+       "executable_mid_computed": false,
+       "ltp_raw": {
+        "raw": 100,
+        "status": "PRESENT_VALID"
+       },
+       "ltp_used_as_quote_fallback": false,
+       "quantity_unit_status": "UNKNOWN"
+      },
+      "cohort_ref": "22b409ad2f69057f5aca0003a794663c",
+      "envelope_join": "session_date+index+slot+acquisition_id",
+      "envelope_ref": "0f1ed47f5a142bc3c9b9841eaa8eff56",
+      "hash_basis": {
+       "authenticates": "RECORDED_BYTES_AND_IDENTITY_ONLY",
+       "authenticates_vendor_truth": false,
+       "omitted_field": "payload_sha256",
+       "serialization": "json_sorted_keys_compact_utf8_v1"
+      },
+      "identity": {
+       "identity_disagreements": [],
+       "identity_evidence_missing": [],
+       "identity_verified": true,
+       "observed_strike_raw": {
+        "raw": 24550,
+        "status": "PRESENT_VALID"
+       },
+       "pinned_resolves_via": "cohort.pinned_contracts[instrument_key]"
+      },
+      "index": "NF",
+      "instrument_key": "NSE_FO|51022",
+      "iv": {
+       "iv_authoritative_resolved": false,
+       "iv_greeks_raw": {
+        "raw": 14.2,
+        "status": "PRESENT_VALID"
+       },
+       "iv_market_data_raw": {
+        "raw": null,
+        "status": "ABSENT"
+       },
+       "iv_raw_field_comparison": null,
+       "iv_source": "GREEKS_PRESENT_ONLY",
+       "iv_unit_status": "UNKNOWN",
+       "iv_unit_verification": null
+      },
+      "outcome": "OBSERVED",
+      "payload_sha256": "ac6556c26f043fc76a1dfed5bdb38bb37bc7414171f2765900a4050cd3974d88",
+      "record_version": "mr.premium_observation.v4",
+      "session_date": "2026-10-16",
+      "slot": "15:20"
+     },
+     {
+      "acquisition_id": "e21a6e89e2cd4a217fe1049874b35c0c",
+      "bbo": {
+       "ask_qty_raw": {
+        "raw": 975,
+        "status": "PRESENT_VALID"
+       },
+       "ask_raw": {
+        "raw": 150.5,
+        "status": "PRESENT_VALID"
+       },
+       "bid_qty_raw": {
+        "raw": 975,
+        "status": "PRESENT_VALID"
+       },
+       "bid_raw": {
+        "raw": 149.5,
+        "status": "PRESENT_VALID"
+       },
+       "book_status": "TWO_SIDED",
+       "executable_mid_computed": false,
+       "ltp_raw": {
+        "raw": 150,
+        "status": "PRESENT_VALID"
+       },
+       "ltp_used_as_quote_fallback": false,
+       "quantity_unit_status": "UNKNOWN"
+      },
+      "cohort_ref": "22b409ad2f69057f5aca0003a794663c",
+      "envelope_join": "session_date+index+slot+acquisition_id",
+      "envelope_ref": "0f1ed47f5a142bc3c9b9841eaa8eff56",
+      "hash_basis": {
+       "authenticates": "RECORDED_BYTES_AND_IDENTITY_ONLY",
+       "authenticates_vendor_truth": false,
+       "omitted_field": "payload_sha256",
+       "serialization": "json_sorted_keys_compact_utf8_v1"
+      },
+      "identity": {
+       "identity_disagreements": [],
+       "identity_evidence_missing": [],
+       "identity_verified": true,
+       "observed_strike_raw": {
+        "raw": 24450,
+        "status": "PRESENT_VALID"
+       },
+       "pinned_resolves_via": "cohort.pinned_contracts[instrument_key]"
+      },
+      "index": "NF",
+      "instrument_key": "NSE_FO|51018",
+      "iv": {
+       "iv_authoritative_resolved": false,
+       "iv_greeks_raw": {
+        "raw": 14.2,
+        "status": "PRESENT_VALID"
+       },
+       "iv_market_data_raw": {
+        "raw": null,
+        "status": "ABSENT"
+       },
+       "iv_raw_field_comparison": null,
+       "iv_source": "GREEKS_PRESENT_ONLY",
+       "iv_unit_status": "UNKNOWN",
+       "iv_unit_verification": null
+      },
+      "outcome": "OBSERVED",
+      "payload_sha256": "025d7baf828360597baff6a6cf565b79f87ef10861a8dd23f084a078e8626f3d",
+      "record_version": "mr.premium_observation.v4",
+      "session_date": "2026-10-16",
+      "slot": "15:20"
+     }
+    ],
+    "references": {
+     "contract_lot_table": {
+      "metadata": null,
+      "metadata_present": false,
+      "metadata_provenance": null,
+      "metadata_ref": null,
+      "per_acquisition": [
+       {
+        "acquisition_id": "e21a6e89e2cd4a217fe1049874b35c0c",
+        "as_of_session": "2026-10-16",
+        "detail": null,
+        "expected_table_ref": "contract_lot_table/contract_lot_table_v3_20260914/FAOP70616_NF_weekly_revised/2026-10-16",
+        "lot_authoritative_resolved": false,
+        "lot_resolution": "UNRESOLVED_NO_METADATA_SUPPLIED",
+        "resolved_lot": null,
+        "underlying_key": "NSE_INDEX|Nifty 50"
+       }
+      ],
+      "referenced_names": [
+       "contract_lot_table/contract_lot_table_v3_20260914/FAOP70616_NF_weekly_revised/2026-10-16"
+      ],
+      "resolution": "UNRESOLVED_REFERENCE",
+      "resolution_coverage": {
+       "acquisitions": 1,
+       "conflicting_with_claim": 0,
+       "resolved": 0,
+       "unresolved": 1
+      }
+     },
+     "instrument_map": {
+      "metadata": null,
+      "metadata_present": false,
+      "metadata_provenance": null,
+      "metadata_ref": null,
+      "referenced_names": [],
+      "resolution": "NO_REFERENCE_RECORDED"
+     },
+     "pinned_contracts": [
+      {
+       "expiry": "2026-10-27",
+       "index": "NF",
+       "instrument_key": "NSE_FO|51018",
+       "option_type": "CE",
+       "strike": 24450,
+       "underlying_key": "NSE_INDEX|Nifty 50"
+      },
+      {
+       "expiry": "2026-10-27",
+       "index": "NF",
+       "instrument_key": "NSE_FO|51019",
+       "option_type": "PE",
+       "strike": 24450,
+       "underlying_key": "NSE_INDEX|Nifty 50"
+      },
+      {
+       "expiry": "2026-10-27",
+       "index": "NF",
+       "instrument_key": "NSE_FO|51020",
+       "option_type": "CE",
+       "strike": 24500,
+       "underlying_key": "NSE_INDEX|Nifty 50"
+      },
+      {
+       "expiry": "2026-10-27",
+       "index": "NF",
+       "instrument_key": "NSE_FO|51021",
+       "option_type": "PE",
+       "strike": 24500,
+       "underlying_key": "NSE_INDEX|Nifty 50"
+      },
+      {
+       "expiry": "2026-10-27",
+       "index": "NF",
+       "instrument_key": "NSE_FO|51022",
+       "option_type": "CE",
+       "strike": 24550,
+       "underlying_key": "NSE_INDEX|Nifty 50"
+      },
+      {
+       "expiry": "2026-10-27",
+       "index": "NF",
+       "instrument_key": "NSE_FO|51023",
+       "option_type": "PE",
+       "strike": 24550,
+       "underlying_key": "NSE_INDEX|Nifty 50"
+      }
+     ],
+     "production_lot_authority": {
+      "authoritative": true,
+      "authority": {
+       "authoritative": true,
+       "authority": "CONTRACT_LOT_TABLE",
+       "contract_lot_size": 65,
+       "expiry": "2026-10-27",
+       "expiry_cycle": null,
+       "flattened_to_one_lot_per_underlying": false,
+       "index_key": "NF",
+       "index_known": true,
+       "lot_as_of": "2026-10-16",
+       "lot_conflict": false,
+       "lot_source": "authoritative_contract_rule",
+       "lot_table_version": "contract_lot_table_v3_20260914",
+       "matched_rule_id": "FAOP70616_NF_weekly_revised",
+       "operational_current_allowed": false,
+       "requested_expiry": "2026-10-27",
+       "requested_index": "NF",
+       "requested_session_date": "2026-10-16",
+       "resolved": true,
+       "rule_contract_lot": null,
+       "unavailable_reason": null
+      },
+      "authority_holds": true,
+      "block_kind": "THE_APPLICATIONS_OWN_CONTRACT_LOT_TABLE",
+      "coverage": {
+       "complete": true,
+       "envelopes": 1,
+       "matched": 1,
+       "missing_reference": 0,
+       "per_acquisition": [
+        {
+         "acquisition_id": "e21a6e89e2cd4a217fe1049874b35c0c",
+         "production_authority_ref": "8ed5d891b8fa9432dc4ddeab6fb7a14c",
+         "slot": "15:20",
+         "state": "MATCHED"
+        }
+       ],
+       "reference_mismatched": 0
+      },
+      "generic_supplied_table_substituted": false,
+      "is_the_applications_own_contract_table": true,
+      "lot_conflict": false,
+      "pinned_context": {
+       "agrees": true,
+       "authority_requested_expiry": "2026-10-27",
+       "authority_requested_index": "NF",
+       "authority_requested_session_date": "2026-10-16",
+       "current_table_version": "contract_lot_table_v3_20260914",
+       "pinned_expiry": "2026-10-27",
+       "reasons": []
+      },
+      "recorded": true,
+      "reference_matches_record": true,
+      "referenced_by_envelopes": [
+       "8ed5d891b8fa9432dc4ddeab6fb7a14c"
+      ],
+      "resolved": true
+     },
+     "read_from": "SLOT_ENVELOPES"
+    },
+    "session_date": "2026-10-16",
+    "session_version": "premium_capture_session_v3_response_evidence_bound",
+    "slot_envelopes": [
+     {
+      "acquisition_id": "e21a6e89e2cd4a217fe1049874b35c0c",
+      "attempt_distinguishable": true,
+      "batch_evidence_ref": "89762d9bb4752d89ad945459693ac01f",
+      "clocks": {
+       "acquisition_elapsed_ms": 120,
+       "acquisition_request_ms": 1792144206880,
+       "acquisition_response_ms": 1792144207000,
+       "actual_acquisition_clock": "15:20",
+       "clock_basis": "LOCAL_ACQUISITION_RECEIPT",
+       "quote_event_clock_verified": false,
+       "scheduler_slot_agrees_with_clock": null,
+       "scheduler_slot_declared": null,
+       "slot_basis": "SCHEDULER_SLOT",
+       "vendor_event_semantics": "UNVERIFIED",
+       "vendor_source_ts": null,
+       "vendor_ts_status": "VENDOR_TS_ABSENT"
+      },
+      "cohort_id": "2026-10-16|NF|448e06ee4ff1496eddd352169c5e719d",
+      "cohort_ref": "22b409ad2f69057f5aca0003a794663c",
+      "hash_basis": {
+       "authenticates": "RECORDED_BYTES_AND_IDENTITY_ONLY",
+       "authenticates_vendor_truth": false,
+       "omitted_field": "payload_sha256",
+       "serialization": "json_sorted_keys_compact_utf8_v1"
+      },
+      "index": "NF",
+      "lot": {
+       "claimed_lot_positive_integer": true,
+       "claimed_source_in_accepted_set": true,
+       "contract_lot_table_ref": "contract_lot_table/contract_lot_table_v3_20260914/FAOP70616_NF_weekly_revised/2026-10-16",
+       "lot_authoritative_resolved": false,
+       "lot_authority_requires": "RESOLVER_VALIDATED_TABLE_ROW_FOR_THIS_UNDERLYING_EFFECTIVE_AT_THE_SESSION_DATE",
+       "lot_claimed_raw": {
+        "raw": 65,
+        "status": "PRESENT_VALID"
+       },
+       "lot_claimed_source": "CONTRACT_LOT_TABLE",
+       "lot_resolution": "UNRESOLVED_NO_METADATA_SUPPLIED",
+       "lot_status": "PRODUCER_CLAIM_UNRESOLVED",
+       "map_ref": null,
+       "production_authority_ref": "8ed5d891b8fa9432dc4ddeab6fb7a14c",
+       "reference_carries_real_date": true,
+       "reference_date": "2026-10-16"
+      },
+      "payload_sha256": "221d96fb37b5d1be72c195aaab9b0a1d01c19ead13aa2ff9e69a583f323d11fe",
+      "record_version": "mr.premium_slot_envelope.v3",
+      "request_outcome": "RESPONSE_PRESENT",
+      "session_date": "2026-10-16",
+      "slot": "15:20",
+      "underlying": {
+       "basis": "SAME_ACQUISITION",
+       "carried_by_chain_response": true,
+       "skew_ms": null,
+       "source_field": "underlying_spot_price",
+       "spot_raw": {
+        "raw": 24500,
+        "status": "PRESENT_VALID"
+       },
+       "synchronisation_with_quote": "SAME_RESPONSE_PAYLOAD"
+      }
+     }
+    ],
+    "slot_manifest": {
+     "capture_started_slot": null,
+     "expected_slots": 69,
+     "observed_slots": 1,
+     "rows": [
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "09:20",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "09:25",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "09:30",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "09:35",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "09:40",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "09:45",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "09:50",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "09:55",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "10:00",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "10:05",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "10:10",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "10:15",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "10:20",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "10:25",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "10:30",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "10:35",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "10:40",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "10:45",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "10:50",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "10:55",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "11:00",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "11:05",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "11:10",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "11:15",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "11:20",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "11:25",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "11:30",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "11:35",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "11:40",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "11:45",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "11:50",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "11:55",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "12:00",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "12:05",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "12:10",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "12:15",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "12:20",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "12:25",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "12:30",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "12:35",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "12:40",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "12:45",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "12:50",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "12:55",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "13:00",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "13:05",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "13:10",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "13:15",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "13:20",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "13:25",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "13:30",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "13:35",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "13:40",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "13:45",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "13:50",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "13:55",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "14:00",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "14:05",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "14:10",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "14:15",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "14:20",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "14:25",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "14:30",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "14:35",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "14:40",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "14:45",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "14:50",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "14:55",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      },
+      {
+       "acquisitions": 0,
+       "records": 0,
+       "slot": "15:00",
+       "state": "NOT_OBSERVED_UNEXPLAINED"
+      }
+     ]
+    },
+    "view_attempts": 1,
+    "view_consistency_basis": "STORE_REVISION_EVEN_AND_UNCHANGED_ACROSS_READ_ODD_MEANS_WRITE_IN_PROGRESS",
+    "view_consistent": true
+   }
+  },
+  "requested_session_date": "2026-10-16",
+  "section_version": "premium_export_section_v1_requested_session_only",
+  "session_date_substitution": "NEVER_ONLY_THE_REQUESTED_DATE",
+  "state": "PRESENT"
+ },
+ "premium_followon": {
+  "bytes": 77446,
+  "capture_windows": {
+   "close": "followon_close_1510_1530",
+   "close_label": "15:10-15:30 inclusive",
+   "reopen": "followon_reopen_0915_0945",
+   "reopen_label": "09:15-09:45 inclusive"
+  },
+  "carries": {
+   "BNF": {
+    "carry_digest": "6502471cc9bc0e784c8b3be05b0999cc",
+    "carry_version": "premium_followon_carry_v1",
+    "cohort_id": "2026-10-16|BNF|a86908811cf8a0db98c84d664304e47f",
+    "contracts": [
+     {
+      "instrument_key": "NSE_FO|61038",
+      "option_type": "CE",
+      "strike": 54900
+     },
+     {
+      "instrument_key": "NSE_FO|61039",
+      "option_type": "PE",
+      "strike": 54900
+     },
+     {
+      "instrument_key": "NSE_FO|61040",
+      "option_type": "CE",
+      "strike": 55000
+     },
+     {
+      "instrument_key": "NSE_FO|61041",
+      "option_type": "PE",
+      "strike": 55000
+     },
+     {
+      "instrument_key": "NSE_FO|61042",
+      "option_type": "CE",
+      "strike": 55100
+     },
+     {
+      "instrument_key": "NSE_FO|61043",
+      "option_type": "PE",
+      "strike": 55100
+     }
+    ],
+    "expiry": "2026-10-27",
+    "index": "BNF",
+    "purpose": "premium_followon_overnight_mark_v1",
+    "session_date": "2026-10-16",
+    "underlying_key": "NSE_INDEX|Nifty Bank",
+    "written_at_ms": 1792144207000
+   },
+   "NF": {
+    "carry_digest": "418e1eb72bb052766093b85798b44775",
+    "carry_version": "premium_followon_carry_v1",
+    "cohort_id": "2026-10-16|NF|448e06ee4ff1496eddd352169c5e719d",
+    "contracts": [
+     {
+      "instrument_key": "NSE_FO|51018",
+      "option_type": "CE",
+      "strike": 24450
+     },
+     {
+      "instrument_key": "NSE_FO|51019",
+      "option_type": "PE",
+      "strike": 24450
+     },
+     {
+      "instrument_key": "NSE_FO|51020",
+      "option_type": "CE",
+      "strike": 24500
+     },
+     {
+      "instrument_key": "NSE_FO|51021",
+      "option_type": "PE",
+      "strike": 24500
+     },
+     {
+      "instrument_key": "NSE_FO|51022",
+      "option_type": "CE",
+      "strike": 24550
+     },
+     {
+      "instrument_key": "NSE_FO|51023",
+      "option_type": "PE",
+      "strike": 24550
+     }
+    ],
+    "expiry": "2026-10-27",
+    "index": "NF",
+    "purpose": "premium_followon_overnight_mark_v1",
+    "session_date": "2026-10-16",
+    "underlying_key": "NSE_INDEX|Nifty 50",
+    "written_at_ms": 1792144207000
+   }
+  },
+  "pilot_window": {
+   "id": "pilot_premium_0920_1505",
+   "independent_of_this_capture": true,
+   "label": "09:20-15:05 exclusive"
+  },
+  "purpose": "premium_followon_overnight_mark_v1",
+  "store_root": "premium_capture_followon"
+ }
+}

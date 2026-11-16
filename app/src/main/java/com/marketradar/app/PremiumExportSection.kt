@@ -53,7 +53,8 @@ object PremiumExportSection {
      * before and after, and a concurrent capture write is REPORTED rather than silently producing
      * a torn view.
      */
-    fun build(filesDir: File, date: String): JSONObject {
+    @JvmOverloads
+    fun build(filesDir: File, date: String, captureRoot: File? = null): JSONObject {
         val section = JSONObject()
             .put("section_version", SECTION_VERSION)
             .put("requested_session_date", date)
@@ -61,7 +62,7 @@ object PremiumExportSection {
         return try {
             if (!PremiumObservationContract.isCalendarDate(date))
                 return section.put("state", "REQUESTED_DATE_INVALID").put("has_data", false)
-            val root = PremiumCaptureControl.root(filesDir)
+            val root = captureRoot ?: PremiumCaptureControl.root(filesDir)
             if (!root.exists()) return section.put("state", "NO_PREMIUM_DATA")
                 .put("has_data", false)
                 .put("capture_enabled", PremiumCaptureControl.isEnabled(filesDir))
