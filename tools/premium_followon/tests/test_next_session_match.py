@@ -593,5 +593,106 @@ class RealFollowOnCapturePath(unittest.TestCase):
         self.assertEqual('09:20-15:05 exclusive', meta['pilot_window']['label'])
 
 
+class PhoneShapedExport(unittest.TestCase):
+    """The END-TO-END proof, on the shape the device actually writes.
+
+    `phone_shaped_export_2026-10-16.json` / `...-10-19.json` are produced by
+    `PremiumFollowOnEndToEndTest` through the real poll mapping and the real export assembly:
+    the frozen pilot stream under `premium`, with its OWN cohort and valid quotes, and the
+    follow-on research stream under `premium_followon`. Two adjacent sessions, both indices, a
+    restart between the close and the reopen.
+
+    THE DEFECT. Pointed at `premium` by default, v2 read the PILOT stream on this shape, found
+    no overnight pairing in it, and reported zero pairs for both indices **with no refusal
+    reason**. Below: the named section pairs all six contracts per index, and every other way of
+    asking produces a stated refusal instead of silence.
+    """
+
+    def docs(self):
+        out = []
+        for date in ('2026-10-16', '2026-10-19'):
+            path = os.path.join(FIXTURES, 'phone_shaped_export_%s.json' % date)
+            self.assertTrue(os.path.isfile(path), path)
+            with open(path, encoding='utf-8') as fh:
+                out.append(json.load(fh))
+        return out
+
+    def test_the_fixture_is_the_phone_shape_with_two_separate_streams(self):
+        for doc in self.docs():
+            self.assertIn('premium', doc)
+            self.assertIn('premium_followon', doc)
+            self.assertTrue(doc['_provenance']['synthetic'])
+            for index in ('NF', 'BNF'):
+                pilot, _ = G.observations_from_export(doc, index, G.SECTION_PILOT)
+                follow, _ = G.observations_from_export(doc, index, G.SECTION_FOLLOWON)
+                self.assertTrue(pilot, 'the pilot stream must carry valid observations')
+                self.assertTrue(follow)
+                self.assertNotEqual(set(pilot), set(follow),
+                                    'the two streams must not be the same contracts')
+
+    def test_the_named_section_pairs_all_six_contracts_for_both_indices(self):
+        a, b = self.docs()
+        for index in ('NF', 'BNF'):
+            pairs, refused = G.match_exports([a, b], index, calendar(), G.SECTION_FOLLOWON)
+            paired = [p for p in pairs if p.get('paired')]
+            self.assertEqual(6, len(paired), (index, dict(refused)))
+            self.assertEqual({}, dict(refused), index)
+            for p in paired:
+                self.assertEqual('15:20', p['close']['slot'])
+                self.assertEqual('09:20', p['open']['slot'])
+                self.assertEqual(index, p['identity']['index'])
+                self.assertEqual(G.SECTION_FOLLOWON, p['section'])
+
+    def test_pointing_at_the_pilot_stream_refuses_with_a_reason_rather_than_silence(self):
+        a, b = self.docs()
+        for index in ('NF', 'BNF'):
+            pairs, refused = G.match_exports([a, b], index, calendar(), G.SECTION_PILOT)
+            self.assertEqual([], [p for p in pairs if p.get('paired')], index)
+            self.assertTrue(refused, 'a refusal reason is required, not an empty result')
+            # the pilot window ends at 15:05 exclusive, so it can hold no close mark at all
+            self.assertEqual({'no_close_mark_in_window': 6}, dict(refused), index)
+
+    def test_a_missing_follow_on_section_is_a_stated_refusal(self):
+        a, b = self.docs()
+        stripped = json.loads(json.dumps(b))
+        stripped.pop('premium_followon')
+        pairs, refused = G.match_exports([a, stripped], 'NF', calendar(), G.SECTION_FOLLOWON)
+        self.assertIn('section_absent_or_malformed', refused)
+        first = [p for p in pairs if p['refusal'] == 'section_absent_or_malformed'][0]
+        self.assertEqual({'doc_1': 'premium_followon_section_absent'}, first['per_document'])
+
+    def test_a_malformed_follow_on_section_is_a_stated_refusal(self):
+        a, b = self.docs()
+        for broken in ('nonsense', [], {'section': 'nonsense'}, {}):
+            bad = json.loads(json.dumps(b))
+            bad['premium_followon'] = broken
+            _, refused = G.match_exports([a, bad], 'NF', calendar(), G.SECTION_FOLLOWON)
+            self.assertIn('section_absent_or_malformed', refused, broken)
+
+    def test_an_index_absent_from_one_session_is_named_rather_than_dropped(self):
+        a, b = self.docs()
+        stripped = json.loads(json.dumps(b))
+        del stripped['premium_followon']['section']['indices']['BNF']
+        _, refused = G.match_exports([a, stripped], 'BNF', calendar(), G.SECTION_FOLLOWON)
+        self.assertEqual({'no_observations_for_index_in_next_session': 1}, dict(refused))
+
+    def test_the_published_window_outcomes_state_what_each_window_did(self):
+        """A refusal that wrote no record is still reported, as a counter in the export."""
+        a, b = self.docs()
+        for doc, key in ((a, 'followon_close'), (b, 'followon_reopen')):
+            outcomes = doc['premium_followon']['window_outcomes']
+            for index in ('NF', 'BNF'):
+                self.assertGreaterEqual(outcomes[index]['%s_attempts' % key], 1, index)
+                self.assertGreaterEqual(outcomes[index]['%s_observed' % key], 1, index)
+
+    def test_an_unknown_section_name_is_refused_rather_than_guessed(self):
+        a, b = self.docs()
+        _, refused = G.match_exports([a, b], 'NF', calendar(), 'premium_whatever')
+        self.assertIn('section_absent_or_malformed', refused)
+        self.assertIsNone(G.section_of(a, 'premium_whatever')[0])
+        self.assertEqual('unknown_section_premium_whatever',
+                         G.section_of(a, 'premium_whatever')[1])
+
+
 if __name__ == '__main__':
     unittest.main()

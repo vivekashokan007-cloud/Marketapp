@@ -141,11 +141,14 @@ class PremiumCaptureSession(private val store: PremiumCaptureStore) {
          */
         window: PremiumCaptureCohort.CaptureWindow = PremiumCaptureCohort.PILOT_WINDOW,
         /**
-         * Strikes this attempt must observe, instead of the three nearest the response spot.
-         * The follow-on capture carries yesterday's strikes here so a reselection cannot
-         * quietly move the contracts between the two halves of one overnight mark.
+         * The EXACT contracts this attempt must observe — strike, side and instrument key —
+         * instead of the three strikes nearest the response spot. The follow-on capture carries
+         * yesterday's contracts here, so neither a reselection nor a roll can quietly move the
+         * contracts between the two halves of one overnight mark.
          */
-        requireStrikes: List<Double>? = null,
+        requireContracts: List<PremiumCaptureCohort.RequiredContract>? = null,
+        /** The expiry those contracts belong to; a response on another expiry is refused. */
+        requireExpiry: String? = null,
     ): SlotResult {
         fun refuse(status: String, detail: String?, counter: String): SlotResult {
             val sw = store.bumpCounters(index, sessionDate, mapOf("refused_$counter" to 1L))
@@ -179,7 +182,7 @@ class PremiumCaptureSession(private val store: PremiumCaptureStore) {
             // acquisition identified only by a scheduler slot — a legitimate case, with no
             // acquisition clock at all — was refused OUTSIDE_WINDOW and could never pin a cohort.
             val sel = PremiumCaptureCohort.select(rawChain, index, sessionDate, windowClock,
-                requestedUnderlyingKey, null, window, requireStrikes)
+                requestedUnderlyingKey, null, window, requireContracts, requireExpiry)
             if (sel.status != PremiumCaptureCohort.SELECTED || sel.cohort == null)
                 return refuse(sel.status, sel.reason, "cohort_not_selected")
             val cr = store.putCohort(index, sessionDate, sel.cohort)

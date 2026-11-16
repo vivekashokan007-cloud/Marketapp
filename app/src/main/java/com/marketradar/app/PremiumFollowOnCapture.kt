@@ -80,10 +80,47 @@ object PremiumFollowOnCapture {
     const val CARRY_EXPIRY_NOT_AFTER_SESSION = "CARRY_EXPIRY_NOT_AFTER_SESSION"
     const val CARRY_INCOMPLETE = "CARRY_INCOMPLETE"
 
+    /**
+     * The carry is not from the session immediately before this one. A stale carry would pair a
+     * close from days ago with this morning's open and call it an overnight mark.
+     */
+    const val CARRY_NOT_PREVIOUS_SESSION = "CARRY_NOT_FROM_THE_PREVIOUS_TRADING_SESSION"
+
+    /** The trading calendar cannot speak about these dates, so the gap cannot be established. */
+    const val CARRY_CALENDAR_NOT_COVERED = "CARRY_CALENDAR_NOT_COVERED"
+
+    /**
+     * A cohort is already pinned for this session and is NOT the carry's contracts. Refused
+     * rather than observed: writing paired observations against a different cohort would make
+     * the two halves of the mark different positions.
+     */
+    const val SAVED_COHORT_DOES_NOT_MATCH_CARRY = "SAVED_COHORT_DOES_NOT_MATCH_CARRY"
+
+    /** The research control for this capture is off. Default off; never implied by the pilot's. */
+    const val RESEARCH_CONTROL_OFF = "FOLLOW_ON_RESEARCH_CONTROL_OFF"
+
     /** The follow-on store root: a sibling of the pilot's, never inside it. */
     fun root(filesDir: File) = File(filesDir, DIR_NAME)
 
     fun store(filesDir: File) = PremiumCaptureStore(root(filesDir).apply { mkdirs() })
+
+    /**
+     * This capture's own research control, in its own tree. Default OFF, and never implied by
+     * the pilot's capture flag: a research path must be switched on deliberately.
+     */
+    private fun controlFile(filesDir: File) = File(root(filesDir).apply { mkdirs() },
+        "followon_research_enabled")
+
+    fun isResearchEnabled(filesDir: File): Boolean = controlFile(filesDir).isFile
+
+    fun setResearchEnabled(filesDir: File, on: Boolean): Boolean {
+        val f = controlFile(filesDir)
+        return if (on) {
+            runCatching { f.writeText(PURPOSE) }.isSuccess && f.isFile
+        } else {
+            f.delete(); !f.isFile
+        }
+    }
 
     private fun carryFile(filesDir: File, index: String) =
         File(root(filesDir).apply { mkdirs() }, "carry_${index.trim().uppercase()}.json")
@@ -140,16 +177,47 @@ object PremiumFollowOnCapture {
 
     data class Carry(val status: String, val body: JSONObject?, val detail: String? = null) {
         val usable: Boolean get() = status == "USABLE"
-        val strikes: List<Double>
+
+        /** The EXACT contracts carried: strike, side and instrument key together. */
+        val contracts: List<PremiumCaptureCohort.RequiredContract>
             get() {
-                val out = mutableListOf<Double>()
+                val out = mutableListOf<PremiumCaptureCohort.RequiredContract>()
                 val a = body?.optJSONArray("contracts") ?: return out
                 for (i in 0 until a.length()) {
-                    val k = a.optJSONObject(i)?.optDouble("strike") ?: continue
-                    if (k.isFinite() && !out.contains(k)) out.add(k)
+                    val c = a.optJSONObject(i) ?: continue
+                    val k = c.optDouble("strike")
+                    if (!k.isFinite()) continue
+                    out.add(PremiumCaptureCohort.RequiredContract(
+                        k, c.optString("option_type"), c.optString("instrument_key")))
                 }
-                return out.sorted()
+                return out.sortedWith(compareBy({ it.strike }, { it.optionType }))
             }
+
+        val strikes: List<Double> get() = contracts.map { it.strike }.distinct().sorted()
+        val expiry: String? get() = body?.optString("expiry")?.takeIf { it.isNotEmpty() }
+    }
+
+    /**
+     * The trading session immediately before `sessionDate`, or null with a reason.
+     *
+     * Uses the app's own `RuleBExitPolicy.isSession` — the same NSE holiday list the brain and
+     * the EV calendar carry — and fails closed outside the years it covers rather than guessing
+     * a weekend.
+     */
+    fun previousTradingSession(sessionDate: String, limit: Int = 10): Pair<String?, String?> {
+        val start = runCatching { java.time.LocalDate.parse(sessionDate) }.getOrNull()
+            ?: return null to "session date '$sessionDate' is not a date"
+        var d = start
+        for (i in 0 until limit) {
+            d = d.minusDays(1)
+            val ok = try {
+                RuleBExitPolicy.isSession(d)
+            } catch (e: Exception) {
+                return null to CARRY_CALENDAR_NOT_COVERED
+            }
+            if (ok) return d.toString() to null
+        }
+        return null to "no trading session within $limit days before $sessionDate"
     }
 
     /**
@@ -172,6 +240,13 @@ object PremiumFollowOnCapture {
         val carried = body.optString("session_date")
         if (carried.isEmpty() || carried >= sessionDate)
             return Carry(CARRY_FROM_THIS_SESSION, body, "carried '$carried' vs now '$sessionDate'")
+        val (previous, calendarWhy) = previousTradingSession(sessionDate)
+        if (previous == null)
+            return Carry(if (calendarWhy == CARRY_CALENDAR_NOT_COVERED)
+                CARRY_CALENDAR_NOT_COVERED else CARRY_NOT_PREVIOUS_SESSION, body, calendarWhy)
+        if (carried != previous)
+            return Carry(CARRY_NOT_PREVIOUS_SESSION, body,
+                "carried '$carried' but the session before '$sessionDate' is '$previous'")
         val expiry = body.optString("expiry")
         if (expiry.isEmpty() || expiry <= sessionDate)
             return Carry(CARRY_EXPIRY_NOT_AFTER_SESSION, body,
@@ -200,7 +275,37 @@ object PremiumFollowOnCapture {
         val carryWritten: JSONObject? = null,
         val lotAuthorityWrite: String? = null,
         val lotAuthorityRef: String? = null,
+        val detail: String? = null,
     )
+
+    /**
+     * Whether a pinned cohort is exactly the carry's contracts, or why it is not.
+     *
+     * Compared on the full identity — index, expiry and each (strike, side, instrument key) —
+     * because a changed key under an unchanged strike is a different contract.
+     */
+    fun cohortMatchesCarry(cohort: JSONObject?, carry: Carry): String? {
+        if (cohort == null) return "the pinned cohort could not be parsed"
+        val body = carry.body ?: return "the carry has no body"
+        if (cohort.optString("index") != body.optString("index"))
+            return "cohort index '${cohort.optString("index")}' vs carry " +
+                "'${body.optString("index")}'"
+        if (cohort.optString("expiry") != body.optString("expiry"))
+            return "cohort expiry '${cohort.optString("expiry")}' vs carry " +
+                "'${body.optString("expiry")}'"
+        val pins = cohort.optJSONArray("pinned_contracts") ?: return "the cohort pins nothing"
+        val have = mutableListOf<Triple<Double, String, String>>()
+        for (i in 0 until pins.length()) {
+            val c = pins.optJSONObject(i) ?: continue
+            have.add(Triple(c.optDouble("strike"), c.optString("option_type"),
+                c.optString("instrument_key")))
+        }
+        val want = carry.contracts.map { Triple(it.strike, it.optionType, it.instrumentKey) }
+        val h = have.sortedWith(compareBy({ it.first }, { it.second }))
+        val w = want.sortedWith(compareBy({ it.first }, { it.second }))
+        if (h != w) return "pinned contracts $h are not the carried $w"
+        return null
+    }
 
     /**
      * Observe one poll for the follow-on capture.
@@ -236,6 +341,8 @@ object PremiumFollowOnCapture {
         val clock = acquisitionHhmm?.takeIf { it.isNotEmpty() } ?: schedulerSlot
         val window = windowFor(clock)
             ?: return Attempt(null, NOT_IN_A_FOLLOW_ON_WINDOW, null, null)
+        if (!isResearchEnabled(filesDir))
+            return Attempt(window.id, RESEARCH_CONTROL_OFF, null, null)
         val st = store(filesDir)
         val session = PremiumCaptureSession(st)
 
@@ -277,13 +384,25 @@ object PremiumFollowOnCapture {
         }
 
         var carry: Carry? = null
-        var require: List<Double>? = null
+        var require: List<PremiumCaptureCohort.RequiredContract>? = null
+        var requireExpiry: String? = null
         if (window === REOPEN_WINDOW) {
             carry = readCarry(filesDir, index, sessionDate)
             if (!carry.usable)
                 return Attempt(window.id, carry.status, null, carry, null, authorityWrite,
                     authorityRef)
-            require = carry.strikes
+            require = carry.contracts
+            requireExpiry = carry.expiry
+            // a cohort already pinned for this session must BE the carry's contracts; otherwise
+            // observations would be written against a different position
+            val existing = st.readCohortText(index, sessionDate)
+            if (existing != null) {
+                val why = cohortMatchesCarry(
+                    runCatching { JSONObject(existing) }.getOrNull(), carry)
+                if (why != null)
+                    return Attempt(window.id, SAVED_COHORT_DOES_NOT_MATCH_CARRY, null, carry,
+                        null, authorityWrite, authorityRef, why)
+            }
         }
 
         val result = session.observeSlot(
@@ -296,7 +415,7 @@ object PremiumFollowOnCapture {
             lotTableRef = tableRefForSlot, mapRef = mapRef,
             productionLotAuthorityRef = authorityRef,
             declaredSchedulerSlot = declaredSchedulerSlot,
-            window = window, requireStrikes = require)
+            window = window, requireContracts = require, requireExpiry = requireExpiry)
 
         // the carry is written from the CLOSE side only, and only once the cohort is pinned
         var written: JSONObject? = null
@@ -309,8 +428,47 @@ object PremiumFollowOnCapture {
                         responseReceivedMs ?: System.currentTimeMillis())
             }
         }
+        recordOutcome(st, index, sessionDate, window, result.status)
         return Attempt(window.id, result.status, result, carry, written, authorityWrite,
             authorityRef)
+    }
+
+    /**
+     * Durable accounting for what this window did, as a counter named for the outcome.
+     *
+     * WHY THIS EXISTS. A cohort-level refusal — a switched instrument key, a rolled expiry, a
+     * missing strike — happens BEFORE any record is written, so nothing reached the store and
+     * the export published only `NO_PREMIUM_DATA_FOR_THIS_INDEX`. The analysis side then saw a
+     * bare absence: the matcher correctly refused with `no_observations_for_index_in_next_session`,
+     * but the export carried no reason for it, and the reason existed only in a returned object
+     * until the process ended. The outcome is now counted in the store's own bounded summary and
+     * published per index, so a refusal is a stated reason in the evidence.
+     *
+     * A counter, not a log: `bumpCounters` is replace-in-place inside the declared reserve, so
+     * this cannot grow the store or push evidence out of it.
+     */
+    private fun recordOutcome(store: PremiumCaptureStore, index: String, session: String,
+                              window: PremiumCaptureCohort.CaptureWindow, status: String) {
+        val key = if (window === REOPEN_WINDOW) "followon_reopen" else "followon_close"
+        runCatching {
+            store.bumpCounters(index, session, mapOf(
+                "${key}_attempts" to 1L,
+                "${key}_${if (status == PremiumCaptureSession.OBSERVED) "observed"
+                    else "refused_$status"}" to 1L))
+        }
+    }
+
+    /** The outcome counters this capture recorded for a session, per index. */
+    fun outcomeCounters(filesDir: File, date: String): JSONObject {
+        val st = PremiumCaptureStore(root(filesDir))
+        return JSONObject().also { out ->
+            for (ix in listOf("NF", "BNF")) {
+                val c = runCatching { st.readCounters(ix, date) }.getOrNull() ?: JSONObject()
+                val kept = JSONObject()
+                for (k in c.keys()) if (k.startsWith("followon_")) kept.put(k, c.opt(k))
+                out.put(ix, kept)
+            }
+        }
     }
 
     /**
@@ -331,6 +489,8 @@ object PremiumFollowOnCapture {
                 .put("label", PremiumCaptureCohort.PILOT_WINDOW.label)
                 .put("independent_of_this_capture", true))
             .put("store_root", DIR_NAME)
+            // what each window did, including the refusals that wrote no record at all
+            .put("window_outcomes", outcomeCounters(filesDir, date))
             .put("bytes", PremiumCaptureStore(root(filesDir)).globalBytes())
             .put("carries", JSONObject().also { c ->
                 for (ix in listOf("NF", "BNF")) {

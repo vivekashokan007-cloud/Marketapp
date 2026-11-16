@@ -25,7 +25,30 @@ Retrieved live on 16 November 2026, 11:51 IST:
 Four of the six components are therefore confirmed as still in force **after** 9 October 2026,
 at exactly the values the table holds.
 
-## What is still outstanding
+## Resolved later the same day: the two outstanding components
+
+Retrieved 16 November 2026, later in the session, after the table above was written.
+
+| component | table value | source | verdict |
+| --- | --- | --- | --- |
+| exchange transaction charge | `exchange_txn = 3552.99 / crore` | **NSE/FA/73061, 27 Feb 2026**, read in full: `https://nsearchives.nseindia.com/content/circulars/FA73061.pdf` — "Equity Options (on premium) … Revised outflow … Transaction Charges **Rs. 3,552.99 each side**", "applicable with effect from **March 1, 2026**" | **matches the issuing circular exactly** |
+| NSE IPFT | `ipft = 0.01 / crore` | the same circular's table: "Contribution to NSE IPFT **Rs. 0.01 each side**", total Rs. 3,553 each side | **matches**, including the split |
+| brokerage | `brokerage_per_order = 20.0` | the broker's own tariff, retrieved today: `https://upstox.com/brokerage-charges/` — "Equity Options — **Flat ₹20 per executed order**" | **matches** |
+
+All six components are therefore verified. Two caveats are recorded rather than smoothed over:
+
+* **I could not prove the ABSENCE of a later circular from NSE's own listing.** The JSON endpoint
+  I tried (`/api/circulars?dept=FA&from_date=…&to_date=…`) returned `{"data":[]}` for the
+  October–November window *and* for a February–March window known to contain FA/73061 — so the
+  endpoint or its parameters are wrong and the empty result carries no information. It is not
+  being treated as evidence. What stands in its place is secondary but real: three independent
+  broker schedules retrieved today (Upstox, Zerodha, mstock) all present "from 1 March 2026 /
+  0.03553% on premium" as the **current** window, with no later one listed.
+* **The broker page contradicts itself on IPFT.** Its dated table says ₹0.01 per crore on
+  premium (agreeing with the circular); a prose block lower down still says ₹0.50/lakh — the
+  pre-rollback figure FA/73061 explicitly reversed. The circular governs.
+
+## What was outstanding when this audit opened
 
 | component | table value | source the table cites | what must be confirmed |
 | --- | --- | --- | --- |
@@ -33,15 +56,19 @@ at exactly the values the table holds.
 | NSE IPFT | `ipft = 0.01 / crore` | the same circular's table | the same |
 | brokerage | `brokerage_per_order = 20.0` | the broker's own tariff page (checked 9 Oct 2026) | the **current** tariff. This is a commercial schedule, not a statutory rate, so it can change without a circular, and it is the one component a research table cannot derive from a regulator |
 
-I did not fetch the circulars list or the broker tariff in this session, and I am not asserting
-their current values from memory. **No rate has been assumed, and the table is unchanged.**
+Both were then fetched (see the section above). **No rate was ever assumed, and the frozen table
+is unchanged by this audit.**
 
-## The change this audit proposes, conditional on those two confirmations
+## The change this audit proposes — written as a patch, NOT applied
 
-One line, in the frozen file, after the two outstanding components are confirmed unchanged:
+`patches/0001-fee-table-verified-through-20261116.patch`, which carries the citations and the
+caveats above in its own header and applies cleanly (`git apply --check` passes). Keeping it a
+patch is what **preserves the frozen table used for earlier research**: nothing in
+`research/replay/fee_models.py` is changed on this branch. Two lines:
 
 ```python
-RATES_VERIFIED_THROUGH = date(2026, 11, 16)   # was date(2026, 10, 9)
+RATES_TABLE_VERSION  = 'nse_equity_index_options_rates_20261116_v2'   # was ..._20261009_v1
+RATES_VERIFIED_THROUGH = date(2026, 11, 16)                           # was date(2026, 10, 9)
 ```
 
 `RATE_WINDOWS`' last entry ends at `RATES_VERIFIED_THROUGH`, so that single edit extends the

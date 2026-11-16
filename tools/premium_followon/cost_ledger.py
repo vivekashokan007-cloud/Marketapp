@@ -57,8 +57,13 @@ sys.path.insert(0, HERE)
 
 import fee_models as FEES              # noqa: E402  the frozen dated fee table, unchanged
 import next_session_match as G         # noqa: E402  the observation adapter and usability rules
+sys.path.insert(0, os.path.abspath(os.path.join(HERE, '..')))
+# the committed canonical-encoding mirror, used ONLY to recompute an authority record's own
+# content reference so a ledger row can be bound to the record it names
+import premium_capture_vectors as CANON  # noqa: E402
 
-LEDGER_VERSION = 'premium_followon_stage_d_cost_ledger_v2_receipt_bounds_and_authority'
+LEDGER_VERSION = 'premium_followon_stage_d_cost_ledger_v3_bound_authority_and_decision_clock'
+LEDGER_VERSION_V2 = 'premium_followon_stage_d_cost_ledger_v2_receipt_bounds_and_authority'
 LEDGER_VERSION_V1 = 'premium_followon_stage_d_cost_ledger_v1'
 
 # ── timing, declared BEFORE scoring and measured on RECEIPT timestamps ───────────────────────
@@ -96,6 +101,9 @@ UNSCORABLE = (
     'contract_identity_unverified',
     'hold_window_not_covered',
     # timing, on receipt clocks
+    'decision_clock_missing',
+    'decision_clock_not_in_this_session',
+    'decision_not_before_entry',
     'entry_delay_outside_declared_bound',
     'exit_time_outside_declared_bound',
     # executable prices
@@ -130,43 +138,85 @@ def lot_claim_from_envelope(envelope):
             'production_authority_ref': lot_block.get('production_authority_ref')}
 
 
-def lot_from_production_authority(block, expiry, envelope_ref):
-    """(lot, evidence) from the export's PRODUCTION lot authority record.
+def authority_reference(authority):
+    """The content reference an authority record carries, recomputed from its own bytes.
 
-    THE CORRECTED PATH. `references.production_lot_authority` is the per-index/session record
-    the envelopes reference, resolved from the application's own `ContractLotTable` by index,
-    expiry, cycle and observation date. The 12 November export carries it, resolved and
-    authoritative, for both indices: NIFTY 65 at expiry 2026-11-17 (rule
-    `FAOP70616_NF_weekly_revised`) and BANKNIFTY 30 at expiry 2026-11-23
-    (`FAOP70616_BNF_monthly_revised`), table version `contract_lot_table_v3_20260914`,
-    `lot_as_of` 2026-11-12, coverage complete on all 53 and 54 envelopes.
+    `PremiumObservationContract.contentHash` over the record, first 32 hex characters — the same
+    value the envelope stores as `production_authority_ref`. Verified against the 12 November
+    export: NIFTY recomputes `a908c610e9a302ed31bc639283031f4d` and BANKNIFTY
+    `2afff21e0df3c12c2153f38b098036cc`, both exactly as the phone stored them.
+    """
+    body = {k: v for k, v in (authority or {}).items()
+            if k not in ('payload_sha256', 'hash_basis')}
+    return CANON.sha256_hex(CANON.canonical(body))[:32]
 
-    Every one of these must hold, or there is no lot:
-      * the record is present and `authority_holds`, `resolved`, `authoritative`;
-      * it does not conflict with the producer claim (`lot_conflict` false);
-      * its reference matches the record and the ENVELOPE's own reference is the one listed —
-        a lot from another acquisition's authority is not this row's lot;
-      * its coverage over the session's envelopes is complete;
-      * **its expiry is this contract's expiry.** The table resolves per expiry and cycle, and
-        the record states it is not flattened to one lot per underlying, so using a lot resolved
-        for another expiry would be exactly the flattening it refuses.
+
+def _encoding_is_platform_dependent(value):
+    """True when a value's v1 canonical bytes differ between Android's org.json and the JVM's.
+
+    Android escapes every `/` and leaves U+0080-U+009F / U+2000-U+20FF literal; the reference
+    org.json does the opposite. An authority record containing either would make a recomputed
+    digest ambiguous rather than wrong, and that distinction is reported instead of guessed.
+    """
+    if isinstance(value, str):
+        return any(c == '/' or 0x80 <= ord(c) <= 0x9f or 0x2000 <= ord(c) <= 0x20ff
+                   for c in value)
+    if isinstance(value, dict):
+        return any(_encoding_is_platform_dependent(k) or _encoding_is_platform_dependent(v)
+                   for k, v in value.items())
+    if isinstance(value, (list, tuple)):
+        return any(_encoding_is_platform_dependent(v) for v in value)
+    return False
+
+
+def lot_from_production_authority(block, expiry, envelope_ref, index=None, session=None):
+    """(lot, evidence) from the export's PRODUCTION lot authority record, BOUND to this row.
+
+    THE CORRECTED PATH, twice over.
+
+    v1 read the per-slot producer claim, which is `PRODUCER_CLAIM_UNRESOLVED` by design, and so
+    refused every row. v2 read the authority record but checked only that it called itself
+    resolved: Codex mutated a NIFTY export's authority to BANKNIFTY, lot 30, an unrelated old
+    date, an EMPTY reference list and an arbitrary reference, and it was accepted as 30 for
+    NIFTY. The membership test read `if listed and ref not in listed`, so an empty list passed,
+    and nothing compared the record's own index, session, as-of date or digest to the row.
+
+    v3 binds the record to the row. Every one of these must hold, and each is tested:
+
+      * the record is present and says `authority_holds`, `resolved`, `authoritative`;
+      * it does not conflict with the producer claim, and is not flattened to one lot per
+        underlying;
+      * `reference_matches_record`, `coverage.complete`;
+      * `referenced_by_envelopes` is NON-EMPTY, the envelope's own reference is present, and it
+        is a member of that list;
+      * the reference RECOMPUTES from the record's own bytes — an arbitrary reference fails here
+        whatever the list says;
+      * the record's `index_key` and `requested_index` are THIS index;
+      * its `requested_session_date` is THIS session, and its `lot_as_of` is applicable to that
+        session under the authority contract (the record is resolved as of the session it was
+        requested for);
+      * its `expiry`, and `requested_expiry` where present, are THIS contract's expiry. The
+        table resolves per expiry and cycle, so another expiry's lot is not this row's lot.
     """
     pa = ((block or {}).get('references') or {}).get('production_lot_authority') or {}
     auth = pa.get('authority') or {}
+    listed = pa.get('referenced_by_envelopes') or []
+    recomputed = authority_reference(auth) if auth else None
     ev = {'recorded': pa.get('recorded'),
           'authority_holds': pa.get('authority_holds'),
           'resolved': pa.get('resolved'), 'authoritative': pa.get('authoritative'),
           'lot_conflict': pa.get('lot_conflict'),
           'reference_matches_record': pa.get('reference_matches_record'),
           'coverage_complete': ((pa.get('coverage') or {}).get('complete')),
-          'referenced_by_envelopes': pa.get('referenced_by_envelopes'),
+          'referenced_by_envelopes': listed,
           'envelope_reference': envelope_ref,
+          'recomputed_reference': recomputed,
+          'row': {'index': index, 'session': session, 'expiry': expiry},
           'authority': {k: auth.get(k) for k in
                         ('authority', 'lot_table_version', 'matched_rule_id', 'lot_source',
                          'lot_as_of', 'index_key', 'expiry', 'expiry_cycle',
                          'contract_lot_size', 'flattened_to_one_lot_per_underlying',
-                         'requested_session_date')},
-          'contract_expiry': expiry}
+                         'requested_index', 'requested_session_date', 'requested_expiry')}}
     fails = []
     if pa.get('recorded') is not True:
         fails.append('not_recorded')
@@ -175,13 +225,43 @@ def lot_from_production_authority(block, expiry, envelope_ref):
             fails.append(key + '_not_true')
     if pa.get('lot_conflict') is not False:
         fails.append('lot_conflict')
+    if auth.get('flattened_to_one_lot_per_underlying') is True:
+        fails.append('authority_flattened_to_one_lot_per_underlying')
     if ev['coverage_complete'] is not True:
         fails.append('coverage_incomplete')
-    listed = pa.get('referenced_by_envelopes') or []
-    if envelope_ref is None or (listed and envelope_ref not in listed):
+
+    # ── the reference must be present, listed, and recompute from the record ──
+    if not listed:
+        fails.append('referenced_by_envelopes_is_empty')
+    if not envelope_ref:
+        fails.append('envelope_reference_absent')
+    elif listed and envelope_ref not in listed:
         fails.append('envelope_reference_not_listed')
-    if expiry is not None and str(auth.get('expiry')) != str(expiry):
-        fails.append('authority_expiry_is_%s_not_%s' % (auth.get('expiry'), expiry))
+    if envelope_ref and recomputed and envelope_ref != recomputed:
+        ev['digest_encoding_ambiguous'] = _encoding_is_platform_dependent(auth)
+        fails.append('authority_digest_does_not_match_envelope_reference')
+
+    # ── the record must be about THIS row ──
+    if index is not None:
+        for key in ('index_key', 'requested_index'):
+            got = auth.get(key)
+            if got is not None and str(got) != str(index):
+                fails.append('authority_%s_is_%s_not_%s' % (key, got, index))
+    if session is not None:
+        got = auth.get('requested_session_date')
+        if str(got) != str(session):
+            fails.append('authority_requested_session_is_%s_not_%s' % (got, session))
+        asof = auth.get('lot_as_of')
+        # applicability: the record is resolved AS OF the session it was requested for. A record
+        # carrying another date was not resolved for this session, whatever it says about itself.
+        if str(asof) != str(session):
+            fails.append('authority_as_of_%s_not_applicable_to_%s' % (asof, session))
+    if expiry is not None:
+        for key in ('expiry', 'requested_expiry'):
+            got = auth.get(key)
+            if got is not None and str(got) != str(expiry):
+                fails.append('authority_%s_is_%s_not_%s' % (key, got, expiry))
+
     lot = auth.get('contract_lot_size')
     try:
         lot = int(lot)
@@ -201,6 +281,24 @@ def receipt_seconds(obs):
     """The receipt instant as epoch seconds, or None. The only clock timing is measured on."""
     t = G.parse_ts((obs or {}).get('receipt_ts'))
     return None if t is None else t.timestamp()
+
+
+def receipt_in_session(obs, session):
+    """Whether an observation's receipt clock belongs to the session it claims, and why not.
+
+    The same rule the matcher applies to a scored mark: the receipt must parse, fall on the
+    session's own date, and lie inside the session's trading clock. A decision poll that fails
+    this is not a decision in this session, whatever its slot label says.
+    """
+    t = G.parse_ts((obs or {}).get('receipt_ts'))
+    if t is None:
+        return False, 'receipt_clock_unparseable'
+    if session and t.date().isoformat() != str(session):
+        return False, 'receipt_date_%s_not_session_%s' % (t.date().isoformat(), session)
+    mod = t.hour * 60 + t.minute
+    if not (G.SESSION_FIRST_MIN <= mod <= G.SESSION_LAST_MIN):
+        return False, 'receipt_clock_%02d:%02d_outside_session' % (mod // 60, mod % 60)
+    return True, None
 
 
 def on_tick_grid(px):
@@ -234,6 +332,9 @@ def score_decision(d):
            # outcome may be linked beside it.
            'label': PROXY_SIMULATED,
            'lot_claim': d.get('lot_claim'),
+           # the resolved lot is recorded whether or not the row is scorable, so a refused row
+           # still shows which lot the authority gave and which reason actually blocked it
+           'lot': d.get('lot'),
            'lot_authority_evidence': d.get('lot_evidence'),
            'linked_actual_paper_outcome': d.get('actual_paper')}
     reasons, detail = [], {}
@@ -262,9 +363,28 @@ def score_decision(d):
             fail('%s_quote_unusable' % which, unusable=why, at=obs.get('slot'))
 
     # ── timing, on receipt clocks, against bounds declared before scoring ──
+    #
+    # A VALID DECISION CLOCK IS REQUIRED BEFORE ANY SIMULATED P&L. v2 computed the entry-delay
+    # check only `if dec_s is not None`, so removing the decision receipt SKIPPED the check and
+    # the row scored 2,921.77 as a simulated trade. A fill cannot be bounded against a decision
+    # that carries no instant, so the row is refused instead.
     timing = {}
-    dec_s = receipt_seconds(d.get('decision'))
+    decision = d.get('decision')
+    dec_s = receipt_seconds(decision)
     ent_s, exi_s = receipt_seconds(entry), receipt_seconds(exit_)
+    if decision is None or dec_s is None:
+        fail('decision_clock_missing',
+             decision_slot=(decision or {}).get('decision_slot') or d.get('decision_slot'),
+             receipt_ts=(decision or {}).get('receipt_ts'))
+    else:
+        ok, why = receipt_in_session(decision, d.get('session'))
+        if not ok:
+            fail('decision_clock_not_in_this_session', detail=why,
+                 receipt_ts=decision.get('receipt_ts'), session=d.get('session'))
+        if ent_s is not None and not (dec_s < ent_s):
+            fail('decision_not_before_entry', decision_receipt=decision.get('receipt_ts'),
+                 entry_receipt=(entry or {}).get('receipt_ts'),
+                 difference_s=ent_s - dec_s)
     if dec_s is not None and ent_s is not None:
         actual = ent_s - dec_s
         timing['entry_delay'] = {'target_s': ENTRY_DELAY_TARGET_S, 'actual_s': actual,
@@ -494,15 +614,24 @@ def aggregate(rows):
 
 # ── building decisions from one export ────────────────────────────────────────────────────────
 
-def decisions_from_export(doc, index, hold_min, fill_delay_polls=FILL_DELAY_POLLS):
+def decisions_from_export(doc, index, hold_min, fill_delay_polls=FILL_DELAY_POLLS,
+                          section=G.SECTION_PILOT):
     """Every (contract, decision poll) in one export, with its fill and its exit.
 
     The decision poll, the fill and the exit are all carried as OBSERVATIONS, so the scorer can
     measure the delays on their receipt clocks rather than on their position in a list. The lot
     comes from the export's production authority record, checked against this contract's expiry.
+
+    The capture stream is NAMED, for the reason the matcher's `section_of` documents: a
+    phone-shaped export carries two streams, and reading whichever one happens to sit under
+    `premium` scores the wrong contracts without saying so. A missing or malformed section is
+    returned as a stated reason, never as an empty ledger.
     """
-    grouped, dropped = G.observations_from_export(doc, index)
-    block = ((doc.get('premium') or {}).get('indices') or {}).get(index) or {}
+    block, why = G.section_of(doc, section)
+    if block is None:
+        return [], collections.Counter({why: 1})
+    grouped, dropped = G.observations_from_export(doc, index, section)
+    block = ((block.get('indices') or {}).get(index)) or {}
     envelopes = {e.get('acquisition_id'): e for e in (block.get('slot_envelopes') or [])}
     out = []
     for ident, obs in sorted(grouped.items()):
@@ -525,7 +654,8 @@ def decisions_from_export(doc, index, hold_min, fill_delay_polls=FILL_DELAY_POLL
             env = envelopes.get((entry.get('provenance') or {}).get('acquisition_id'))
             claim = lot_claim_from_envelope(env)
             lot, lot_ev = lot_from_production_authority(
-                block, expiry, (env or {}).get('lot', {}).get('production_authority_ref'))
+                block, expiry, (env or {}).get('lot', {}).get('production_authority_ref'),
+                index=index, session=decision.get('session_date'))
             ent_s = receipt_seconds(entry)
             target_s = (ent_s + hold_min * 60.0) if ent_s is not None else None
             later = [o for o in series
@@ -546,8 +676,8 @@ def decisions_from_export(doc, index, hold_min, fill_delay_polls=FILL_DELAY_POLL
     return out, dropped
 
 
-def score_export(doc, index, hold_min):
-    prepared, dropped = decisions_from_export(doc, index, hold_min)
+def score_export(doc, index, hold_min, section=G.SECTION_PILOT):
+    prepared, dropped = decisions_from_export(doc, index, hold_min, section=section)
     rows = []
     for d in prepared:
         rows.append(score_decision(d))
@@ -721,6 +851,8 @@ def main(argv=None):
     ap.add_argument('exports', nargs='*')
     ap.add_argument('--index', default='NF')
     ap.add_argument('--hold-min', type=int, default=60)
+    ap.add_argument('--section', default=G.SECTION_PILOT, choices=list(G.SECTIONS),
+                    help='the capture stream to score; a phone-shaped export carries two')
     ap.add_argument('--self-check', action='store_true')
     ap.add_argument('--json', dest='json_out')
     a = ap.parse_args(argv)
@@ -737,6 +869,8 @@ def main(argv=None):
           % (ENTRY_DELAY_TARGET_S, ENTRY_DELAY_TOLERANCE_S, HOLD_EARLY_TOLERANCE_S,
              HOLD_LATE_TOLERANCE_S))
     print('lot: references.production_lot_authority, matched to this contract\'s expiry')
+    print('section: %s -- the stream is named, never whichever one sits under `premium`'
+          % a.section)
 
     if a.self_check or not a.exports:
         print('\n--- synthetic self-check (no inputs read) ---')
@@ -750,7 +884,7 @@ def main(argv=None):
     for p in a.exports:
         with open(p, 'r', encoding='utf-8') as fh:
             doc = json.load(fh)
-        rows, dropped = score_export(doc, a.index, a.hold_min)
+        rows, dropped = score_export(doc, a.index, a.hold_min, a.section)
         all_rows += rows
         all_dropped.update(dropped)
     agg = aggregate(all_rows)

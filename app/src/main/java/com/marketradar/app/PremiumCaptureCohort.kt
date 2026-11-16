@@ -92,6 +92,22 @@ object PremiumCaptureCohort {
      * different contract, and pairing across it would not be the same position.
      */
     const val REQUIRED_STRIKE_ABSENT = "REQUIRED_STRIKE_NOT_PAIRED_IN_RESPONSE"
+
+    /** A required contract's instrument key is not the key this response carries for it. */
+    const val REQUIRED_KEY_MISMATCH = "REQUIRED_INSTRUMENT_KEY_MISMATCH"
+
+    /** The response's expiry is not the expiry the caller requires (a roll). */
+    const val REQUIRED_EXPIRY_MISMATCH = "REQUIRED_EXPIRY_MISMATCH"
+
+    /**
+     * The EXACT contract a caller requires: strike, side and instrument key together.
+     *
+     * Requiring strikes alone was not enough. After a roll the same strike exists under a new
+     * instrument key, so a strike-only requirement would pin a different contract and the two
+     * halves of an overnight mark would not be the same position.
+     */
+    data class RequiredContract(val strike: Double, val optionType: String,
+                                val instrumentKey: String)
     const val DUPLICATE_INSTRUMENT_KEYS = "DUPLICATE_INSTRUMENT_KEYS"
 
     data class PinnedContract(
@@ -195,7 +211,8 @@ object PremiumCaptureCohort {
                acquisitionHhmm: String?, requestedUnderlyingKey: String?,
                existingCohort: JSONObject? = null,
                window: CaptureWindow = PILOT_WINDOW,
-               requireStrikes: List<Double>? = null): Selection {
+               requireContracts: List<RequiredContract>? = null,
+               requireExpiry: String? = null): Selection {
         if (existingCohort != null) return Selection(ALREADY_PINNED, existingCohort)
         val idx = index.trim().uppercase()
         val expectedUnderlying = INDEX_UNDERLYING[idx]
@@ -261,22 +278,46 @@ object PremiumCaptureCohort {
             return Selection(INCOMPLETE_PAIRED_STRIKES, null,
                 "${paired.size} fully paired strikes available, need $PAIRED_STRIKES")
 
-        val chosen = if (requireStrikes == null) {
+        if (requireExpiry != null && requireExpiry.isNotEmpty() && expiry != requireExpiry)
+            return Selection(REQUIRED_EXPIRY_MISMATCH, null,
+                "response carries expiry '$expiry' but '$requireExpiry' is required")
+
+        val chosen = if (requireContracts == null) {
             paired.sortedWith(compareBy({ Math.abs(it.strike - s) }, { it.strike }))
                 .take(PAIRED_STRIKES)
                 .sortedBy { it.strike }
         } else {
-            // REQUIRED strikes, not nearest-to-spot: the follow-on capture must observe the same
-            // contracts it observed yesterday, whatever the spot has done overnight.
+            /*
+             * The EXACT required contracts, not nearest-to-spot and not strike alone: the
+             * follow-on capture must observe the same contracts it observed yesterday, whatever
+             * the spot did overnight, and a strike that now resolves to a DIFFERENT instrument
+             * key is a different contract.
+             */
             val byK = paired.associateBy { it.strike }
-            val missing = requireStrikes.filter { byK[it] == null }
+            val requiredStrikes = requireContracts.map { it.strike }.distinct().sorted()
+            if (requiredStrikes.size != PAIRED_STRIKES ||
+                requireContracts.size != CONTRACTS_PER_COHORT)
+                return Selection(INCOMPLETE_PAIRED_STRIKES, null,
+                    "${requireContracts.size} contracts over ${requiredStrikes.size} strikes " +
+                        "required, need $CONTRACTS_PER_COHORT over $PAIRED_STRIKES")
+            val missing = requiredStrikes.filter { byK[it] == null }
             if (missing.isNotEmpty())
                 return Selection(REQUIRED_STRIKE_ABSENT, null,
                     "required strikes $missing are not fully paired in this response")
-            if (requireStrikes.size != PAIRED_STRIKES)
-                return Selection(INCOMPLETE_PAIRED_STRIKES, null,
-                    "${requireStrikes.size} strikes required, need $PAIRED_STRIKES")
-            requireStrikes.sorted().map { byK.getValue(it) }
+            for (rc in requireContracts) {
+                val cand = byK.getValue(rc.strike)
+                val have = when (rc.optionType.trim().uppercase()) {
+                    "CE" -> cand.ce
+                    "PE" -> cand.pe
+                    else -> return Selection(REQUIRED_KEY_MISMATCH, null,
+                        "required option type '${rc.optionType}' is neither CE nor PE")
+                }
+                if (have != rc.instrumentKey)
+                    return Selection(REQUIRED_KEY_MISMATCH, null,
+                        "required ${rc.optionType} ${rc.strike} is '${rc.instrumentKey}' but " +
+                            "this response carries '$have'")
+            }
+            requiredStrikes.map { byK.getValue(it) }
         }
 
         val pinned = JSONArray()
@@ -304,7 +345,7 @@ object PremiumCaptureCohort {
             .put("paired_strikes", JSONArray().also { a -> chosen.forEach { a.put(it.strike) } })
             .put("selection_spot", s)
             .put("selection_slot", derivedSlot(acquisitionHhmm) ?: JSONObject.NULL)
-            .put("selection_basis", if (requireStrikes == null)
+            .put("selection_basis", if (requireContracts == null)
                 "THREE_STRIKES_NEAREST_THIS_RESPONSE_SPOT_WITH_BOTH_LEGS"
                 else "THREE_STRIKES_REQUIRED_BY_CALLER_VALIDATED_IN_THIS_RESPONSE")
             .put("capture_window", window.id)

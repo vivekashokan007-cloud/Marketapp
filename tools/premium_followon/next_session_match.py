@@ -51,7 +51,8 @@ import os
 import re
 import sys
 
-SPEC_VERSION = 'premium_followon_stage_g_next_session_match_v2_verified_clocks'
+SPEC_VERSION = 'premium_followon_stage_g_next_session_match_v3_explicit_section'
+SPEC_VERSION_V2 = 'premium_followon_stage_g_next_session_match_v2_verified_clocks'
 SPEC_VERSION_V1 = 'premium_followon_stage_g_next_session_match_v1'
 
 OPEN_CLOCK = '09:15'
@@ -170,6 +171,43 @@ class TradingCalendar:
 
 
 # ── observations ──────────────────────────────────────────────────────────────────────────────
+
+SECTION_PILOT = 'premium'
+SECTION_FOLLOWON = 'premium_followon'
+SECTIONS = (SECTION_PILOT, SECTION_FOLLOWON)
+
+
+def section_of(doc, name=SECTION_PILOT):
+    """(section, reason) — the capture stream this matcher is pointed at, or why there is none.
+
+    THE DEFECT THIS CLOSES. The follow-on capture publishes its evidence under
+    `premium_followon`, and a phone-shaped export carries the PILOT stream under `premium`. v2
+    read `premium` unconditionally, so on a real export with the two streams kept distinct it
+    found **zero pairs for both indices with no refusal reason** — silence, which is the worst
+    possible answer. The section is now named explicitly and a missing or malformed one is a
+    stated outcome.
+
+    `premium_followon` is accepted either as the follow-on wrapper (`{purpose, section: {...}}`,
+    which is what `PremiumFollowOnCapture.exportSection` writes) or as a bare section.
+    """
+    if name not in SECTIONS:
+        return None, 'unknown_section_%s' % name
+    node = doc.get(name) if isinstance(doc, dict) else None
+    if node is None:
+        # a bare section, handed in directly, is accepted for the pilot only
+        if name == SECTION_PILOT and isinstance(doc, dict) and isinstance(doc.get('indices'),
+                                                                         dict):
+            return doc, None
+        return None, '%s_section_absent' % name
+    if not isinstance(node, dict):
+        return None, '%s_section_malformed' % name
+    if isinstance(node.get('indices'), dict):
+        return node, None
+    inner = node.get('section')
+    if isinstance(inner, dict) and isinstance(inner.get('indices'), dict):
+        return inner, None
+    return None, '%s_section_malformed' % name
+
 
 def minutes(hhmm):
     h, m = str(hhmm).split(':')[:2]
@@ -449,14 +487,17 @@ def observation_view(o):
 
 # ── reading observations out of a session export ──────────────────────────────────────────────
 
-def observations_from_export(doc, index):
+def observations_from_export(doc, index, section=SECTION_PILOT):
     """Normalized observations for one index, joined record -> envelope by acquisition.
 
     Conflicting duplicates fail closed, as the frozen repricing harness requires: two records
     for one (contract, acquisition) that disagree are BOTH dropped, because nothing in the
     export says which is authoritative. Identical repeats collapse to one.
     """
-    block = ((doc.get('premium') or {}).get('indices') or {}).get(index) or {}
+    sec, why = section_of(doc, section)
+    if sec is None:
+        return collections.defaultdict(list), collections.Counter({why: 1})
+    block = (sec.get('indices') or {}).get(index) or {}
     pins = {}
     for path in (('cohort', 'pinned_contracts'), ('references', 'pinned_contracts'),
                  ('pinned_contracts',)):
@@ -538,7 +579,7 @@ def observations_from_export(doc, index):
                      'identity_verified': idn.get('identity_verified'),
                      'identity_disagreements': idn.get('identity_disagreements'),
                      'provenance': {'acquisition_id': aid,
-                                    'source': 'premium.indices.%s' % index},
+                                    'source': '%s.indices.%s' % (section, index)},
                  })
     return grouped, dropped
 
@@ -559,7 +600,7 @@ def iso_from_ms(ms, session_date):
         return None
 
 
-def session_dates(doc):
+def session_dates(doc, section=SECTION_PILOT):
     """The session dates an export covers, and where each came from.
 
     A session with ZERO premium records is still a session: it is the next-session side of a
@@ -568,10 +609,12 @@ def session_dates(doc):
     and the source is reported rather than assumed.
     """
     out = {}
-    for ix, block in (((doc.get('premium') or {}).get('indices')) or {}).items():
+    sec, _why = section_of(doc, section)
+    for ix, block in (((sec or {}).get('indices')) or {}).items():
         for e in (block.get('slot_envelopes') or []):
             if e.get('session_date'):
-                out.setdefault(str(e['session_date']), 'premium.slot_envelopes.session_date')
+                out.setdefault(str(e['session_date']),
+                               '%s.slot_envelopes.session_date' % section)
     if not out:
         hist = (((doc.get('parts') or {}).get('authority_doc') or {}).get('history') or {})
         for ix, rows in hist.items():
@@ -586,47 +629,78 @@ def session_dates(doc):
     return out
 
 
-def session_dates_of(docs):
+def session_dates_of(docs, section=SECTION_PILOT):
     out = {}
     for doc in docs:
-        out.update(session_dates(doc))
+        out.update(session_dates(doc, section))
     return out
 
 
-def match_exports(docs, index, calendar):
-    """Attempt a pairing for every adjacent pair of supplied sessions."""
-    by_date, date_source = {}, {}
-    for doc in docs:
-        for d, src in session_dates(doc).items():
+def match_exports(docs, index, calendar, section=SECTION_PILOT):
+    """Attempt a pairing for every adjacent pair of supplied sessions, in ONE capture stream.
+
+    Nothing is silent. A missing or malformed section, and an index with no observations in
+    either session, each produce a stated refusal rather than an empty result — the shape that
+    reported zero pairs with no reason on a phone-shaped export.
+    """
+    by_date, date_source, section_problem = {}, {}, {}
+    for i, doc in enumerate(docs):
+        sec, why = section_of(doc, section)
+        if sec is None:
+            section_problem['doc_%d' % i] = why
+            continue
+        for d, src in session_dates(doc, section).items():
             by_date[d] = doc
             date_source[d] = src
     dates = sorted(by_date)
     pairs, refused = [], collections.Counter()
+    if section_problem:
+        refused['section_absent_or_malformed'] += 1
+        pairs.append({'paired': False, 'refusal': 'section_absent_or_malformed',
+                      'section': section, 'per_document': section_problem,
+                      'sessions_found': dates})
+        if not dates:
+            return pairs, refused
     if len(dates) < 2:
         refused['fewer_than_two_sessions_supplied'] += 1
         pairs.append({'paired': False, 'refusal': 'fewer_than_two_sessions_supplied',
-                      'sessions_found': dates, 'date_sources': date_source})
+                      'section': section, 'sessions_found': dates,
+                      'date_sources': date_source})
         return pairs, refused
     for a, b in zip(dates, dates[1:]):
         nxt, why = calendar.next_trading_day(a)
         if why:
             refused[why] += 1
             pairs.append({'close_session': a, 'next_session': b, 'paired': False,
-                          'refusal': why,
+                          'refusal': why, 'section': section,
                           'calendar_covered_years': calendar.covered_years})
             continue
         if nxt != b:
             refused['next_session_not_adjacent'] += 1
             pairs.append({'close_session': a, 'next_session': b, 'paired': False,
-                          'refusal': 'next_session_not_adjacent',
+                          'refusal': 'next_session_not_adjacent', 'section': section,
                           'expected_next_trading_day': nxt,
                           'calendar_gap': calendar.gap(a, b)})
             continue
-        close_g, close_drop = observations_from_export(by_date[a], index)
-        next_g, next_drop = observations_from_export(by_date[b], index)
+        close_g, close_drop = observations_from_export(by_date[a], index, section)
+        next_g, next_drop = observations_from_export(by_date[b], index, section)
+        excluded = {'close': dict(close_drop), 'next': dict(next_drop)}
+        if not close_g:
+            refused['no_observations_for_index_in_close_session'] += 1
+            pairs.append({'close_session': a, 'next_session': b, 'paired': False,
+                          'refusal': 'no_observations_for_index_in_close_session',
+                          'index': index, 'section': section, 'excluded_records': excluded})
+            continue
+        if not next_g:
+            refused['no_observations_for_index_in_next_session'] += 1
+            pairs.append({'close_session': a, 'next_session': b, 'paired': False,
+                          'refusal': 'no_observations_for_index_in_next_session',
+                          'index': index, 'section': section, 'excluded_records': excluded})
+            continue
         for ident, obs in sorted(close_g.items()):
             res = pair_contract(obs, next_g.get(ident) or [], calendar, a, b)
-            res['excluded_records'] = {'close': dict(close_drop), 'next': dict(next_drop)}
+            res['section'] = section
+            res['excluded_records'] = excluded
             if not res.get('paired'):
                 refused[res['refusal']] += 1
             pairs.append(res)
@@ -637,6 +711,9 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('exports', nargs='+')
     ap.add_argument('--index', default='NF')
+    ap.add_argument('--section', choices=sorted(SECTIONS), default=SECTION_PILOT,
+                    help='which capture stream to read: the pilot\'s `premium` or the '
+                         'follow-on\'s `premium_followon`')
     ap.add_argument('--brain', default=os.path.join(
         os.path.dirname(os.path.abspath(__file__)), '..', '..',
         'app', 'src', 'main', 'python', 'brain.py'))
@@ -649,7 +726,7 @@ def main(argv=None):
     for p in a.exports:
         with open(p, 'r', encoding='utf-8') as fh:
             docs.append(json.load(fh))
-    pairs, refused = match_exports(docs, a.index, cal)
+    pairs, refused = match_exports(docs, a.index, cal, a.section)
 
     print('=' * 100)
     print('STAGE G NEXT-SESSION MATCHING   %s' % SPEC_VERSION)
@@ -659,9 +736,10 @@ def main(argv=None):
     print('close window %s-%s   open %s   opening tolerance %d min   staleness bound %d s'
           % (NEAR_CLOSE_FROM, CLOSE_CLOCK, OPEN_CLOCK, OPENING_TOLERANCE_MIN,
              MAX_QUOTE_STALE_S))
-    found = session_dates_of(docs)
-    print('index %s   exports %d   sessions %s' % (a.index, len(docs),
-          ', '.join('%s (%s)' % (d, src) for d, src in sorted(found.items()))))
+    found = session_dates_of(docs, a.section)
+    print('section %s   index %s   exports %d   sessions %s'
+          % (a.section, a.index, len(docs),
+             ', '.join('%s (%s)' % (d, src) for d, src in sorted(found.items())) or 'none'))
     print('attempted pairs %d' % len(pairs))
     for r in pairs:
         head = '%s -> %s' % (r.get('close_session'), r.get('next_session'))
@@ -684,7 +762,7 @@ def main(argv=None):
             print('  %-40s %d' % (why, n))
     if a.json_out:
         with open(a.json_out, 'w', encoding='utf-8') as fh:
-            json.dump({'spec_version': SPEC_VERSION,
+            json.dump({'spec_version': SPEC_VERSION, 'section': a.section,
                        'calendar': {'holidays': holidays,
                                     'covered_years': cal.covered_years},
                        'declared_refusals': list(REFUSALS),

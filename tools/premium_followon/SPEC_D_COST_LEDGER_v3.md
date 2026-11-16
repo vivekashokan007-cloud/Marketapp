@@ -1,10 +1,12 @@
-# Stage D v2 — cost ledger, outright buying against WAIT
+# Stage D v3 — the outright-buy cost ledger
 
-**Version** `premium_followon_stage_d_cost_ledger_v2_receipt_bounds_and_authority` ·
+**Version** `premium_followon_stage_d_cost_ledger_v3_bound_authority_and_decision_clock` ·
 **declared** 16 November 2026 IST · **implementation** `cost_ledger.py` ·
-**checks** `tests/test_cost_ledger.py` (37) plus the bundled `--self-check` (14)
+**checks** `tests/test_cost_ledger.py` (57) plus the bundled `--self-check` (14)
 
-Supersedes v1. Four of v1's answers were wrong; each correction below carries a named regression.
+Supersedes v2. v2 corrected v1's four wrong answers (§0–§7, unchanged below) and left two of its
+own: a fill could be scored with no decision clock, and a mutated lot authority was accepted.
+**§8 is the v3 correction.**
 
 ## 0 · The four corrections
 
@@ -122,3 +124,85 @@ written out there. **No rate was assumed and the frozen table is unchanged.**
 No live behaviour, no production write, no activation claim. Ask-to-bid P&L stays a **proxy**
 while quote freshness and quantity units are unresolved, exactly as the frozen plan states. The
 frozen fee model and the frozen repricing tooling are imported, not modified.
+
+## 8 · v3: the authority is bound to the row, and a fill needs a decision clock
+
+### 8.1 Two defects, both reproduced before they were fixed
+
+**A row scored with no decision clock.** v2 computed the entry-delay check only
+`if dec_s is not None`, so removing the decision receipt **skipped** it, and the row scored
+**₹2,921.77** as a simulated trade off a decision that carried no instant at all.
+
+**A mutated authority was accepted.** v2 checked that the authority record called itself
+resolved. An authority mutated to another index (`BANKNIFTY`, lot 30), an unrelated as-of date,
+an **empty** `referenced_by_envelopes` list and an arbitrary reference was accepted, and a
+NIFTY row scored at **lot 30**. The membership test read `if listed and ref not in listed`, so
+an empty list passed it, and nothing compared the record's index, session, as-of date or digest
+to the row.
+
+### 8.2 A valid decision clock is required before any simulated P&L
+
+Named reasons, each tested on its own, each blocking:
+
+| reason | fires when |
+| --- | --- |
+| `decision_clock_missing` | no decision observation, or its `receipt_ts` does not parse |
+| `decision_clock_not_in_this_session` | the receipt falls on another date, or outside the session's trading clock |
+| `decision_not_before_entry` | the decision is at or after its own fill |
+
+A blocked row carries no `net_inr` and no `gross_inr`, and the reason is reported **beside**
+every other blocking reason, not instead of them.
+
+### 8.3 The dated lot authority, bound to the exact row
+
+`lot_from_production_authority(block, expiry, envelope_ref, index, session)`. Every one of these
+must hold, and each has its own test:
+
+| binding | refusal |
+| --- | --- |
+| recorded, `authority_holds`, `resolved`, `authoritative`, `reference_matches_record` | `*_not_true` |
+| no lot conflict; not flattened to one lot per underlying; coverage complete | `lot_conflict`, `authority_flattened_to_one_lot_per_underlying`, `coverage_incomplete` |
+| `referenced_by_envelopes` is **NON-EMPTY** | `referenced_by_envelopes_is_empty` |
+| the envelope's reference is present and a member of that list | `envelope_reference_absent`, `envelope_reference_not_listed` |
+| the reference **recomputes** from the record's own bytes | `authority_digest_does_not_match_envelope_reference` |
+| `index_key` and `requested_index` are THIS index | `authority_index_key_is_X_not_Y` |
+| `requested_session_date` is THIS session | `authority_requested_session_is_X_not_Y` |
+| `lot_as_of` is applicable to that session | `authority_as_of_X_not_applicable_to_Y` |
+| `expiry` and `requested_expiry` are THIS contract's expiry | `authority_expiry_is_X_not_Y` |
+| the lot is a positive integer | `contract_lot_size_not_an_integer`, `..._not_positive` |
+
+An empty list failing the membership check and a listed-but-arbitrary reference failing the
+digest check are separate tests, because either one alone would have let Codex's mutation
+through. `test_a_tampered_lot_breaks_its_own_digest` edits the record after the reference is
+computed and shows the reference no longer recomputes.
+
+The binding is usable because the reference recomputes from the COMMITTED production record:
+`test_the_reference_recomputes_from_the_committed_production_record` checks the fixture's own
+`production_lot_authority` against `authority_reference()`.
+
+### 8.4 The stream is named here too
+
+`decisions_from_export(..., section=...)` and `score_export(..., section=...)`, with
+`--section` at the CLI. The hazard is the one Stage G hit: a phone-shaped export carries two
+streams, and reading whichever one sits under `premium` scores the wrong contracts without
+saying so. A missing section returns `[]` rows and `{'premium_followon_section_absent': 1}` —
+a stated reason, not an empty ledger.
+
+### 8.5 Measured on the phone-shaped export
+
+`phone_shaped_export_2026-10-19.json`, `--section premium_followon`:
+
+| index | BUY rows | lot resolved | blocked by | scorable |
+| --- | ---: | ---: | --- | ---: |
+| NF | 12 | 6 at **65** (`FAOP70616_NF_weekly_revised`) | `fee_rates_unknown_for_trade_date` only | 0 |
+| BNF | 12 | 6 at **30** (`FAOP70616_BNF_monthly_revised`) | `fee_rates_unknown_for_trade_date` only | 0 |
+
+The other 6 rows per index are each contract's final poll, which has no fill
+(`fill_poll_absent`). The lots are the DATED table's, resolved per index, expiry and cycle —
+not the producer's per-slot claim, which is `PRODUCER_CLAIM_UNRESOLVED` by design.
+
+**After-cost coverage is exactly zero while fee evidence is unresolved**, by construction.
+`FEE_SOURCE_AUDIT_20261116.md` now records all six components verified against primary or
+issuing sources, and `patches/0001-fee-table-verified-through-20261116.patch` is the dated
+table change, **not applied**: the frozen table earlier research ran against is preserved
+byte-for-byte, and the patch states what it still cannot prove.

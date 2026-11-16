@@ -171,11 +171,12 @@ object PremiumExportSection {
      * Prepending one key cannot alter any existing part, and avoids holding a second parsed copy
      * of a multi-megabyte bundle — this project has an OOM history on exactly that pattern.
      */
-    fun splice(bundle: String, premium: JSONObject): String? {
+    @JvmOverloads
+    fun splice(bundle: String, premium: JSONObject, key: String = "premium"): String? {
         val t = bundle.trimStart()
         if (!t.startsWith("{")) return null
         val rest = t.substring(1).trimStart()
-        val head = "{\"premium\":" + premium.toString()
+        val head = "{" + JSONObject.quote(key) + ":" + premium.toString()
         return if (rest.startsWith("}")) "$head}" else "$head,$rest"
     }
 
@@ -202,8 +203,10 @@ object PremiumExportSection {
      * `overCap` is true and the caller refuses. The limit is NOT raised and old parts are never
      * truncated. `stage` remains 0 and is kept only so the result shape is stable for callers.
      */
-    fun mergeWithinCap(bundle: String, bundleBytes: ByteArray, section: JSONObject): Merged {
-        val merged = splice(bundle, section)
+    @JvmOverloads
+    fun mergeWithinCap(bundle: String, bundleBytes: ByteArray, section: JSONObject,
+                       key: String = "premium"): Merged {
+        val merged = splice(bundle, section, key)
         val bytes = merged?.toByteArray(Charsets.UTF_8) ?: bundleBytes
         return Merged(bytes, 0, merged != null, bytes.size > COMBINED_CAP_BYTES)
     }

@@ -1,12 +1,16 @@
-# Stage G v2 — next-session quote matching, and the capture that can feed it
+# Stage G v3 — next-session quote matching, wired end to end
 
-**Version** `premium_followon_stage_g_next_session_match_v2_verified_clocks` ·
+**Version** `premium_followon_stage_g_next_session_match_v3_explicit_section` ·
 **declared** 16 November 2026 IST · **matcher** `next_session_match.py` ·
 **capture** `app/src/main/java/com/marketradar/app/PremiumFollowOnCapture.kt` ·
-**checks** `tests/test_next_session_match.py` (44) and `PremiumFollowOnCaptureTest.kt` (13)
+**poll hook** `MarketWatchService.kt` · **export** `NativeBridge.kt` + `PremiumExportSection.kt` ·
+**checks** `tests/test_next_session_match.py` (52), `PremiumFollowOnCaptureTest.kt` (19) and
+`PremiumFollowOnEndToEndTest.kt` (4)
 
-Supersedes v1. v1's readiness claim was wrong and two of its rules let a bad mark through; all
-three corrections are below, each with a named regression.
+Supersedes v2, which was correct about clocks and wrong about where it read them from: pointed
+at a phone-shaped export it read the PILOT stream, found no overnight pairing in it, and
+reported **zero pairs for both indices with no refusal reason**. §6 below is the correction and
+the end-to-end wiring that proves it; v2's own corrections (§0–§5) stand unchanged.
 
 ## 0 · The readiness correction
 
@@ -160,3 +164,96 @@ and export keys; both indices independently; and the clock and contract provenan
 
 Nothing above changes the pilot window, the frozen 60-minute pilot, the installed b530, the
 existing recommendations, ranking, sizing, exits or notifications.
+
+## 6 · v3: the stream is named, and the path is wired end to end
+
+### 6.1 The defect, reproduced before it was fixed
+
+On an export carrying both streams — the frozen pilot capture under `premium`, the follow-on
+research capture under `premium_followon` — v2 read `premium` unconditionally:
+
+```
+$ next_session_match.py <close>.json <next>.json --index NF     # v2
+attempted pairs 0
+(no refusals, no reasons, no sessions)
+```
+
+Zero pairs and no reason is the worst answer the matcher can give, because it is
+indistinguishable from "the market did not move".
+
+### 6.2 The rule
+
+`section_of(doc, name)` selects the capture stream by NAME. `SECTION_PILOT = 'premium'`,
+`SECTION_FOLLOWON = 'premium_followon'`; the follow-on wrapper (`{purpose, section: {...}}`,
+which is what `PremiumFollowOnCapture.exportSection` writes) and a bare section are both
+accepted. A section that is absent, malformed or unknown is a STATED outcome
+(`section_absent_or_malformed`, `unknown_section_<name>`), never an empty result. `--section`
+selects it at the CLI; Stage D takes the same argument, for the same reason.
+
+An index present in one session and not the other is named too
+(`no_observations_for_index_in_close_session` / `..._in_next_session`), with the excluded-record
+counts attached.
+
+### 6.3 The wiring, all three hops
+
+| hop | where | what it does |
+| --- | --- | --- |
+| poll → capture | `MarketWatchService`, immediately after the pilot's `PremiumCaptureCoordinator.onChainsAcquired` block | its own `premiumCaptureSafely` wrapper, gated by `PremiumFollowOnCapture.isResearchEnabled(filesDir)`, feeding `PremiumCapturePollAdapter.acquisitions(...)` output to `PremiumFollowOnCapture.observe(..., expiryForAuthority = acq.expiry)`. Makes no request of its own, reuses the chains already in hand, and runs before the quotes abort that would discard good chains. |
+| capture → export | `NativeBridge`, after the pilot section is merged | `PremiumExportSection.mergeWithinCap(..., "premium_followon")`. Attached only if the COMPLETE section fits the existing combined cap; if it does not it is **omitted and reported** (`omitted_over_cap`), because a research stream must never shrink, truncate or refuse the pilot export. |
+| export → matcher | `next_session_match.py --section premium_followon` | §6.2 |
+
+`expiryForAuthority` is what makes the capture resolve and write the production lot authority
+into its own tree, through the same `PremiumCaptureCoordinator.lotClaimFromContractAuthority`
+the pilot uses. The first version of the end-to-end test supplied that argument by hand and
+forgot it, producing a tree whose envelopes pointed at an authority reference with no record
+behind it — Stage D then refused all 12 rows `lot_authority_unresolved`. The test now routes
+through the adapter, so it cannot diverge from the poll on that field again.
+
+### 6.4 Identity at the reopen, unchanged and now asserted through the export
+
+The carry pins the exact five-field contract identity. At the reopen the cohort must BE the
+carry's contracts; a changed instrument key under an unchanged strike, a rolled expiry, a
+missing strike and a stale carry are each refused rather than substituted. A cohort already
+pinned for the session is compared against the carry before anything is written
+(`SAVED_COHORT_DOES_NOT_MATCH_CARRY`).
+
+New in v3: a cohort-level refusal writes no record at all, so the export used to publish only
+`NO_PREMIUM_DATA_FOR_THIS_INDEX` and the REASON lived in a returned object until the process
+ended. `window_outcomes` now carries it per index, as durable counters inside the store's
+existing reserve (`followon_reopen_refused_<status>`, `followon_close_observed`, …), so a
+refusal is stated in the evidence rather than inferred from an absence.
+
+### 6.5 The end-to-end check, and what it measures
+
+`PremiumFollowOnEndToEndTest` builds the phone shape through the real poll mapping and the real
+export assembly, for both indices, across a restart, and writes
+`app/src/test/resources/premium_capture/phone_shaped_export_2026-10-16.json` and
+`...-10-19.json`. The pilot stream carries its OWN cohort with valid quotes; the follow-on
+carries yesterday's carried contracts. Run against the normal matcher entry point:
+
+```
+--index NF  --section premium_followon   attempted pairs 6   PAIRED 6   refusals {}
+--index BNF --section premium_followon   attempted pairs 6   PAIRED 6   refusals {}
+--index NF  --section premium            attempted pairs 6   PAIRED 0   no_close_mark_in_window 6
+--index BNF --section premium            attempted pairs 6   PAIRED 0   no_close_mark_in_window 6
+missing `premium_followon`                                   PAIRED 0   section_absent_or_malformed
+```
+
+The pilot refusal is structural, not incidental: the pilot window ends at 15:05 **exclusive**,
+so that stream can hold no close mark whatever its cohort — asserted from the production
+constants in `theTwoStreamsAreAssembledApartForBothIndicesAcrossARestart`.
+
+**A synthetic pairing is evidence that the integration works in the test.** Phone capture
+remains an on-device check: nothing here claims a device produced these bytes, and the fixtures
+carry `_provenance.synthetic: true` for the Stage C inventory to read.
+
+### 6.6 Regressions added in v3
+
+| check | where |
+| --- | --- |
+| the follow-on hook is in the poll, inside the Throwable guard, behind its own control, and makes no request | `PremiumFollowOnCaptureTest.theFollowOnHookIsWiredIntoThePollAndCannotFailIt` |
+| the normal export assembly carries the two streams under separate keys, with the pilot untouched | `...theNormalExportAssemblyCarriesBothStreamsApart` |
+| a switched instrument key is refused, and the reason is published | `PremiumFollowOnEndToEndTest.aSwitchedInstrumentKeyIsRefusedInTheAssembledExport` |
+| an expiry roll is refused at the reopen | `...anExpiryRollIsRefusedInTheAssembledExport` |
+| with the research control off, the pilot export is byte-identical to what it was | `...aMissingFollowOnSectionLeavesThePilotExportExactlyAsItWas` |
+| the named section pairs 6/6 per index; the pilot section refuses with a reason | `test_next_session_match.PhoneShapedExport` (8 cases) |

@@ -4,6 +4,7 @@ import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -54,6 +55,14 @@ class PremiumFollowOnCaptureTest {
 
     private fun tempDir(name: String): File =
         Files.createTempDirectory(name).toFile().apply { mkdirs() }
+
+    /** A files dir with the pilot capture enabled AND this research path switched on. */
+    private fun researchDir(name: String): File {
+        val d = tempDir(name)
+        PremiumCaptureControl.setEnabled(d, true)
+        assertTrue(PremiumFollowOnCapture.setResearchEnabled(d, true))
+        return d
+    }
 
     private fun observe(filesDir: File, index: String, date: String, clock: String,
                         chainId: String, chain: JSONObject? = null):
@@ -117,21 +126,20 @@ class PremiumFollowOnCaptureTest {
 
     @Test
     fun aPollOutsideBothWindowsDoesNothingAtAll() {
-        val filesDir = tempDir("followon-noop")
-        PremiumCaptureControl.setEnabled(filesDir, true)
+        val filesDir = researchDir("followon-noop")
         val a = observe(filesDir, "NF", friday, "12:20", "mon_0920_entry_NF")
         assertEquals(PremiumFollowOnCapture.NOT_IN_A_FOLLOW_ON_WINDOW, a.outcome)
         assertNull(a.slotResult)
-        assertFalse("nothing may be written outside the follow-on windows",
-            PremiumFollowOnCapture.root(filesDir).exists())
+        assertNull("nothing may be written outside the follow-on windows",
+            PremiumFollowOnCapture.store(filesDir).readCohortText("NF", friday))
+        assertEquals(0, PremiumFollowOnCapture.store(filesDir).readAll("NF", friday).size)
     }
 
     // ───────────────────────── the carry, and the same contracts ─────────────────────────
 
     @Test
     fun aCloseCaptureWritesACarryAndTheReopenPinsYesterdaysStrikes() {
-        val filesDir = tempDir("followon-carry")
-        PremiumCaptureControl.setEnabled(filesDir, true)
+        val filesDir = researchDir("followon-carry")
 
         val close = observe(filesDir, "NF", friday, "15:20", "fri_1520_reference_NF")
         assertEquals(PremiumCaptureSession.OBSERVED, close.slotResult?.status)
@@ -182,11 +190,10 @@ class PremiumFollowOnCaptureTest {
 
     @Test
     fun theCarrySurvivesARestartBecauseItIsReadFromDisk() {
-        val filesDir = tempDir("followon-restart")
-        PremiumCaptureControl.setEnabled(filesDir, true)
+        val filesDir = researchDir("followon-restart")
         observe(filesDir, "NF", friday, "15:20", "fri_1520_reference_NF")
         // a "restart": every object below is constructed fresh, and the only thing that crosses
-        // the boundary is the file on disk -- no cohort, no pin and no strike list is held
+        // the boundary is the file on disk -- no cohort, no pin and no contract list is held
         val carry = PremiumFollowOnCapture.readCarry(filesDir, "NF", monday)
         assertTrue(carry.status, carry.usable)
         val reopen = observe(filesDir, "NF", monday, "09:20", "mon_0920_entry_NF")
@@ -199,8 +206,7 @@ class PremiumFollowOnCaptureTest {
 
     @Test
     fun aRolledOrMissingContractIsRefusedRatherThanSubstituted() {
-        val filesDir = tempDir("followon-roll")
-        PremiumCaptureControl.setEnabled(filesDir, true)
+        val filesDir = researchDir("followon-roll")
         observe(filesDir, "NF", friday, "15:20", "fri_1520_reference_NF")
         val carried = PremiumFollowOnCapture.readCarry(filesDir, "NF", monday).strikes
         // Monday's response no longer carries one of the carried strikes -- a roll, or a strike
@@ -222,23 +228,141 @@ class PremiumFollowOnCaptureTest {
 
     @Test
     fun aCarryIntoExpiryDayIsRefused() {
-        val filesDir = tempDir("followon-expiry")
-        PremiumCaptureControl.setEnabled(filesDir, true)
-        observe(filesDir, "NF", friday, "15:20", "fri_1520_reference_NF")
-        val expiry = requireNotNull(PremiumFollowOnCapture
-            .readCarry(filesDir, "NF", monday).body).getString("expiry")
-        // the session being captured IS the expiry date
-        val onExpiry = PremiumFollowOnCapture.readCarry(filesDir, "NF", expiry)
+        val filesDir = researchDir("followon-expiry")
+        // the fixture's expiry is 2026-10-27, so the close is captured on the session BEFORE it:
+        // the previous-session rule is then satisfied and the expiry rule is what must fire
+        val dayBefore = "2026-10-26"
+        val expiryDay = "2026-10-27"
+        observe(filesDir, "NF", dayBefore, "15:20", "fri_1520_reference_NF")
+        val carry = PremiumFollowOnCapture.readCarry(filesDir, "NF", monday)
+        assertEquals(expiryDay, requireNotNull(carry.body).getString("expiry"))
+        assertEquals(dayBefore to null,
+            PremiumFollowOnCapture.previousTradingSession(expiryDay))
+        val onExpiry = PremiumFollowOnCapture.readCarry(filesDir, "NF", expiryDay)
         assertEquals(PremiumFollowOnCapture.CARRY_EXPIRY_NOT_AFTER_SESSION, onExpiry.status)
-        val attempt = observe(filesDir, "NF", expiry, "09:20", "mon_0920_entry_NF")
+        val attempt = observe(filesDir, "NF", expiryDay, "09:20", "mon_0920_entry_NF")
         assertEquals(PremiumFollowOnCapture.CARRY_EXPIRY_NOT_AFTER_SESSION, attempt.outcome)
         assertNull(attempt.slotResult)
     }
 
+    // ───────────────────────── the identity, the control and the calendar ─────────────────────
+
+    @Test
+    fun theResearchControlIsOffByDefaultAndIsNotImpliedByThePilots() {
+        val filesDir = tempDir("followon-control")
+        PremiumCaptureControl.setEnabled(filesDir, true)        // the PILOT's flag only
+        assertFalse(PremiumFollowOnCapture.isResearchEnabled(filesDir))
+        val off = observe(filesDir, "NF", friday, "15:20", "fri_1520_reference_NF")
+        assertEquals(PremiumFollowOnCapture.RESEARCH_CONTROL_OFF, off.outcome)
+        assertNull(off.slotResult)
+        assertNull(PremiumFollowOnCapture.store(filesDir).readCohortText("NF", friday))
+        assertTrue(PremiumFollowOnCapture.setResearchEnabled(filesDir, true))
+        assertEquals(PremiumCaptureSession.OBSERVED,
+            observe(filesDir, "NF", friday, "15:20", "fri_1520_reference_NF")
+                .slotResult?.status)
+        assertTrue(PremiumFollowOnCapture.setResearchEnabled(filesDir, false))
+        assertFalse(PremiumFollowOnCapture.isResearchEnabled(filesDir))
+    }
+
+    @Test
+    fun regressionAStrikeThatNowResolvesToAnotherInstrumentKeyIsRefused() {
+        val filesDir = researchDir("followon-keyswap")
+        observe(filesDir, "NF", friday, "15:20", "fri_1520_reference_NF")
+        val carried = PremiumFollowOnCapture.readCarry(filesDir, "NF", monday).contracts
+        // the same strikes, but one leg now carries a DIFFERENT instrument key
+        val chain = JSONObject(raw("mon_0920_entry_NF").toString())
+        val rows = chain.getJSONArray("data")
+        var swapped = false
+        for (i in 0 until rows.length()) {
+            val row = rows.getJSONObject(i)
+            if (row.optDouble("strike_price") == carried[0].strike) {
+                row.getJSONObject("call_options").put("instrument_key", "NSE_FO|999999")
+                swapped = true
+            }
+        }
+        assertTrue("the fixture must carry the strike this test swaps", swapped)
+        val reopen = observe(filesDir, "NF", monday, "09:20", "x", chain)
+        assertEquals(PremiumCaptureCohort.REQUIRED_KEY_MISMATCH, reopen.slotResult?.status)
+        assertTrue(reopen.slotResult?.detail.orEmpty().contains("NSE_FO|999999"))
+        assertNull(PremiumFollowOnCapture.store(filesDir).readCohortText("NF", monday))
+    }
+
+    @Test
+    fun regressionAnExpiryRollIsRefusedAtTheReopen() {
+        val filesDir = researchDir("followon-rollexpiry")
+        observe(filesDir, "NF", friday, "15:20", "fri_1520_reference_NF")
+        // Monday's response is for the NEXT expiry: the carried contracts' expiry is gone
+        val chain = JSONObject(raw("mon_0920_entry_NF").toString())
+        val rows = chain.getJSONArray("data")
+        for (i in 0 until rows.length()) rows.getJSONObject(i).put("expiry", "2026-11-03")
+        val reopen = observe(filesDir, "NF", monday, "09:20", "x", chain)
+        assertEquals(PremiumCaptureCohort.REQUIRED_EXPIRY_MISMATCH, reopen.slotResult?.status)
+        assertNull(PremiumFollowOnCapture.store(filesDir).readCohortText("NF", monday))
+    }
+
+    @Test
+    fun regressionAStaleCarryFromAnEarlierSessionIsRefused() {
+        val filesDir = researchDir("followon-stale")
+        observe(filesDir, "NF", friday, "15:20", "fri_1520_reference_NF")
+        // 2026-10-20 is an NSE holiday, so the session after Monday 10-19 is Wednesday 10-21.
+        // A carry from Friday is not the previous session for that Wednesday.
+        assertEquals("2026-10-19" to null,
+            PremiumFollowOnCapture.previousTradingSession("2026-10-21"))
+        val stale = PremiumFollowOnCapture.readCarry(filesDir, "NF", "2026-10-21")
+        assertEquals(PremiumFollowOnCapture.CARRY_NOT_PREVIOUS_SESSION, stale.status)
+        assertTrue(stale.detail.orEmpty().contains("2026-10-19"))
+        assertEquals(PremiumFollowOnCapture.CARRY_NOT_PREVIOUS_SESSION,
+            observe(filesDir, "NF", "2026-10-21", "09:20", "mon_0920_entry_NF").outcome)
+    }
+
+    @Test
+    fun theCalendarFailsClosedOutsideTheYearsItCovers() {
+        val (prev, why) = PremiumFollowOnCapture.previousTradingSession("2027-01-04")
+        assertNull(prev)
+        assertEquals(PremiumFollowOnCapture.CARRY_CALENDAR_NOT_COVERED, why)
+        val filesDir = researchDir("followon-calendar")
+        observe(filesDir, "NF", friday, "15:20", "fri_1520_reference_NF")
+        assertEquals(PremiumFollowOnCapture.CARRY_CALENDAR_NOT_COVERED,
+            PremiumFollowOnCapture.readCarry(filesDir, "NF", "2027-01-04").status)
+    }
+
+    @Test
+    fun aCohortAlreadyPinnedForTheSessionMustBeTheCarriedContracts() {
+        val filesDir = researchDir("followon-savedcohort")
+        observe(filesDir, "NF", friday, "15:20", "fri_1520_reference_NF")
+        val carry = PremiumFollowOnCapture.readCarry(filesDir, "NF", monday)
+        assertTrue(carry.usable)
+        // a cohort for Monday pinned on DIFFERENT contracts, as a free selection would produce
+        val free = PremiumCaptureCohort.select(raw("mon_0920_entry_NF"), "NF", monday, "09:20",
+            PremiumCaptureCohort.INDEX_UNDERLYING["NF"], null,
+            PremiumFollowOnCapture.REOPEN_WINDOW, null)
+        assertEquals(PremiumCaptureCohort.SELECTED, free.status)
+        assertTrue(PremiumFollowOnCapture.store(filesDir)
+            .putCohort("NF", monday, requireNotNull(free.cohort)).persisted)
+        assertNotNull("the pinned cohort must differ from the carry, or this proves nothing",
+            PremiumFollowOnCapture.cohortMatchesCarry(free.cohort, carry))
+        val reopen = observe(filesDir, "NF", monday, "09:20", "mon_0920_entry_NF")
+        assertEquals(PremiumFollowOnCapture.SAVED_COHORT_DOES_NOT_MATCH_CARRY, reopen.outcome)
+        assertNull(reopen.slotResult)
+        assertTrue(reopen.detail.orEmpty().contains("not the carried"))
+        // and a cohort that IS the carry's contracts is accepted
+        val dir2 = researchDir("followon-savedcohort-ok")
+        observe(dir2, "NF", friday, "15:20", "fri_1520_reference_NF")
+        val c2 = PremiumFollowOnCapture.readCarry(dir2, "NF", monday)
+        val bound = PremiumCaptureCohort.select(raw("mon_0920_entry_NF"), "NF", monday, "09:20",
+            PremiumCaptureCohort.INDEX_UNDERLYING["NF"], null,
+            PremiumFollowOnCapture.REOPEN_WINDOW, c2.contracts, c2.expiry)
+        assertEquals(PremiumCaptureCohort.SELECTED, bound.status)
+        assertNull(PremiumFollowOnCapture.cohortMatchesCarry(bound.cohort, c2))
+        assertTrue(PremiumFollowOnCapture.store(dir2)
+            .putCohort("NF", monday, requireNotNull(bound.cohort)).persisted)
+        assertEquals(PremiumCaptureSession.OBSERVED,
+            observe(dir2, "NF", monday, "09:20", "mon_0920_entry_NF").slotResult?.status)
+    }
+
     @Test
     fun aTamperedCarryIsRefusedByItsOwnDigest() {
-        val filesDir = tempDir("followon-tamper")
-        PremiumCaptureControl.setEnabled(filesDir, true)
+        val filesDir = researchDir("followon-tamper")
         observe(filesDir, "NF", friday, "15:20", "fri_1520_reference_NF")
         val f = File(PremiumFollowOnCapture.root(filesDir), "carry_NF.json")
         val body = JSONObject(f.readText())
@@ -252,8 +376,7 @@ class PremiumFollowOnCaptureTest {
 
     @Test
     fun withNoCloseCaptureThereIsNoCarryAndTheReopenIsRefused() {
-        val filesDir = tempDir("followon-nocarry")
-        PremiumCaptureControl.setEnabled(filesDir, true)
+        val filesDir = researchDir("followon-nocarry")
         val a = observe(filesDir, "NF", monday, "09:20", "mon_0920_entry_NF")
         assertEquals(PremiumFollowOnCapture.CARRY_ABSENT, a.outcome)
         assertNull(a.slotResult)
@@ -262,8 +385,7 @@ class PremiumFollowOnCaptureTest {
 
     @Test
     fun aCarryFromTheSameSessionIsNotAPriorSession() {
-        val filesDir = tempDir("followon-sameday")
-        PremiumCaptureControl.setEnabled(filesDir, true)
+        val filesDir = researchDir("followon-sameday")
         observe(filesDir, "NF", friday, "15:20", "fri_1520_reference_NF")
         assertEquals(PremiumFollowOnCapture.CARRY_FROM_THIS_SESSION,
             PremiumFollowOnCapture.readCarry(filesDir, "NF", friday).status)
@@ -273,8 +395,7 @@ class PremiumFollowOnCaptureTest {
 
     @Test
     fun theFollowOnTreeIsSeparateAndTheExportCarriesBothApart() {
-        val filesDir = tempDir("followon-separate")
-        PremiumCaptureControl.setEnabled(filesDir, true)
+        val filesDir = researchDir("followon-separate")
         // the pilot captures its own midday slot, through its own path
         val pilotStore = PremiumCaptureStore(PremiumCaptureControl.root(filesDir))
         val pilot = PremiumCaptureSession(pilotStore).observeSlot(
@@ -322,8 +443,7 @@ class PremiumFollowOnCaptureTest {
 
     @Test
     fun bothIndicesCarryAndReopenIndependently() {
-        val filesDir = tempDir("followon-both")
-        PremiumCaptureControl.setEnabled(filesDir, true)
+        val filesDir = researchDir("followon-both")
         for ((ix, closeId, openId) in listOf(
             Triple("NF", "fri_1520_reference_NF", "mon_0920_entry_NF"),
             Triple("BNF", "fri_1520_reference_BNF", "mon_0920_entry_BNF"))) {
@@ -346,6 +466,102 @@ class PremiumFollowOnCaptureTest {
             bnf.getJSONArray("contracts").getJSONObject(0).getString("instrument_key"))
     }
 
+    // ───────────────────────── the poll and export integration ─────────────────────────
+
+    private fun source(path: String): String =
+        listOf(File(path), File("app/$path"), File("../$path")).first { it.isFile }.readText()
+
+    private fun stripKotlinComments(src: String): String = src.lineSequence()
+        .map { it.substringBefore("//") }
+        .filterNot { it.trimStart().startsWith("*") || it.trimStart().startsWith("/*") }
+        .joinToString("\n")
+
+    /**
+     * The follow-on hook must sit in the real poll, inside the Throwable-guarded wrapper, behind
+     * its own control, and make no request of its own — the same contract the pilot hook already
+     * holds, asserted the same way, on the real `MarketWatchService` source.
+     */
+    @Test
+    fun theFollowOnHookIsWiredIntoThePollAndCannotFailIt() {
+        val src = stripKotlinComments(
+            source("src/main/java/com/marketradar/app/MarketWatchService.kt"))
+        assertTrue("the follow-on capture must be invoked from the poll",
+            src.contains("PremiumFollowOnCapture.observe("))
+        assertTrue("and gated by its own research control",
+            src.contains("PremiumFollowOnCapture.isResearchEnabled(filesDir)"))
+        // the block is inside a premiumCaptureSafely wrapper, after the pilot hook
+        val pilotAt = src.indexOf("PremiumCaptureCoordinator.onChainsAcquired(")
+        val followAt = src.indexOf("PremiumFollowOnCapture.observe(")
+        val guardBefore = src.lastIndexOf("premiumCaptureSafely {", followAt)
+        assertTrue("the pilot hook must be found", pilotAt > 0)
+        assertTrue("the follow-on hook must come after the pilot's", followAt > pilotAt)
+        assertTrue("the follow-on hook must be inside a premiumCaptureSafely wrapper",
+            guardBefore > pilotAt)
+        // and it must reuse the chains already in hand rather than fetch anything
+        val block = src.substring(guardBefore, src.indexOf("if (quotesJson == null)", followAt))
+        for (banned in listOf("fetchSync(", "async(", "SupabaseClient", "AlarmManager",
+            "WorkManager", "startService", "Thread(", "okhttp")) {
+            assertFalse("the follow-on block must not contain $banned", block.contains(banned))
+        }
+        assertTrue("it must reuse the existing chain responses",
+            block.contains("chain = bnfChainJson") && block.contains("chain = nfChainJson"))
+        assertTrue("and run before the quotes abort that would discard good chains",
+            followAt < src.indexOf("POLL_FAIL: Quotes fetch returned null"))
+    }
+
+    /**
+     * The normal export assembly must carry the two streams under separate top-level keys, and
+     * the research stream must never truncate or refuse the pilot's.
+     */
+    @Test
+    fun theNormalExportAssemblyCarriesBothStreamsApart() {
+        val bridge = stripKotlinComments(
+            source("src/main/java/com/marketradar/app/NativeBridge.kt"))
+        assertTrue("the follow-on section must be spliced under its own key",
+            bridge.contains("\"premium_followon\")"))
+        assertTrue("behind its own control",
+            bridge.contains("PremiumFollowOnCapture.isResearchEnabled(context.filesDir)"))
+        assertTrue("and reported in the result",
+            bridge.contains(".put(\"premium_followon\", JSONObject()"))
+
+        // and the real assembly, exercised: a bundle spliced with both sections
+        val filesDir = researchDir("followon-assembly")
+        val pilotStore = PremiumCaptureStore(PremiumCaptureControl.root(filesDir))
+        assertEquals(PremiumCaptureSession.OBSERVED, PremiumCaptureSession(pilotStore).observeSlot(
+            "NF", friday, raw("mon_0920_entry_NF"), "09:20", "09:20",
+            PremiumCaptureCohort.INDEX_UNDERLYING["NF"], reqMs, respMs,
+            claimedLot = 75, claimedLotSource = "CONTRACT_LOT_TABLE",
+            lotTableRef = "contract_lot_table/x/$friday").status)
+        observe(filesDir, "NF", friday, "15:20", "fri_1520_reference_NF")
+
+        val bundle = JSONObject().put("manifest", JSONObject().put("status", "OK")
+            .put("session_date_used", friday)).toString()
+        val pilot = PremiumExportSection.build(filesDir, friday)
+        val follow = PremiumFollowOnCapture.exportSection(filesDir, friday)
+        val first = PremiumExportSection.mergeWithinCap(
+            bundle, bundle.toByteArray(Charsets.UTF_8), pilot)
+        assertTrue(first.merged && !first.overCap)
+        val both = PremiumExportSection.mergeWithinCap(
+            String(first.bytes, Charsets.UTF_8), first.bytes, follow, "premium_followon")
+        assertTrue(both.merged && !both.overCap)
+        val doc = JSONObject(String(both.bytes, Charsets.UTF_8))
+        assertTrue("the pilot stream keeps its own key", doc.has("premium"))
+        assertTrue("and the follow-on gets its own", doc.has("premium_followon"))
+        assertEquals("the existing manifest must be untouched", "OK",
+            doc.getJSONObject("manifest").getString("status"))
+        // the two streams carry DIFFERENT slots, which is how a reader tells them apart
+        val pilotSlots = doc.getJSONObject("premium").getJSONObject("indices")
+            .getJSONObject("NF").getJSONArray("slot_envelopes").let { a ->
+                (0 until a.length()).map { a.getJSONObject(it).getString("slot") } }
+        val followSlots = doc.getJSONObject("premium_followon").getJSONObject("section")
+            .getJSONObject("indices").getJSONObject("NF").getJSONArray("slot_envelopes")
+            .let { a -> (0 until a.length()).map { a.getJSONObject(it).getString("slot") } }
+        assertEquals(listOf("09:20"), pilotSlots)
+        assertEquals(listOf("15:20"), followSlots)
+        assertEquals(PremiumFollowOnCapture.PURPOSE,
+            doc.getJSONObject("premium_followon").getString("purpose"))
+    }
+
     /**
      * The export must carry what the Stage G matcher reads: a receipt clock per acquisition, the
      * two exchange-clock fields, the pinned identity and the underlying with its provenance.
@@ -354,8 +570,7 @@ class PremiumFollowOnCaptureTest {
      */
     @Test
     fun theFollowOnExportCarriesTheClockAndContractProvenanceStageGReads() {
-        val filesDir = tempDir("followon-provenance")
-        PremiumCaptureControl.setEnabled(filesDir, true)
+        val filesDir = researchDir("followon-provenance")
         observe(filesDir, "NF", friday, "15:20", "fri_1520_reference_NF")
         val block = PremiumFollowOnCapture.exportSection(filesDir, friday)
             .getJSONObject("section").getJSONObject("indices").getJSONObject("NF")

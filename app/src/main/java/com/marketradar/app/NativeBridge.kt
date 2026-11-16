@@ -1763,7 +1763,34 @@ class NativeBridge(private val context: Context) {
             // Combined limit, enforced on the FINAL bytes including the premium section. The old
             // limit is not raised and old parts are never truncated: the premium section is
             // reduced in declared stages, and if it still will not fit the export is refused.
-            val fit = PremiumExportSection.mergeWithinCap(out, bundleBytes, premium)
+            var fit = PremiumExportSection.mergeWithinCap(out, bundleBytes, premium)
+            /*
+             * The FOLLOW-ON research stream, as its own top-level key.
+             *
+             * Behind its own control, which the pilot's capture flag never implies, and spliced
+             * under `premium_followon` so the two streams are never read as one capture. It is
+             * attached only when the complete section still fits the EXISTING combined limit: a
+             * research stream must never shrink, truncate or refuse the pilot export, so when it
+             * does not fit it is omitted and reported rather than degrading what is saved.
+             */
+            var followOnMerged = false
+            var followOnOverCap = false
+            var followOnState: String? = null
+            if (PremiumFollowOnCapture.isResearchEnabled(context.filesDir)) {
+                val followOn = PremiumFollowOnCapture.exportSection(context.filesDir, date)
+                followOnState = followOn.optJSONObject("section")?.optString("state")
+                if (!fit.overCap) {
+                    val both = PremiumExportSection.mergeWithinCap(
+                        String(fit.bytes, Charsets.UTF_8), fit.bytes, followOn,
+                        "premium_followon")
+                    if (both.merged && !both.overCap) {
+                        fit = both
+                        followOnMerged = true
+                    } else {
+                        followOnOverCap = true
+                    }
+                }
+            }
             // the FINAL payload actually saved. Named `bytes` deliberately: the pre-existing
             // G0/PM1 guards pin the save call text, and that contract is about WHICH bytes are
             // written for the exact session, so the final payload keeps the name.
@@ -1784,6 +1811,13 @@ class NativeBridge(private val context: Context) {
                 .put("bytes", bytes.size).put("sha256", sha).put("session_date_used", used)
                 .put("session_date_requested", date).put("parts", man?.optJSONObject("parts") ?: JSONObject())
                 // reported separately rather than folded into the existing parts object
+                .put("premium_followon", JSONObject()
+                    .put("research_control_enabled",
+                        PremiumFollowOnCapture.isResearchEnabled(context.filesDir))
+                    .put("state", followOnState ?: JSONObject.NULL)
+                    .put("merged", followOnMerged)
+                    .put("omitted_over_cap", followOnOverCap)
+                    .put("note", "a research stream never truncates or refuses the pilot export"))
                 .put("premium", JSONObject()
                     .put("state", premium.optString("state"))
                     .put("has_data", premiumHasData)

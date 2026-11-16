@@ -212,23 +212,30 @@ class LotAuthority(unittest.TestCase):
               'authoritative': True, 'lot_conflict': False,
               'reference_matches_record': True,
               'coverage': {'complete': True},
-              'referenced_by_envelopes': [ref],
               'authority': {'authority': 'CONTRACT_LOT_TABLE', 'contract_lot_size': lot,
                             'expiry': expiry, 'lot_as_of': '2026-11-12',
                             'matched_rule_id': 'FAOP70616_NF_weekly_revised',
                             'lot_table_version': 'contract_lot_table_v3_20260914',
                             'flattened_to_one_lot_per_underlying': False}}
+        # the reference is the record's own digest, as production writes it
+        pa['referenced_by_envelopes'] = [D.authority_reference(pa['authority'])]
         pa.update(over)
         return {'references': {'production_lot_authority': pa}}
 
+    def ref_of(self, block):
+        return (block['references']['production_lot_authority']
+                ['referenced_by_envelopes'][0])
+
     def test_the_resolved_authority_supplies_the_lot(self):
-        lot, ev = D.lot_from_production_authority(self.authority_block(), '2026-11-17', 'ref1')
+        block = self.authority_block()
+        lot, ev = D.lot_from_production_authority(block, '2026-11-17', self.ref_of(block))
         self.assertEqual(65, lot)
         self.assertEqual([], ev['fails'])
         self.assertEqual('FAOP70616_NF_weekly_revised', ev['authority']['matched_rule_id'])
 
     def test_an_authority_for_another_expiry_is_not_this_contracts_lot(self):
-        lot, ev = D.lot_from_production_authority(self.authority_block(), '2026-12-31', 'ref1')
+        block = self.authority_block()
+        lot, ev = D.lot_from_production_authority(block, '2026-12-31', self.ref_of(block))
         self.assertIsNone(lot)
         self.assertEqual(['authority_expiry_is_2026-11-17_not_2026-12-31'], ev['fails'])
 
@@ -241,15 +248,15 @@ class LotAuthority(unittest.TestCase):
         for key in ('authority_holds', 'resolved', 'authoritative',
                     'reference_matches_record'):
             block = self.authority_block(**{key: False})
-            lot, ev = D.lot_from_production_authority(block, '2026-11-17', 'ref1')
+            lot, ev = D.lot_from_production_authority(block, '2026-11-17', self.ref_of(block))
             self.assertIsNone(lot, key)
             self.assertIn(key + '_not_true', ev['fails'])
         conflict = self.authority_block(lot_conflict=True)
-        self.assertIn('lot_conflict',
-                      D.lot_from_production_authority(conflict, '2026-11-17', 'ref1')[1]['fails'])
+        self.assertIn('lot_conflict', D.lot_from_production_authority(
+            conflict, '2026-11-17', self.ref_of(conflict))[1]['fails'])
         partial = self.authority_block(coverage={'complete': False})
-        self.assertIn('coverage_incomplete',
-                      D.lot_from_production_authority(partial, '2026-11-17', 'ref1')[1]['fails'])
+        self.assertIn('coverage_incomplete', D.lot_from_production_authority(
+            partial, '2026-11-17', self.ref_of(partial))[1]['fails'])
 
     def test_the_per_slot_producer_claim_is_read_as_a_claim_and_never_as_authority(self):
         claim = D.lot_claim_from_envelope({'lot': {
@@ -266,6 +273,221 @@ class LotAuthority(unittest.TestCase):
         r = D.score_decision(decision(obs('10:00', 99.0, 100.0), obs('11:00', 140.0, 141.0),
                                       lot=None))
         self.assertIn('lot_authority_unresolved', r['unscorable_reasons'])
+
+
+class AuthorityBoundToTheRow(unittest.TestCase):
+    """v3: the dated lot authority must be ABOUT this ledger row, not merely present.
+
+    Codex's reproduction: a NIFTY export's authority record mutated to BANKNIFTY, lot 30, an
+    unrelated as-of date, an EMPTY `referenced_by_envelopes` list and an arbitrary reference
+    was accepted, and the row scored at lot 30 for NIFTY. Each mutation is tested on its own
+    below, so no single check can be carrying the others.
+    """
+
+    def record(self, index='NF', session='2026-11-12', expiry='2026-11-17', lot=65, **over):
+        auth = {'authority': 'CONTRACT_LOT_TABLE', 'contract_lot_size': lot,
+                'expiry': expiry, 'expiry_cycle': 'WEEKLY', 'lot_as_of': session,
+                'index_key': index, 'requested_index': index,
+                'requested_session_date': session, 'requested_expiry': expiry,
+                'lot_source': 'CONTRACT_LOT_TABLE',
+                'matched_rule_id': 'FAOP70616_NF_weekly_revised',
+                'lot_table_version': 'contract_lot_table_v3_20260914',
+                'flattened_to_one_lot_per_underlying': False}
+        auth.update(over)
+        return auth
+
+    def block(self, auth=None, ref=None, listed=None, **over):
+        """A record whose envelope reference RECOMPUTES from the record, as production writes it."""
+        auth = self.record() if auth is None else auth
+        computed = D.authority_reference(auth)
+        ref = computed if ref is None else ref
+        pa = {'recorded': True, 'authority_holds': True, 'resolved': True,
+              'authoritative': True, 'lot_conflict': False,
+              'reference_matches_record': True, 'coverage': {'complete': True},
+              'referenced_by_envelopes': [ref] if listed is None else listed,
+              'authority': auth}
+        pa.update(over)
+        return {'references': {'production_lot_authority': pa}}, ref
+
+    def bind(self, block_ref, index='NF', session='2026-11-12', expiry='2026-11-17'):
+        block, ref = block_ref
+        return D.lot_from_production_authority(block, expiry, ref, index=index, session=session)
+
+    # ── the record that IS about this row ──
+
+    def test_a_record_about_this_row_supplies_the_lot(self):
+        lot, ev = self.bind(self.block())
+        self.assertEqual(65, lot)
+        self.assertEqual([], ev['fails'])
+        self.assertEqual(ev['envelope_reference'], ev['recomputed_reference'])
+        self.assertEqual({'index': 'NF', 'session': '2026-11-12', 'expiry': '2026-11-17'},
+                         ev['row'])
+
+    def test_both_indices_resolve_their_own_lot(self):
+        nf = self.bind(self.block(self.record(index='NF', lot=65)))
+        bnf = self.bind(self.block(self.record(index='BNF', session='2026-11-12',
+                                               expiry='2026-11-25', lot=30)),
+                        index='BNF', expiry='2026-11-25')
+        self.assertEqual((65, []), (nf[0], nf[1]['fails']))
+        self.assertEqual((30, []), (bnf[0], bnf[1]['fails']))
+
+    # ── each mutation, separately ──
+
+    def test_another_indexs_authority_is_refused_for_this_row(self):
+        lot, ev = self.bind(self.block(self.record(index='BNF', lot=30)), index='NF')
+        self.assertIsNone(lot)
+        self.assertIn('authority_index_key_is_BNF_not_NF', ev['fails'])
+        self.assertIn('authority_requested_index_is_BNF_not_NF', ev['fails'])
+
+    def test_a_record_requested_for_another_session_is_refused(self):
+        lot, ev = self.bind(self.block(self.record(session='2026-10-30')),
+                            session='2026-11-12')
+        self.assertIsNone(lot)
+        self.assertIn('authority_requested_session_is_2026-10-30_not_2026-11-12', ev['fails'])
+
+    def test_an_as_of_date_not_applicable_to_this_session_is_refused(self):
+        auth = self.record()
+        auth['lot_as_of'] = '2026-08-01'          # resolved as of an unrelated earlier date
+        lot, ev = self.bind(self.block(auth))
+        self.assertIsNone(lot)
+        self.assertIn('authority_as_of_2026-08-01_not_applicable_to_2026-11-12', ev['fails'])
+        # and the session itself still matched, so this check is the one that fired
+        self.assertFalse([f for f in ev['fails'] if f.startswith('authority_requested_session')])
+
+    def test_another_expiry_in_the_requested_field_alone_is_refused(self):
+        auth = self.record()
+        auth['requested_expiry'] = '2026-12-31'
+        lot, ev = self.bind(self.block(auth))
+        self.assertIsNone(lot)
+        self.assertIn('authority_requested_expiry_is_2026-12-31_not_2026-11-17', ev['fails'])
+
+    def test_an_empty_reference_list_fails_the_membership_check(self):
+        """v2 read `if listed and ref not in listed`, so an EMPTY list passed it."""
+        lot, ev = self.bind(self.block(listed=[]))
+        self.assertIsNone(lot)
+        self.assertIn('referenced_by_envelopes_is_empty', ev['fails'])
+
+    def test_an_arbitrary_reference_fails_even_when_it_is_listed(self):
+        """Listing a reference is not proof of it: it must recompute from the record's bytes."""
+        block, _ = self.block(ref='deadbeefdeadbeefdeadbeefdeadbeef')
+        lot, ev = D.lot_from_production_authority(
+            block, '2026-11-17', 'deadbeefdeadbeefdeadbeefdeadbeef',
+            index='NF', session='2026-11-12')
+        self.assertIsNone(lot)
+        self.assertNotIn('envelope_reference_not_listed', ev['fails'])     # it IS listed
+        self.assertIn('authority_digest_does_not_match_envelope_reference', ev['fails'])
+
+    def test_a_tampered_lot_breaks_its_own_digest(self):
+        """The whole point of the digest: editing the record invalidates the reference."""
+        auth = self.record()
+        block, ref = self.block(auth)
+        block['references']['production_lot_authority']['authority']['contract_lot_size'] = 30
+        lot, ev = D.lot_from_production_authority(block, '2026-11-17', ref,
+                                                  index='NF', session='2026-11-12')
+        self.assertIsNone(lot)
+        self.assertIn('authority_digest_does_not_match_envelope_reference', ev['fails'])
+
+    def test_the_full_codex_mutation_fails_on_every_ground_at_once(self):
+        auth = self.record(index='BNF', session='2026-07-01', lot=30)
+        block, _ = self.block(auth, ref='00000000000000000000000000000000', listed=[])
+        lot, ev = D.lot_from_production_authority(
+            block, '2026-11-17', '00000000000000000000000000000000',
+            index='NF', session='2026-11-12')
+        self.assertIsNone(lot)
+        for expected in ('referenced_by_envelopes_is_empty',
+                         'authority_digest_does_not_match_envelope_reference',
+                         'authority_index_key_is_BNF_not_NF',
+                         'authority_requested_session_is_2026-07-01_not_2026-11-12',
+                         'authority_as_of_2026-07-01_not_applicable_to_2026-11-12'):
+            self.assertIn(expected, ev['fails'])
+
+    def test_a_lot_that_is_not_a_positive_integer_is_refused(self):
+        for bad in (None, 'sixty-five', 0, -65):
+            lot, ev = self.bind(self.block(self.record(lot=bad)))
+            self.assertIsNone(lot, bad)
+            self.assertTrue([f for f in ev['fails'] if f.startswith('contract_lot_size')],
+                            (bad, ev['fails']))
+
+    def test_the_reference_recomputes_from_the_committed_production_record(self):
+        """The binding is only usable because the real export's reference recomputes here."""
+        path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(HERE))),
+                            'app/src/test/resources/premium_capture',
+                            'followon_export_2026-10-16.json')
+        if not os.path.isfile(path):
+            self.skipTest('fixture not present')
+        with open(path) as fh:
+            doc = json.load(fh)
+        sec = doc.get('section') or doc
+        for index, node in (sec.get('indices') or {}).items():
+            pa = ((node.get('references') or {}).get('production_lot_authority') or {})
+            if not pa.get('authority'):
+                continue
+            self.assertIn(D.authority_reference(pa['authority']),
+                          pa.get('referenced_by_envelopes') or [],
+                          'the committed %s record must recompute its own reference' % index)
+
+
+class DecisionClock(unittest.TestCase):
+    """v3: a parseable, session-aligned decision receipt is required before any simulated P&L.
+
+    Codex's reproduction: removing the decision receipt made v2 SKIP the entry-delay check
+    (`if dec_s is not None`), and the row scored ₹2,921.77 as a simulated trade off a decision
+    that had no instant at all.
+    """
+
+    def scored(self, **over):
+        return D.score_decision(decision(obs('10:00', 99.0, 100.0),
+                                         obs('11:00', 140.0, 141.0), **over))
+
+    def test_the_clean_case_still_scores(self):
+        row = self.scored()
+        self.assertIsNotNone(row.get('net_inr'))
+        self.assertEqual([], row.get('unscorable_reasons') or [])
+        self.assertEqual(D.PROXY_SIMULATED, row['label'])
+
+    def test_no_decision_at_all_refuses_rather_than_skipping_the_check(self):
+        row = D.score_decision(decision(obs('10:00', 99.0, 100.0), obs('11:00', 140.0, 141.0),
+                                        decision=False) | {'decision': None})
+        self.assertIn('decision_clock_missing', row['unscorable_reasons'])
+        self.assertIsNone(row.get('net_inr'))
+        self.assertIsNone(row.get('gross_inr'))
+
+    def test_an_unparseable_decision_receipt_refuses(self):
+        row = self.scored(decision=obs('09:55', 99.0, 100.0, receipt_ts='not-a-timestamp'))
+        self.assertIn('decision_clock_missing', row['unscorable_reasons'])
+        self.assertIsNone(row.get('net_inr'))
+
+    def test_a_decision_receipt_from_another_date_refuses(self):
+        row = self.scored(decision=obs('09:55', 99.0, 100.0,
+                                       receipt_ts='2026-09-21T09:55:05+05:30'))
+        self.assertIn('decision_clock_not_in_this_session', row['unscorable_reasons'])
+        self.assertIsNone(row.get('net_inr'))
+
+    def test_a_decision_receipt_outside_the_trading_clock_refuses(self):
+        row = self.scored(decision=obs('09:55', 99.0, 100.0,
+                                       receipt_ts='%sT08:10:05+05:30' % DATE))
+        self.assertIn('decision_clock_not_in_this_session', row['unscorable_reasons'])
+        self.assertIsNone(row.get('net_inr'))
+
+    def test_a_decision_at_or_after_its_own_fill_refuses(self):
+        for ts in ('%sT10:00:05+05:30' % DATE, '%sT10:30:05+05:30' % DATE):
+            row = self.scored(decision=obs('10:00', 99.0, 100.0, receipt_ts=ts))
+            self.assertIn('decision_not_before_entry', row['unscorable_reasons'], ts)
+            self.assertIsNone(row.get('net_inr'), ts)
+
+    def test_a_refused_clock_reports_the_receipt_it_refused(self):
+        row = self.scored(decision=obs('09:55', 99.0, 100.0,
+                                       receipt_ts='%sT08:10:05+05:30' % DATE))
+        detail = (row.get('unscorable_detail') or {})
+        self.assertIn('decision_clock_not_in_this_session', detail)
+        self.assertEqual('%sT08:10:05+05:30' % DATE,
+                         detail['decision_clock_not_in_this_session']['receipt_ts'])
+
+    def test_a_clock_refusal_is_reported_beside_every_other_blocking_reason(self):
+        row = D.score_decision(decision(obs('10:00', 99.0, 100.0),
+                                        obs('11:00', 140.0, 141.0), lot=0) | {'decision': None})
+        self.assertIn('decision_clock_missing', row['unscorable_reasons'])
+        self.assertIn('lot_authority_unresolved', row['unscorable_reasons'])
 
 
 class Reasons(unittest.TestCase):
@@ -303,7 +525,14 @@ class Reasons(unittest.TestCase):
                   decision(obs('10:00', 99.0, 0.0), obs('11:00', 140.0, 141.0)),
                   decision(obs('10:00', 99.0, 100.0), obs('11:00', 0.0, 0.10)),
                   decision(obs('10:00', 99.0, 100.03), obs('11:00', 140.0, 141.0)),
-                  decision(obs('10:00', 99.0, 100.0), obs('11:00', 0.05, 0.10))):
+                  decision(obs('10:00', 99.0, 100.0), obs('11:00', 0.05, 0.10)),
+                  # the decision clock: out of session, and not before its own fill
+                  decision(obs('10:00', 99.0, 100.0), obs('11:00', 140.0, 141.0),
+                           decision=obs('09:55', 99.0, 100.0,
+                                        receipt_ts='%sT08:10:05+05:30' % DATE)),
+                  decision(obs('10:00', 99.0, 100.0), obs('11:00', 140.0, 141.0),
+                           decision=obs('10:00', 99.0, 100.0,
+                                        receipt_ts='%sT10:30:05+05:30' % DATE))):
             seen |= set(D.score_decision(d)['unscorable_reasons'] or [])
         doc = export_doc([('09:20', 100.0, 101.0)])
         for prepared in D.decisions_from_export(doc, 'NF', 60)[0]:
@@ -319,7 +548,16 @@ def export_doc(quotes, index='NF', lot=75, expiry='2026-09-29', authority=True):
     """A minimal export with the real shapes: per-slot claim AND a production authority."""
     pin = {'instrument_key': 'NSE_FO|1', 'option_type': 'CE', 'strike': 25000.0,
            'expiry': expiry}
-    ref = 'auth-ref-1'
+    # the authority record and the digest the envelopes point at, exactly as production writes
+    # them: bound to this index, session and expiry, with a reference that recomputes.
+    auth = {'authority': 'CONTRACT_LOT_TABLE', 'contract_lot_size': lot,
+            'expiry': expiry, 'expiry_cycle': 'WEEKLY', 'lot_as_of': '2026-09-22',
+            'index_key': index, 'requested_index': index,
+            'requested_session_date': '2026-09-22', 'requested_expiry': expiry,
+            'lot_source': 'CONTRACT_LOT_TABLE', 'matched_rule_id': 'TEST_RULE',
+            'lot_table_version': 'contract_lot_table_v3_20260914',
+            'flattened_to_one_lot_per_underlying': False}
+    ref = D.authority_reference(auth)
     records, envelopes = [], []
     for i, (slot, bid, ask) in enumerate(quotes):
         aid = 'a%d' % i
@@ -347,11 +585,7 @@ def export_doc(quotes, index='NF', lot=75, expiry='2026-09-29', authority=True):
             'recorded': True, 'authority_holds': True, 'resolved': True, 'authoritative': True,
             'lot_conflict': False, 'reference_matches_record': True,
             'coverage': {'complete': True}, 'referenced_by_envelopes': [ref],
-            'authority': {'authority': 'CONTRACT_LOT_TABLE', 'contract_lot_size': lot,
-                          'expiry': expiry, 'lot_as_of': '2026-09-22',
-                          'matched_rule_id': 'TEST_RULE',
-                          'lot_table_version': 'contract_lot_table_v3_20260914',
-                          'flattened_to_one_lot_per_underlying': False}}}
+            'authority': auth}}
     return {'premium': {'state': 'PRESENT', 'has_data': True, 'indices': {index: block}},
             'manifest': {'created_at': '2026-09-22T15:40:00+05:30'}}
 
@@ -424,6 +658,77 @@ class EndToEnd(unittest.TestCase):
             self.assertEqual(300, payload['convention']['entry_delay_target_s'])
             self.assertEqual(330, payload['convention']['hold_late_tolerance_s'])
             self.assertEqual('2026-10-09', payload['fee_model']['verified_through'])
+
+
+class PhoneShapedExport(unittest.TestCase):
+    """Stage D over the phone-shaped export, on the NAMED stream.
+
+    The ledger read `premium` unconditionally too, so on this shape it would have scored the
+    PILOT contracts and called them the overnight research rows. The stream is now named, and a
+    missing one is a stated reason rather than an empty ledger.
+
+    What this also proves is the lot path end to end: the follow-on tree carries its OWN
+    production lot authority record (the capture resolves it from `ContractLotTable` through the
+    poll adapter's expiry), the reference recomputes, and the binding holds for this index,
+    session and expiry. The rows are then blocked by the FEE WINDOW alone — the single
+    outstanding evidence gap — which is what "after-cost coverage stays at zero while fee
+    evidence is unresolved" looks like in practice.
+    """
+
+    FIXTURES = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(HERE))),
+                            'app', 'src', 'test', 'resources', 'premium_capture')
+
+    def doc(self, date):
+        path = os.path.join(self.FIXTURES, 'phone_shaped_export_%s.json' % date)
+        self.assertTrue(os.path.isfile(path), path)
+        with open(path, encoding='utf-8') as fh:
+            return json.load(fh)
+
+    def test_the_named_stream_resolves_its_own_lot_authority_for_both_indices(self):
+        doc = self.doc('2026-10-19')
+        # the lots are the DATED table's, not the producer's claim: NIFTY 65 and BANKNIFTY 30
+        # for the 2026-10-27 expiry, under FAOP70616
+        for index, expected, rule in (('NF', 65, 'FAOP70616_NF_weekly_revised'),
+                                      ('BNF', 30, 'FAOP70616_BNF_monthly_revised')):
+            rows, _ = D.score_export(doc, index, 0, 'premium_followon')
+            resolved = [r for r in rows if r['decision'] == 'BUY' and r.get('lot')]
+            self.assertEqual(6, len(resolved), index)
+            for r in resolved:
+                self.assertEqual(expected, r['lot'], index)
+                self.assertEqual([], r['lot_authority_evidence']['fails'], index)
+                ev = r['lot_authority_evidence']
+                self.assertEqual(ev['envelope_reference'], ev['recomputed_reference'])
+                self.assertEqual(index, ev['authority']['index_key'])
+                self.assertEqual('2026-10-19', ev['authority']['requested_session_date'])
+                self.assertEqual(rule, ev['authority']['matched_rule_id'], index)
+
+    def test_those_rows_are_blocked_by_the_fee_window_and_nothing_else(self):
+        rows, _ = D.score_export(self.doc('2026-10-19'), 'NF', 0, 'premium_followon')
+        scorable = [r for r in rows if r['decision'] == 'BUY' and r.get('lot')]
+        self.assertEqual(6, len(scorable))
+        for r in scorable:
+            self.assertEqual(['fee_rates_unknown_for_trade_date'], r['unscorable_reasons'])
+            self.assertIsNone(r.get('net_inr'))
+        # after-cost coverage is therefore exactly zero, as declared
+        agg = D.aggregate(rows)
+        self.assertEqual(0, sum(v['scorable'] for v in agg['per_index'].values()))
+
+    def test_the_pilot_stream_is_scored_only_when_it_is_asked_for(self):
+        doc = self.doc('2026-10-19')
+        follow, _ = D.score_export(doc, 'NF', 0, 'premium_followon')
+        pilot, _ = D.score_export(doc, 'NF', 0, 'premium')
+        def contracts(rows):
+            return {r['contract']['instrument_key'] for r in rows if r.get('contract')}
+        self.assertTrue(contracts(pilot))
+        self.assertNotEqual(contracts(follow), contracts(pilot),
+                            'the two streams must not score the same contracts')
+
+    def test_a_missing_stream_is_a_stated_reason_not_an_empty_ledger(self):
+        doc = self.doc('2026-10-19')
+        doc.pop('premium_followon')
+        rows, dropped = D.score_export(doc, 'NF', 0, 'premium_followon')
+        self.assertEqual([], rows)
+        self.assertEqual({'premium_followon_section_absent': 1}, dict(dropped))
 
 
 class SelfCheck(unittest.TestCase):

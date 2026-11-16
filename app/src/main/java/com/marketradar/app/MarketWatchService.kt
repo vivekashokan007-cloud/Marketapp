@@ -1228,6 +1228,59 @@ class MarketWatchService : Service() {
                         " indices=${status.optJSONArray("indices")}")
             }
 
+            /*
+             * THE FOLLOW-ON RESEARCH CAPTURE — the closing book and the next session's reopening
+             * book for the same contracts.
+             *
+             * Same pattern as the hook above and for the same reasons: it makes no request of its
+             * own and reuses the chains already in hand; it is wrapped in `premiumCaptureSafely`
+             * so a failure here cannot fail or stall this poll; and it writes into its OWN store
+             * root, so its records, refusals and bytes are never mixed with the pilot's. Nothing
+             * it writes is read by admission, ranking, sizing, exits, notifications or the
+             * Paper/Real lock.
+             *
+             * It is behind its OWN research control, default off, which the pilot's capture flag
+             * never implies — so on every phone where that control is off this block does
+             * nothing but return. Its two windows (15:10-15:30 and 09:15-09:45) sit outside the
+             * pilot's [09:20, 15:05), so the two captures cannot contend for the same slot.
+             */
+            premiumCaptureSafely {
+                if (PremiumFollowOnCapture.isResearchEnabled(filesDir)) {
+                    val declared = PremiumCapturePollAdapter.declaredSlotFromSlotKey(slotKey)
+                    for (acq in PremiumCapturePollAdapter.acquisitions(listOf(
+                        PremiumCapturePollAdapter.IndexResult(
+                            index = "BNF", chain = bnfChainJson,
+                            requestStartedMs = m0BnfFetchStartMs,
+                            completedAtMs = capBnfCompletedAtMs,
+                            underlyingKey = "NSE_INDEX|Nifty Bank", expiry = bnfExpiry),
+                        PremiumCapturePollAdapter.IndexResult(
+                            index = "NF", chain = nfChainJson,
+                            requestStartedMs = m0NfFetchStartMs,
+                            completedAtMs = capNfCompletedAtMs,
+                            underlyingKey = "NSE_INDEX|Nifty 50", expiry = nfExpiry),
+                    ))) {
+                        val attempt = PremiumFollowOnCapture.observe(
+                            filesDir = filesDir,
+                            index = acq.index,
+                            sessionDate = today,
+                            rawChain = acq.rawChain,
+                            acquisitionHhmm = acq.receiptHhmm,
+                            schedulerSlot = declared,
+                            requestedUnderlyingKey = acq.requestedUnderlyingKey,
+                            requestStartedMs = acq.requestStartedMs,
+                            responseReceivedMs = acq.responseReceivedMs,
+                            vendorSourceTs = acq.vendorSourceTs,
+                            declaredSchedulerSlot = declared,
+                            expiryForAuthority = acq.expiry)
+                        if (attempt.outcome != PremiumFollowOnCapture.NOT_IN_A_FOLLOW_ON_WINDOW)
+                            LogBuffer.add('I', TAG, "PREMIUM_FOLLOWON: ${acq.index}" +
+                                " window=${attempt.window} outcome=${attempt.outcome}" +
+                                " written=${attempt.slotResult?.written ?: 0}" +
+                                " carry=${attempt.carryWritten != null}")
+                    }
+                }
+            }
+
             if (quotesJson == null) {
                 Log.e(TAG, "POLL_FAIL: Quotes fetch returned null — network or auth error")
                 return

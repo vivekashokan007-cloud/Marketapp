@@ -1,0 +1,93 @@
+Subject: [RESEARCH, NOT APPLIED] extend the dated fee table's verified-through date to 16 Nov 2026
+
+The frozen table at `nse_equity_index_options_rates_20261009_v1` is PRESERVED by this patch
+being a patch: nothing in `research/replay/fee_models.py` is changed on the review branch, and
+earlier research keeps the exact table it ran against. Apply this only after reviewing the
+evidence below.
+
+WHAT IT CHANGES  Two lines. `RATES_VERIFIED_THROUGH` moves from 2026-10-09 to 2026-11-16, which
+extends the LAST window (`nse_idx_opt_20260401`, whose `end` is that constant) and nothing else;
+`RATES_TABLE_VERSION` is bumped because the version names the audited state of the table.
+No rate moves. No window is added, because no component changed its value after 1 April 2026 --
+had one changed, the correct edit would be a NEW window starting on its effective date, never a
+widened one.
+
+WHY IT IS JUSTIFIED  All six components were checked against a primary or issuing source, with
+the retrievals dated 16 November 2026 (IST). Per component:
+
+  1. STT, sale of an option -- 0.15% of premium, payable by the seller, w.e.f. 1 April 2026.
+     NSE, "SEBI Turnover Fees, STT and Other levies" (page states "Updated on: 17/04/2026"),
+     https://www.nseindia.com/static/invest/first-time-investor-sebi-turnover-fees-stt-other-levies
+     Corroborated by Upstox's dated schedule: "STT/CTT (From 1st April 2026) ... Equity Options
+     0.15% on sell side (on premium)".
+
+  2. SEBI turnover fee -- Rs.10 per crore (0.0001%) on all sale and purchase transactions.
+     Same NSE page. Corroborated: Upstox "SEBI Charges ... Rs.10/crore".
+
+  3. Stamp duty, equity options -- 0.003%, buyer. Same NSE page. Corroborated: Upstox
+     "Stamp Duty ... Equity Options 0.003% or Rs.300 / crore on buy side".
+
+  4. GST -- 18% on brokerage and the exchange charges. Same NSE page. Corroborated: Upstox
+     "GST ... 18% (on brokerage + transaction charges + IPFT charges)".
+
+  5. Exchange transaction charge -- Rs.3,552.99 per crore of traded PREMIUM value, each side.
+  6. NSE IPFT contribution   -- Rs.0.01 per crore of traded premium value, each side.
+     PRIMARY SOURCE, read in full: NSE/FA/73061, "Revision in Transaction Charges",
+     27 February 2026, https://nsearchives.nseindia.com/content/circulars/FA73061.pdf
+     Its table reads, for "Equity Options (on premium)", revised outflow: transaction charges
+     "Rs. 3,552.99 each side", contribution to NSE IPFT "Rs. 0.01 each side", total "Rs. 3,553
+     each side", and: "The above revision will be applicable with effect from March 1, 2026."
+     Both table values therefore match the issuing circular exactly, including the split.
+
+  7. Brokerage -- Rs.20 per executed order. Upstox, https://upstox.com/brokerage-charges/
+     retrieved 16 November 2026: "Equity Options -- Flat Rs.20 per executed order". This is a
+     commercial tariff, not a statutory rate, so it is the one component with no regulator
+     behind it and the one most likely to move without notice.
+
+WHAT IS STILL NOT PROVEN, AND MUST BE WEIGHED BEFORE APPLYING
+
+  * I could not establish from NSE's OWN circular listing that no FA-series circular after
+    9 October 2026 revised components 5 or 6. The JSON endpoint I tried
+    (`/api/circulars?dept=FA&from_date=..&to_date=..`) returned `{"data":[]}` for the October-
+    November window AND for a February-March window that is KNOWN to contain FA/73061, so the
+    endpoint or its parameters are wrong and the empty result carries no information. I am not
+    treating it as evidence of absence.
+    What stands in its place is weaker but real: three independent broker schedules retrieved
+    today (Upstox, Zerodha, mstock) all present "from 1 March 2026 / 0.03553% on premium" as the
+    CURRENT window, with no later one listed. Brokers bill these charges and update these pages
+    when a circular lands, so their dated windows are a reasonable, though secondary, check.
+    If you want the absence proven at the source, the remaining step is the circulars list at
+    nseindia.com/resources/exchange-communication-circulars for the Finance & Accounts series
+    after 9 October 2026.
+
+  * Upstox's page is internally inconsistent about IPFT: its dated table says "Rs.0.01 per crore
+    ... (On Premium)" (agreeing with the circular) while a prose block further down still says
+    "Rs.0.50/lakh on Equity Options premium" -- the PRE-rollback figure that FA/73061 explicitly
+    reversed. The circular governs, and the table holds the circular's value. Recorded here
+    because a reader checking that page alone would find the contradiction.
+
+WHAT APPLYING IT UNBLOCKS, MEASURED  With the window extended and nothing else changed, on the
+12 November capture: 240 of 318 NIFTY BUY rows and 244 of 323 BANKNIFTY BUY rows carry
+`fee_rates_unknown_for_trade_date` AND NOTHING ELSE, so they become scorable. The rest are
+refused for reasons that are not fee-related (72/73 rows have no 60-minute hold window inside a
+capture that stops at 13:40/13:45; 6 rows per index are each contract's final poll, with no
+fill).
+
+UNTIL IT IS APPLIED  After-cost coverage stays at exactly zero, by construction, and Stage D
+reports the fee window as the single blocker rather than estimating a cost it cannot source.
+
+--- a/research/replay/fee_models.py	2026-11-04 08:15:50.031563200 +0000
++++ b/research/replay/fee_models.py	2026-11-16 11:03:22.563416633 +0000
+@@ -23,10 +23,10 @@
+ from typing import Dict, Optional, Tuple
+ 
+ REPLAY_FEE_V2 = 'replay_fee_v2'
+-RATES_TABLE_VERSION = 'nse_equity_index_options_rates_20261009_v1'
++RATES_TABLE_VERSION = 'nse_equity_index_options_rates_20261116_v2'
+ # Last date on which every rate below was checked against its source. A trade date after this is
+ # unknown (a later circular may have changed a rate) and fails explicitly.
+-RATES_VERIFIED_THROUGH = date(2026, 10, 9)
++RATES_VERIFIED_THROUGH = date(2026, 11, 16)
+ 
+ SOURCES = {
+     'stt_2024_10_01': 'NSE/FATAX/63809 (9 Sep 2024): option sale 0.10% w.e.f. 1 Oct 2024 (was 0.0625%), payable by seller on premium. https://nsearchives.nseindia.com/content/circulars/FATAX63809.pdf',
