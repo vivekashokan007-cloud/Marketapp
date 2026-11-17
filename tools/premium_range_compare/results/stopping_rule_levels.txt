@@ -1,0 +1,24 @@
+========================================================================================
+STOPPING RULE   premium_range_stopping_rule_v1_exact
+========================================================================================
+the first draft's three interim thresholds, under independent fair signs:
+  >=  7 wins of 10   exact one-sided tail 11/64          =  17.19%
+  >= 11 wins of 15   exact one-sided tail 1941/32768     =   5.92%
+  >= 14 wins of 20   exact one-sided tail 15115/262144   =   5.77%
+  crossing AT LEAST ONE of them: 99163/524288   =  18.91%
+  (the draft called the first of these "roughly 5%"; it is 17.19%)
+  Monte Carlo check over 200000 trials:  18.87%  (exact  18.91%)
+
+ONE FIXED DECISION POINT at 20 eligible sessions per index:
+  >= 11 of 20    41.19%
+  >= 12 of 20    25.17%
+  >= 13 of 20    13.16%
+  >= 14 of 20     5.77%
+  >= 15 of 20     2.07%   <- smallest threshold at or below alpha=0.050
+  >= 16 of 20     0.59%
+  >= 17 of 20     0.13%
+
+  DEFAULT: adopt only at >= 15 of 20 paired session wins, exact level 2.07%, ONE look.
+  No interim adoption. A rule with interim looks must publish its combined level,
+  computed as above, and that level -- not the per-look level -- is the rule's.
+========================================================================================

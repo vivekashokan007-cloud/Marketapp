@@ -62,8 +62,10 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, '..', 'spot_path_baseline'))
 
 import premium_repricing_v2 as R7          # noqa: E402  the frozen R7 module, unmodified
+import planned_schedule as PS              # noqa: E402
 
-COMPARISON_VERSION = 'premium_neutral_range_comparison_v1'
+COMPARISON_VERSION = 'premium_neutral_range_comparison_v2_planned_coverage'
+COMPARISON_VERSION_V1 = 'premium_neutral_range_comparison_v1'
 R7_CONTRACT_VERSION = R7.CONTRACT_VERSION           # read, never set
 
 # ── declared before any run ───────────────────────────────────────────────────────────────────
@@ -110,6 +112,13 @@ RECENTRED = ('IV_ONLY', 'HIST')                    #: FLAT is already the centre
 #: different question. `IV_ONLY_RAW` is what the 12 November 120-minute counterexample was
 #: computed from, and keeping it is how that counterexample stays reproducible.
 DIAGNOSTIC_UNCENTRED = ('IV_ONLY_RAW', 'HIST_RAW')
+
+#: A session enters the trial cohort only if its usable coverage against the PLANNED schedule
+#: reaches this, per index at the primary horizon.  Proposed, not frozen.  The denominator is
+#: the schedule (`planned_schedule.py`), never the admitted quotes -- counting against admitted
+#: quotes let a capture truncated at 12:00 report 62.5% and pass a 60% gate when its honest
+#: figure was 35.1%.
+MIN_USABLE_COVERAGE = 0.60
 
 #: How a historical observation's minute is turned into the slot a join reads.
 SLOT_POLICIES = ('exact', 'floor5', 'explicit')
@@ -487,12 +496,25 @@ def compare_index_horizon(ex, ix, hist, hist_dates, horizon_min, slot_policy=DEF
     denominator, so a session that simply stopped capturing cannot look like a session that
     scored.
     """
+    node = ((ex.get('premium') or {}).get('indices') or {}).get(ix) or {}
+    plan = PS.plan_for(node, ix, horizon_min)
     q, pc, fwd_by_acq, entries, by_contract, cov = admit(ex, ix)
+    cov['planned_opportunities'] = plan['planned_opportunities']
+    cov['schedule_state'] = plan['state']
+    cov['schedule_basis'] = plan['basis']
+    # kept under its old name as well, because it is what the ADMITTED quotes offered -- but it
+    # is no longer the denominator, and the two are reported side by side on purpose
+    cov['admitted_entry_candidates'] = len(entries)
     if not entries:
         return ({'state': 'NO_ENTRY_CANDIDATES', 'horizon_min': horizon_min,
-                 'coverage': dict(cov), 'variants': {}}, [], cov)
+                 'index': ix, 'schedule': _plan_view(plan),
+                 'planned_opportunities': plan['planned_opportunities'],
+                 'coverage': dict(cov), 'variants': {}, 'variants_common': {},
+                 'reconciliation': PS.reconcile(plan, (), ())}, [], cov)
 
-    cov['intended_opportunities'] = len(entries)
+    observed_keys, scored_keys, outside_keys = set(), set(), set()
+    last_planned_min = (R7.mins(plan['eligible_entry_slots'][-1])
+                        if plan['eligible_entry_slots'] else None)
     rows = []
     iv_fit_failures = collections.Counter()
     quoted_vs_fitted = []
@@ -502,6 +524,11 @@ def compare_index_horizon(ex, ix, hist, hist_dates, horizon_min, slot_policy=DEF
         c = pc[ikey]
         K, kind = float(c['strike']), c['option_type']
         target = cutoff + datetime.timedelta(minutes=horizon_min)
+        observed_keys.add((str(ikey), e['slot']))
+        if last_planned_min is not None and e['slot'] > last_planned_min:
+            # admitted, but its planned target falls past the end of the planned grid: this is
+            # evidence about the capture, not a score the schedule ever expected
+            outside_keys.add((str(ikey), e['slot']))
         row = {'ikey': ikey, 'm0': e['slot'], 'strike': K, 'kind': kind,
                'expiry': c['expiry'], 'entry_aid': e['aid'], 'entry_mid': e['mid'],
                'entry_bid': e['bid'], 'entry_ask': e['ask'],
@@ -624,10 +651,20 @@ def compare_index_horizon(ex, ix, hist, hist_dates, horizon_min, slot_policy=DEF
     scored = [r for r in rows if r['scores']]
     common = [r for r in scored if all(v in r['scores'] for v in ('FLAT',) + RANGE_VARIANTS)]
     cov['common_scored'] = len(common)
+    for r in common:
+        scored_keys.add((str(r['ikey']), r['m0']))
+
+    rec = PS.reconcile(plan, observed_keys, scored_keys, outside_keys)
+    cov['usable_coverage_against_plan'] = rec['usable_coverage']
+    cov['missing_entry_keys'] = rec['missing_entry_keys']
 
     summary = {'horizon_min': horizon_min, 'index': ix,
                'slot_policy': slot_policy,
-               'intended_opportunities': cov['intended_opportunities'],
+               'schedule': _plan_view(plan),
+               'planned_opportunities': plan['planned_opportunities'],
+               'reconciliation': rec,
+               'usable_coverage': rec['usable_coverage'],
+               'admitted_entry_candidates': len(entries),
                'matched_exit': cov['matched_exit'],
                'common_scored': len(common),
                'coverage': dict(cov),
@@ -651,6 +688,11 @@ def compare_index_horizon(ex, ix, hist, hist_dates, horizon_min, slot_policy=DEF
     return summary, rows, cov
 
 
+def _plan_view(plan):
+    """The plan as it appears in a result: everything but the key set itself."""
+    return {k: v for k, v in plan.items() if k != 'planned_keys'}
+
+
 def _agg(scores):
     return {'n': len(scores),
             'crps': statistics.fmean(s['crps'] for s in scores),
@@ -662,13 +704,29 @@ def _agg(scores):
 # ── history loading, with the slot policy stated ──────────────────────────────────────────────
 
 def load_history(path, slot_policy=DEFAULT_SLOT_POLICY):
-    """(hist, meta) -- prior-session spot observations indexed by the policy's own slot.
+    """(hist, meta) -- prior-session spot observations, resolved DETERMINISTICALLY by slot.
 
-    `meta` records the policy, the file's SHA-256, the row count, how many rows carried an
-    explicit scheduled slot, how many observation minutes were off the five-minute grid, and
-    whether flooring would have collided with an existing on-grid observation.  Those numbers
-    are the evidence for whether a join reads a scheduled slot or an inferred one, and they are
-    reported rather than assumed.
+    THE DEFECT THIS CLOSES.  v1 wrote `hist[date][slot] = row` as it read, so when two
+    observations landed on one slot the survivor was whichever happened to come last.  Codex
+    supplied 10:55 and 10:56 prices that both floor to the 10:55 slot and reversed the input:
+    the retained NIFTY price changed from 25099.00 to 25000.00, which is order dependence in
+    the denominator of every historical scenario -- the exact defect class the frozen replay
+    spent four review rounds removing from the export side.
+
+    THE RULE, applied in this order, and the same in either input order:
+
+      1. rows are GROUPED by (date, slot) before anything is admitted;
+      2. a group whose rows agree on every field scoring can read collapses to one
+         observation, counted as `collapsed_identical_duplicates`;
+      3. a group that DISAGREES is EXCLUDED whole -- not resolved by position, not averaged --
+         counted as `excluded_conflicting_slots` and surfaced in coverage.  We cannot tell
+         which row is authoritative, so neither is used;
+      4. within a group, a row carrying a VERIFIED scheduled slot is preferred over one whose
+         slot was inferred, and that preference is recorded.  A verified and an inferred row
+         that agree on price still collapse; if they disagree the slot is excluded.
+
+    Each retained observation keeps its own provenance: the observed clock, the scheduled slot
+    when the source supplies one, and which of the two the join key came from.
     """
     import hashlib
     if slot_policy not in SLOT_POLICIES:
@@ -677,7 +735,10 @@ def load_history(path, slot_policy=DEFAULT_SLOT_POLICY):
     meta = {'path': os.path.basename(path), 'sha256': hashlib.sha256(raw).hexdigest(),
             'slot_policy': slot_policy, 'rows': 0, 'rows_with_explicit_slot': 0,
             'rows_off_five_minute_grid': 0, 'floor_collisions': 0,
-            'slot_field_names_seen': [], 'dates': 0}
+            'slot_field_names_seen': [], 'dates': 0,
+            'collapsed_identical_duplicates': 0, 'excluded_conflicting_slots': 0,
+            'conflicting_slot_examples': [], 'slots_from_verified_schedule': 0,
+            'slots_from_inferred_clock': 0}
     rows = []
     for line in raw.decode('utf-8').splitlines():
         line = line.strip()
@@ -688,8 +749,15 @@ def load_history(path, slot_policy=DEFAULT_SLOT_POLICY):
     slot_fields = ('scheduled_slot', 'slot', 'sched_slot', 'scheduled_t')
     seen = sorted({f for r in rows for f in slot_fields if r.get(f) is not None})
     meta['slot_field_names_seen'] = seen
+
+    def explicit_slot(r):
+        for f in slot_fields:
+            if r.get(f) is not None:
+                return R7.mins(r[f]), f
+        return None, None
+
     meta['rows_with_explicit_slot'] = sum(
-        1 for r in rows if any(r.get(f) is not None for f in slot_fields))
+        1 for r in rows if explicit_slot(r)[0] is not None)
 
     on_grid = set()
     for r in rows:
@@ -711,20 +779,57 @@ def load_history(path, slot_policy=DEFAULT_SLOT_POLICY):
             'label it inferred.'
             % (meta['rows_with_explicit_slot'], len(rows), seen or 'none'))
 
-    hist = collections.defaultdict(dict)
-    collisions = collections.Counter()
+    # ── group by (date, slot) BEFORE admitting anything ──
+    groups = collections.defaultdict(list)
     for r in rows:
-        m = R7.mins(r['t'])
-        if slot_policy == 'floor5':
-            m -= m % 5
-        elif slot_policy == 'explicit':
-            m = R7.mins([r[f] for f in slot_fields if r.get(f) is not None][0])
-        key = (r['d'], m)
-        if m in hist[r['d']]:
-            collisions[key] += 1
-        hist[r['d']][m] = {'NF': float(r['nf']), 'BNF': float(r['bnf'])}
-    meta['slot_key_collisions_overwritten'] = sum(collisions.values())
+        observed = R7.mins(r['t'])
+        sched, sched_field = explicit_slot(r)
+        if slot_policy == 'explicit':
+            key_min, key_from = sched, 'verified_schedule'
+        elif slot_policy == 'floor5':
+            key_min, key_from = observed - observed % 5, 'inferred_floor5'
+            if sched is not None:
+                key_min, key_from = sched, 'verified_schedule'
+        else:
+            key_min, key_from = observed, 'observed_clock'
+            if sched is not None:
+                key_min, key_from = sched, 'verified_schedule'
+        groups[(r['d'], key_min)].append({
+            'nf': float(r['nf']), 'bnf': float(r['bnf']),
+            'observed_min': observed, 'scheduled_min': sched,
+            'scheduled_field': sched_field, 'slot_from': key_from})
+
+    hist = collections.defaultdict(dict)
+    for (d, m) in sorted(groups):
+        g = groups[(d, m)]
+        # the signature is every field a scenario can read; provenance is not part of it, so a
+        # verified and an inferred row that agree on price collapse rather than conflict
+        sig = {(round(o['nf'], 6), round(o['bnf'], 6)) for o in g}
+        if len(sig) > 1:
+            meta['excluded_conflicting_slots'] += 1
+            if len(meta['conflicting_slot_examples']) < 10:
+                meta['conflicting_slot_examples'].append(
+                    {'date': d, 'slot': '%02d:%02d' % (m // 60, m % 60),
+                     'distinct_prices': sorted(sig),
+                     'observed_minutes': sorted(o['observed_min'] for o in g)})
+            continue
+        if len(g) > 1:
+            meta['collapsed_identical_duplicates'] += len(g) - 1
+        # prefer a verified scheduled slot deterministically; the rows agree on price, so this
+        # only decides which provenance is recorded
+        pick = min(g, key=lambda o: (0 if o['slot_from'] == 'verified_schedule' else 1,
+                                     o['observed_min']))
+        if pick['slot_from'] == 'verified_schedule':
+            meta['slots_from_verified_schedule'] += 1
+        else:
+            meta['slots_from_inferred_clock'] += 1
+        hist[d][m] = {'NF': pick['nf'], 'BNF': pick['bnf'],
+                      'observed_min': pick['observed_min'],
+                      'scheduled_min': pick['scheduled_min'],
+                      'slot_from': pick['slot_from']}
     meta['dates'] = len(hist)
+    meta['slot_key_collisions_overwritten'] = 0      # by construction: nothing is overwritten
+    meta['retained_slots'] = sum(len(v) for v in hist.values())
     return hist, meta
 
 
@@ -784,7 +889,8 @@ def across_sessions(sessions, horizons=HORIZONS_MIN):
                 if 'IV_ONLY' not in v or 'HIST' not in v:
                     continue
                 per.append({'session': s['session'], 'n': node['common_scored'],
-                            'intended': node['intended_opportunities'],
+                            'planned': node.get('planned_opportunities'),
+                            'usable_coverage': node.get('usable_coverage'),
                             'matched_exit': node['matched_exit'],
                             **{name: v[name] for name in v}})
             if not per:
@@ -846,28 +952,168 @@ def grid_sensitivity(export_path, spots_path, index_name, horizon_min,
             'declared_grid_n': QUANTILE_GRID_N, 'rows': rows}
 
 
+def resolve_inputs(export_paths, canonical=None):
+    """Collapse the supplied exports into AT MOST ONE per session.  Returns (keep, excluded).
+
+    THE DEFECT THIS CLOSES.  v1 built one session entry per supplied path, so passing the same
+    file twice produced a two-session cohort out of one session's evidence -- and a decision
+    rule counted in sessions would have reached its threshold twice as fast on duplicated
+    input.
+
+    THE RULE, applied before any score is computed:
+
+      * identical content, by SHA-256, collapses to one session however many times it is
+        supplied.  The repeat count is reported, not silently dropped;
+      * two DIFFERENT files claiming the same session date are COMPETING EXPORTS.  Neither is
+        chosen: the session is excluded as `CONFLICTING_EXPORTS_FOR_SESSION` and reported with
+        both digests.  Picking the "better" one after scoring is exactly the selection this
+        trial exists to prevent, and picking the larger or newer one is a guess about which
+        capture is authoritative;
+      * a conflict is resolved only by an EXPLICIT declaration -- `canonical={session: sha256}`,
+        supplied on the command line BEFORE the run, which is recorded in the output. That
+        makes the choice reviewable and dated rather than implicit.
+
+    Excluded sessions are carried through reporting; they never vanish.
+    """
+    import hashlib
+    canonical = dict(canonical or {})
+    seen = []
+    for path in export_paths:
+        raw = open(path, 'rb').read()
+        digest = hashlib.sha256(raw).hexdigest()
+        doc = json.loads(raw.decode('utf-8'))
+        session = ((doc.get('manifest') or {}).get('session_date_used')
+                   or (doc.get('manifest') or {}).get('session_date_requested'))
+        seen.append({'path': path, 'basename': os.path.basename(path),
+                     'sha256': digest, 'session': session})
+
+    by_session = collections.defaultdict(list)
+    for it in seen:
+        by_session[it['session']].append(it)
+
+    keep, excluded = [], []
+    for session in sorted(by_session, key=str):
+        items = by_session[session]
+        digests = sorted({it['sha256'] for it in items})
+        if session is None:
+            excluded.append({'session': None, 'reason': 'SESSION_DATE_NOT_DECLARED',
+                             'inputs': [{'basename': i['basename'], 'sha256': i['sha256']}
+                                        for i in items]})
+            continue
+        if len(digests) == 1:
+            first = sorted(items, key=lambda i: i['basename'])[0]
+            keep.append({'session': session, 'path': first['path'],
+                         'basename': first['basename'], 'sha256': digests[0],
+                         'duplicate_inputs_collapsed': len(items) - 1,
+                         'supplied_paths': sorted(i['basename'] for i in items)})
+            continue
+        want = canonical.get(session)
+        picked = [d for d in digests if want and d.startswith(want)]
+        if len(picked) == 1:
+            first = sorted((i for i in items if i['sha256'] == picked[0]),
+                           key=lambda i: i['basename'])[0]
+            keep.append({'session': session, 'path': first['path'],
+                         'basename': first['basename'], 'sha256': picked[0],
+                         'duplicate_inputs_collapsed': 0,
+                         'canonical_declared': want,
+                         'competing_digests_not_used': [d for d in digests if d != picked[0]],
+                         'supplied_paths': sorted(i['basename'] for i in items)})
+            continue
+        excluded.append({
+            'session': session, 'reason': 'CONFLICTING_EXPORTS_FOR_SESSION',
+            'competing_digests': digests,
+            'inputs': [{'basename': i['basename'], 'sha256': i['sha256']} for i in items],
+            'resolution': 'declare one with --canonical %s=<sha256 prefix>; no export is '
+                          'chosen by size, age or score' % session})
+    return keep, excluded
+
+
+def session_eligibility(session_result, horizon=PRIMARY_HORIZON_MIN,
+                        min_coverage=MIN_USABLE_COVERAGE):
+    """Per index: does this session enter the trial cohort?  (eligible, detail).
+
+    Eligibility is decided on the PLANNED-schedule coverage at the primary horizon and on the
+    schedule being verifiable at all.  A session that fails is reported with its ratio and its
+    leading refusal reason, and is excluded WHOLE rather than partially counted.
+    """
+    out = {}
+    for ix in sorted(session_result.get('indices') or {}):
+        node = (session_result['indices'][ix] or {}).get('h%d' % horizon) or {}
+        rec = node.get('reconciliation') or {}
+        sched = (node.get('schedule') or {}).get('state')
+        cov = rec.get('usable_coverage')
+        reasons = []
+        if sched != PS.STATE_VERIFIED:
+            reasons.append('schedule_%s' % str(sched).lower())
+        if cov is None:
+            reasons.append('no_usable_coverage_computed')
+        elif cov < min_coverage:
+            reasons.append('usable_coverage_%.3f_below_%.2f' % (cov, min_coverage))
+        leading = None
+        missing = rec.get('missing_entry_slots') or {}
+        if missing:
+            leading = 'missing_entry_slots=%d keys across %d slots' % (
+                rec.get('missing_entry_keys', 0), len(missing))
+        out[ix] = {'eligible': not reasons, 'usable_coverage': cov,
+                   'planned_opportunities': rec.get('planned_opportunities'),
+                   'scored_in_plan': rec.get('scored_in_plan'),
+                   'schedule_state': sched, 'reasons': reasons,
+                   'leading_shortfall': leading,
+                   'min_usable_coverage': min_coverage}
+    return out
+
+
 def run(export_paths, spots_path, horizons=HORIZONS_MIN, slot_policy=DEFAULT_SLOT_POLICY,
-        reverse_input=False):
+        reverse_input=False, canonical=None, min_coverage=MIN_USABLE_COVERAGE):
     if isinstance(export_paths, str):
         export_paths = [export_paths]
-    sessions = [run_session(p, spots_path, horizons, slot_policy, reverse_input)
-                for p in export_paths]
+    keep, excluded = resolve_inputs(export_paths, canonical)
+    sessions = []
+    for it in keep:
+        res = run_session(it['path'], spots_path, horizons, slot_policy, reverse_input)
+        res['input'] = {k: v for k, v in it.items() if k != 'path'}
+        res['eligibility'] = session_eligibility(res, PRIMARY_HORIZON_MIN, min_coverage)
+        sessions.append(res)
+
+    eligible_by_index = collections.defaultdict(list)
+    for res in sessions:
+        for ix, e in (res.get('eligibility') or {}).items():
+            if e['eligible']:
+                eligible_by_index[ix].append(res)
+    cohort_excluded = [
+        {'session': res['session'], 'index': ix, 'reason': 'NOT_ELIGIBLE',
+         'detail': e}
+        for res in sessions for ix, e in sorted((res.get('eligibility') or {}).items())
+        if not e['eligible']]
+
     out = {'comparison_version': COMPARISON_VERSION,
            'r7_contract_version': R7_CONTRACT_VERSION,
+           'schedule_version': PS.SCHEDULE_VERSION,
            'primary_horizon_min': PRIMARY_HORIZON_MIN,
            'horizons_min': list(horizons),
            'horizon_tolerance_s': HORIZON_TOL_S,
            'quantile_grid_n': QUANTILE_GRID_N,
            'min_prior_sessions': MIN_TRAIN,
+           'min_usable_coverage': min_coverage,
            'input_order_reversed': bool(reverse_input),
            'centre': 'the observed entry bid/ask midpoint, identical for every variant',
            'recentred_variants': list(RECENTRED),
            'uncentred_diagnostics': list(DIAGNOSTIC_UNCENTRED),
            'reference_variant_not_recentred': 'R7_E0_FWD',
            'event_age': 'UNKNOWN -- no verified exchange quote event clock',
-           'aggregation': 'rows -> session mean per index -> mean across sessions',
+           'coverage_denominator': 'the PLANNED schedule, from the export\'s own slot manifest '
+                                   'or the declared capture window; never the admitted quotes',
+           'aggregation': 'rows -> session mean per index -> mean across ELIGIBLE sessions',
+           'inputs_supplied': len(export_paths),
+           'inputs_kept': [{k: v for k, v in it.items() if k != 'path'} for it in keep],
+           'inputs_excluded': excluded,
+           'canonical_declared': dict(canonical or {}),
            'sessions': sessions,
-           'across_sessions': across_sessions(sessions, horizons)}
+           'cohort_excluded': cohort_excluded,
+           'across_sessions': {}}
+    for ix, group in sorted(eligible_by_index.items()):
+        agg = across_sessions(group, horizons)
+        out['across_sessions'][ix] = agg.get(ix, {'sessions': 0})
     if len(sessions) == 1:
         # the single-session shape earlier runs read, kept so an existing reader does not break
         out['session'] = sessions[0]['session']
@@ -878,21 +1124,36 @@ def run(export_paths, spots_path, horizons=HORIZONS_MIN, slot_policy=DEFAULT_SLO
     return out
 
 
+#!/usr/bin/env python3
 def _fmt(summary, label):
+    rec = summary.get('reconciliation') or {}
+    sched = summary.get('schedule') or {}
+    cov = rec.get('usable_coverage')
+    lines = ['  %-10s planned %4d   admitted %4d   matched exit %4d   scored %4d   '
+             'usable %s'
+             % (label, rec.get('planned_opportunities', 0),
+                summary.get('admitted_entry_candidates', 0),
+                summary.get('matched_exit', 0), rec.get('scored_in_plan', 0),
+                ('%.1f%%' % (100 * cov)) if cov is not None else 'n/a')]
+    if sched.get('state') != PS.STATE_VERIFIED:
+        lines.append('             SCHEDULE %s (basis %s)'
+                     % (sched.get('state'), sched.get('basis')))
+    if rec.get('missing_entry_keys'):
+        lines.append('             missing %d planned entry keys across %d slots; '
+                     'admitted outside the planned window %d'
+                     % (rec['missing_entry_keys'], len(rec.get('missing_entry_slots') or {}),
+                        rec.get('admitted_entries_outside_planned_window', 0)))
     v = summary.get('variants_common') or {}
-    lines = ['  %-10s intended %4d   matched exit %4d   common scored %4d'
-             % (label, summary.get('intended_opportunities', 0),
-                summary.get('matched_exit', 0), summary.get('common_scored', 0))]
     if not v:
         lines.append('             no commonly scored row')
         return lines
-    lines.append('             %-10s %9s %9s %8s %9s   %s'
+    lines.append('             %-12s %9s %9s %8s %9s   %s'
                  % ('variant', 'CRPS', 'MAE', 'cov80', 'width80', 'own n'))
     for name in VARIANTS:
         if name not in v:
             continue
         own = (summary.get('variants') or {}).get(name) or {}
-        lines.append('             %-10s %9.3f %9.3f %7.1f%% %9.3f   %d'
+        lines.append('             %-12s %9.3f %9.3f %7.1f%% %9.3f   %d'
                      % (name, v[name]['crps'], v[name]['mae'], 100 * v[name]['cov80'],
                         v[name]['width80'], own.get('n', 0)))
     if 'IV_ONLY' in v and 'HIST' in v and v['IV_ONLY']['crps'] > 0:
@@ -913,10 +1174,23 @@ def main(argv=None):
                     help='reverse record/envelope order; results must be identical')
     ap.add_argument('--grid-sensitivity', metavar='INDEX',
                     help='also re-score this index on several quantile grids')
+    ap.add_argument('--canonical', action='append', default=[], metavar='SESSION=SHA256',
+                    help='declare the canonical export for a session with competing files; '
+                         'declared BEFORE the run and recorded in the output')
+    ap.add_argument('--min-coverage', type=float, default=MIN_USABLE_COVERAGE,
+                    help='usable-coverage floor against the PLANNED schedule (default %.2f)'
+                         % MIN_USABLE_COVERAGE)
     ap.add_argument('--json-only', action='store_true')
     a = ap.parse_args(argv)
     horizons = tuple(int(x) for x in a.horizons.split(','))
-    out = run(a.exports, a.spots, horizons, a.slot_policy, a.reverse_input)
+    canonical = {}
+    for spec in a.canonical:
+        if '=' not in spec:
+            ap.error('--canonical needs SESSION=SHA256, got %r' % spec)
+        k, v = spec.split('=', 1)
+        canonical[k.strip()] = v.strip()
+    out = run(a.exports, a.spots, horizons, a.slot_policy, a.reverse_input, canonical,
+              a.min_coverage)
     say = (lambda *x: None) if a.json_only else (lambda *x: print(*x))
 
     say('=' * 100)
@@ -924,8 +1198,30 @@ def main(argv=None):
         % (COMPARISON_VERSION, R7_CONTRACT_VERSION))
     say('=' * 100)
     say('sessions %s   quantile grid %d   min prior sessions %d   exit window +/-%.0f s'
-        % (', '.join(s['session'] for s in out['sessions']), QUANTILE_GRID_N, MIN_TRAIN,
-           HORIZON_TOL_S))
+        % (', '.join(s['session'] for s in out['sessions']) or 'none', QUANTILE_GRID_N,
+           MIN_TRAIN, HORIZON_TOL_S))
+    say('inputs supplied %d -> kept %d, excluded %d; coverage denominator: %s'
+        % (out['inputs_supplied'], len(out['inputs_kept']), len(out['inputs_excluded']),
+           out['coverage_denominator']))
+    for it in out['inputs_kept']:
+        if it.get('duplicate_inputs_collapsed'):
+            say('  %s: %d identical duplicate input(s) collapsed'
+                % (it['session'], it['duplicate_inputs_collapsed']))
+        if it.get('canonical_declared'):
+            say('  %s: canonical declared %s; %d competing export(s) not used'
+                % (it['session'], it['canonical_declared'],
+                   len(it.get('competing_digests_not_used') or [])))
+    for ex_ in out['inputs_excluded']:
+        say('  EXCLUDED %s: %s' % (ex_.get('session'), ex_['reason']))
+        if ex_.get('competing_digests'):
+            for dg in ex_['competing_digests']:
+                say('      competing digest %s' % dg[:16])
+        if ex_.get('resolution'):
+            say('      %s' % ex_['resolution'])
+    if not out['sessions']:
+        say('')
+        say('nothing to score: every supplied input was excluded above.')
+        return 0
     h0 = out['sessions'][0]['history']
     say('history %s  %s  rows %d  slot policy %s  prior sessions used %s'
         % (h0['path'], h0['sha256'][:16], h0['rows'], h0['slot_policy'],
@@ -953,11 +1249,27 @@ def main(argv=None):
                 for ln in _fmt(s, tag):
                     say(ln)
 
+    say('')
+    say('--- session eligibility for the trial cohort (primary horizon, planned coverage) ---')
+    for sess in out['sessions']:
+        for ix, e in sorted((sess.get('eligibility') or {}).items()):
+            say('  %-4s %s  %-8s coverage %s of planned %s  %s'
+                % (ix, sess['session'], 'ELIGIBLE' if e['eligible'] else 'EXCLUDED',
+                   ('%.1f%%' % (100 * e['usable_coverage']))
+                   if e['usable_coverage'] is not None else 'n/a',
+                   e['planned_opportunities'],
+                   '' if e['eligible'] else '; '.join(e['reasons'])))
+    if out['cohort_excluded']:
+        say('  %d index/session pair(s) excluded from the cohort and carried here, not dropped'
+            % len(out['cohort_excluded']))
+
     if len(out['sessions']) > 1:
         say('')
-        say('--- across sessions (session means, then their mean) ---')
+        say('--- across ELIGIBLE sessions (session means, then their mean) ---')
         for ix in sorted(out['across_sessions']):
             for h in horizons:
+                if not isinstance(out['across_sessions'][ix], dict):
+                    continue
                 node = out['across_sessions'][ix].get('h%d' % h) or {}
                 if not node.get('sessions'):
                     continue

@@ -1,0 +1,9 @@
+premium_range_planned_schedule_v1   export_2026-11-12.json
+  BNF    15 min  VERIFIED                 basis export_slot_manifest         grid 69  eligible 66  planned 396
+  BNF    30 min  VERIFIED                 basis export_slot_manifest         grid 69  eligible 63  planned 378
+  BNF    60 min  VERIFIED                 basis export_slot_manifest         grid 69  eligible 57  planned 342
+  BNF   120 min  VERIFIED                 basis export_slot_manifest         grid 69  eligible 45  planned 270
+  NF     15 min  VERIFIED                 basis export_slot_manifest         grid 69  eligible 66  planned 396
+  NF     30 min  VERIFIED                 basis export_slot_manifest         grid 69  eligible 63  planned 378
+  NF     60 min  VERIFIED                 basis export_slot_manifest         grid 69  eligible 57  planned 342
+  NF    120 min  VERIFIED                 basis export_slot_manifest         grid 69  eligible 45  planned 270

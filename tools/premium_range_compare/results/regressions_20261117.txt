@@ -1,0 +1,69 @@
+input   export_2026-11-12.json  sha256 5f399accefabd0dd3f1f1f3bb829bb71  session 2026-11-12
+history spots_20261021_20261104.jsonl  sha256 f6f29ed8fd6e1290f3d0f59e9be2cdd3  rows 855
+runner  premium_neutral_range_comparison_v2_planned_coverage   schedule premium_range_planned_schedule_v1
+
+==============================================================================================
+1  COVERAGE IS COUNTED AGAINST THE PLANNED SCHEDULE, NOT THE ADMITTED QUOTES
+==============================================================================================
+The defect: the denominator was `len(entries)` AFTER quote admission, so a session
+that stopped capturing had fewer "intended" opportunities and its ratio ROSE.
+
+  idx  input                       planned  admitted   scored    usable    gate
+  BNF  full session                    342       323      251     73.4%    PASS
+  BNF  truncated at 12:00              342       192      120     35.1%    FAIL
+  NF   full session                    342       318      246     71.9%    PASS
+  NF   truncated at 12:00              342       192      120     35.1%    FAIL
+
+  the OLD circular ratio, recomputed from the same run, is what used to be reported:
+  BNF  truncated: 120/192 = 62.5% (PASS)  vs planned 120/342 = 35.1% (FAIL)
+  NF   truncated: 120/192 = 62.5% (PASS)  vs planned 120/342 = 35.1% (FAIL)
+
+  the plan is unchanged by the truncation, which is the point:
+  BNF  full plan 342 keys, truncated plan 342 keys, identical: True  (basis export_slot_manifest)
+  NF   full plan 342 keys, truncated plan 342 keys, identical: True  (basis export_slot_manifest)
+
+  missing planned entry slots on the truncated input, by slot:
+  BNF  150 keys across 25 slots, 12:00 .. 14:00
+  NF   150 keys across 25 slots, 12:00 .. 14:00
+
+==============================================================================================
+2  EACH INDEX/SESSION IS COUNTED ONCE
+==============================================================================================
+The defect: one session supplied twice produced a two-session cohort, so a decision
+rule counted in sessions reached its threshold twice as fast on duplicated input.
+
+  identical duplicate twice      -> sessions kept 1, duplicates collapsed 1, excluded 0
+        across sessions BNF  h60 sessions=1
+        across sessions NF   h60 sessions=1
+  two DIFFERENT files, same date -> sessions kept 0, excluded 1, reason CONFLICTING_EXPORTS_FOR_SESSION
+        competing digest 0b57dff5060aa1fca621ed12dd895674
+        competing digest 5f399accefabd0dd3f1f1f3bb829bb71
+        declare one with --canonical 2026-11-12=<sha256 prefix>; no export is chosen by size, age or score
+  resolved by declaration        -> sessions kept 1, canonical 5f399accefab, competing not used 1
+  a below-coverage session       -> kept 1, but eligible in 0 of 2 indices:
+        BNF  eligible=False coverage=0.351  reasons=usable_coverage_0.351_below_0.60
+        NF   eligible=False coverage=0.351  reasons=usable_coverage_0.351_below_0.60
+        aggregate indices: none   carried in cohort_excluded: 2
+
+==============================================================================================
+3  HISTORICAL SLOT COLLISIONS RESOLVE DETERMINISTICALLY
+==============================================================================================
+The defect: two observations landing on one slot were resolved by position, so
+reversing the input changed the retained price.
+
+  conflicting prices, as supplied  slot retained=False  excluded_conflicting=1  collapsed=0
+  conflicting prices, reversed     slot retained=False  excluded_conflicting=1  collapsed=0
+  identical duplicate            slot retained=True   excluded_conflicting=0  collapsed=1
+  a verified scheduled slot      key from verified_schedule, observed 10:56 preserved
+
+  the REAL history, both input orders:
+  identical retained history: True   retained slots 855/855   conflicts 0/0
+  BNF  scores identical under a reversed history: True
+  NF   scores identical under a reversed history: True
+
+==============================================================================================
+ALL THREE DEFECTS CLOSED ON THE INPUT THIS MACHINE HAS
+==============================================================================================
+The 16 November evening export (903225d9...) is still absent, so the figures Codex
+reported for it remain independent evidence rather than a reproduction. The pinned
+16 November regression in tests/test_range_compare.py runs the moment it arrives.

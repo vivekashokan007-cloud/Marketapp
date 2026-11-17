@@ -10,11 +10,13 @@ respect to its inputs.
 
 | file | what it is |
 | --- | --- |
-| `range_compare.py` | the runner: one centre, two candidate ranges, the frozen model as a reference, every refusal named, a coverage ledger built from intended opportunities, and a quantile-grid sensitivity sweep |
-| `PROTOCOL_RANGE_TRIAL_DRAFT_v1.md` | the trial rules, written to be frozen **before** the first scored fresh export: the question, the variants, the ledger, the decision rule, the repeated-looks rule, and the two discrepancies that must be resolved first |
-| `tests/test_range_compare.py` | 52 checks, no network. 45 run anywhere; 7 need the real inputs and skip loudly without them |
-| `results/range_comparison_2026-11-12.{json,txt}` | the machine-readable scores and the printed run for 12 November, both indices, all four horizons, plus the grid sweep |
-| `INPUT_MANIFEST_20261116.json` | every input by SHA-256, including the one that is **absent**, and the discrepancies found in the ones that are present |
+| `range_compare.py` | the runner: one centre, two candidate ranges, the frozen model as a reference, every refusal named, coverage against the **planned schedule**, cohort resolution, a deterministic historical join, and a quantile-grid sensitivity sweep |
+| `planned_schedule.py` | the planned opportunity set, derived from the export's own slot manifest **before** any realised quote is read — the denominator coverage is measured against |
+| `stopping_rule.py` | exact binomial tails and the exact multi-look level, computed rather than asserted, with a Monte Carlo cross-check |
+| `PROTOCOL_RANGE_TRIAL_DRAFT_v2.md` | the revised trial rules, dated and hashed, written to be frozen **before** the first scored fresh export. §0 lists every change from v1 and why |
+| `tests/` | 101 checks across three modules, no network. 83 run anywhere; 18 need the real inputs and skip loudly without them |
+| `results/` | the machine-readable scores and printed runs for 12 November, the planned-schedule derivation, the stopping-rule levels, and `regressions_20261117.{py,txt}` — the three defects reproduced before and after, from the same inputs |
+| `INPUT_MANIFEST_20261117.json` | every input by SHA-256, the governed source hashes, the independent 16 November figures, and the discrepancies found |
 
 The frozen R7 module is **read, never modified**: `range_compare.py` imports
 `tools/spot_path_baseline/premium_repricing_v2.py` for the pricer, the clock, the parity forward,
@@ -28,6 +30,14 @@ python3 -I tools/premium_range_compare/range_compare.py \
     <export_2026-11-12.json> <spots_20261021_20261104.jsonl> \
     --grid-sensitivity NF --out tools/premium_range_compare/results
 
+# the planned schedule on its own, and the stopping-rule levels
+python3 -I tools/premium_range_compare/planned_schedule.py <export.json>
+python3 -I tools/premium_range_compare/stopping_rule.py --simulate 200000
+
+# the three defects from the 17 November review, before and after
+python3 -I tools/premium_range_compare/results/regressions_20261117.py \
+    <export_2026-11-12.json> <spots_20261021_20261104.jsonl>
+
 # the 16 November evening export, once it is available (nothing else is missing)
 python3 -I tools/premium_range_compare/range_compare.py \
     <export_2026-11-16.json> <spots_20261021_20261104.jsonl> --out <dir>
@@ -37,14 +47,16 @@ python3 -I tools/spot_path_baseline/premium_repricing_v2.py \
     <export.json> <spots.jsonl> --out <dir>
 
 # the tests. 7 of them need the real inputs:
-cd tools/premium_range_compare && python3 -m unittest discover -s tests
+cd tools/premium_range_compare && python3 -m unittest discover -s tests      # 101 run, 18 skipped
 RANGE_EXPORT=<export_2026-11-12.json> RANGE_SPOTS=<spots.jsonl> \
     python3 -m unittest discover -s tests          # 52 run, 0 skipped
 ```
 
 Options: `--horizons 15,30,60,120` (60 is primary and is never chosen from the others),
 `--slot-policy exact|floor5|explicit`, `--reverse-input` (results must be identical),
-`--grid-sensitivity <INDEX>`, `--json-only`, and one or more exports for a multi-session run.
+`--grid-sensitivity <INDEX>`, `--min-coverage 0.60`, `--canonical SESSION=<sha256>` (to resolve
+competing exports for one session, declared before the run), `--json-only`, and one or more
+exports for a multi-session run.
 
 **Inputs are not committed.** Raw phone exports stay out of the repository; the manifest records
 what each run read, by SHA-256, so a result can be tied to its input without the input being in
@@ -54,10 +66,14 @@ the tree.
 
 60 minutes, common scored rows, quantile grid 201:
 
-| index | rows | `FLAT` CRPS | `IV_ONLY` CRPS | `HIST` CRPS | `IV_ONLY` cov80 | `HIST` cov80 | MAE (all three) |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| NIFTY | 246 | 24.351 | **16.840** | 18.096 | 54.9% | 81.7% | 24.351 |
-| BANKNIFTY | 251 | 47.911 | **34.456** | 38.046 | 78.5% | 87.6% | 47.911 |
+| index | scored / planned | coverage | `FLAT` CRPS | `IV_ONLY` CRPS | `HIST` CRPS | `IV_ONLY` cov80 | `HIST` cov80 | MAE (all three) |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| NIFTY | 246 / 342 | 71.9% | 24.351 | **16.840** | 18.096 | 54.9% | 81.7% | 24.351 |
+| BANKNIFTY | 251 / 342 | 73.4% | 47.911 | **34.456** | 38.046 | 78.5% | 87.6% | 47.911 |
+
+The denominator is the **planned** schedule — 57 eligible entry slots × 6 pinned contracts, from
+the export's own slot manifest — not the admitted quotes. Counting against admitted quotes let a
+capture truncated at 12:00 report 62.5% and pass a 60% gate when its honest figure was 35.1%.
 
 Three things to read off it:
 
