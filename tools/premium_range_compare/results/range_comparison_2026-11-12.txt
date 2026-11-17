@@ -1,0 +1,109 @@
+====================================================================================================
+NEUTRAL PREMIUM RANGE COMPARISON   premium_neutral_range_comparison_v1   (R7 pricing contract 2.6)
+====================================================================================================
+sessions 2026-11-12   quantile grid 201   min prior sessions 5   exit window +/-5 s
+history spots_20261021_20261104.jsonl  f6f29ed8fd6e1290  rows 855  slot policy exact  prior sessions used 11
+centre: the observed entry bid/ask midpoint, identical for every variant
+primary horizon 60 min; 15, 30, 120 reported separately and never used to pick the primary
+history: 41 of 855 observation minutes are OFF the five-minute grid; flooring would collide with an existing on-grid observation 0 time(s)
+history: NO explicit scheduled-slot field on any row (looked for scheduled_slot, slot, sched_slot, scheduled_t) -- this join reads an INFERRED slot and is labelled as such
+
+--- BNF   session 2026-11-12 ---
+  15 min     intended  323   matched exit  305   common scored  305
+             variant         CRPS       MAE    cov80   width80   own n
+             FLAT          29.492    29.492     0.7%     0.000   305
+             IV_ONLY       21.862    29.492    70.2%    75.765   305
+             HIST          23.007    29.492    78.4%   105.843   305
+             R7_E0_FWD     26.258    36.339    73.4%   105.812   305
+             IV_ONLY_RAW    21.852    29.482    70.2%    75.765   305
+             HIST_RAW      22.993    29.478    78.7%   105.843   305
+             historical range vs IV-only: -5.24% mean CRPS (positive = historical better)
+  30 min     intended  323   matched exit  287   common scored  287
+             variant         CRPS       MAE    cov80   width80   own n
+             FLAT          39.625    39.625     0.0%     0.000   287
+             IV_ONLY       27.823    39.625    71.1%   107.254   287
+             HIST          31.511    39.625    79.1%   156.567   287
+             R7_E0_FWD     31.184    43.098    82.2%   156.485   287
+             IV_ONLY_RAW    27.790    39.600    69.7%   107.254   287
+             HIST_RAW      31.482    39.598    79.1%   156.567   287
+             historical range vs IV-only: -13.25% mean CRPS (positive = historical better)
+  60 min  PRIMARY intended  323   matched exit  251   common scored  251
+             variant         CRPS       MAE    cov80   width80   own n
+             FLAT          47.911    47.911     0.0%     0.000   251
+             IV_ONLY       34.456    47.911    78.5%   151.907   251
+             HIST          38.046    47.911    87.6%   213.405   251
+             R7_E0_FWD     39.489    52.982    86.9%   213.245   251
+             IV_ONLY_RAW    34.332    47.689    78.5%   151.907   251
+             HIST_RAW      37.937    47.697    86.9%   213.405   251
+             historical range vs IV-only: -10.42% mean CRPS (positive = historical better)
+  120 min    intended  323   matched exit  179   common scored  179
+             variant         CRPS       MAE    cov80   width80   own n
+             FLAT          53.135    53.135     0.0%     0.000   179
+             IV_ONLY       36.890    53.135    92.2%   216.087   179
+             HIST          46.736    53.135    92.7%   299.776   179
+             R7_E0_FWD     45.082    49.801    93.3%   299.529   179
+             IV_ONLY_RAW    36.535    52.735    92.2%   216.087   179
+             HIST_RAW      46.436    52.790    93.3%   299.776   179
+             historical range vs IV-only: -26.69% mean CRPS (positive = historical better)
+
+--- NF   session 2026-11-12 ---
+  15 min     intended  318   matched exit  300   common scored  300
+             variant         CRPS       MAE    cov80   width80   own n
+             FLAT          11.521    11.521     0.3%     0.000   300
+             IV_ONLY        8.219    11.521    64.7%    28.309   300
+             HIST           9.279    11.521    71.3%    41.417   300
+             R7_E0_FWD      9.294    12.386    75.7%    41.348   300
+             IV_ONLY_RAW     8.209    11.509    65.0%    28.309   300
+             HIST_RAW       9.270    11.512    71.7%    41.417   300
+             historical range vs IV-only: -12.90% mean CRPS (positive = historical better)
+  30 min     intended  318   matched exit  282   common scored  282
+             variant         CRPS       MAE    cov80   width80   own n
+             FLAT          15.711    15.711     0.0%     0.000   282
+             IV_ONLY       11.034    15.711    67.4%    40.107   282
+             HIST          13.098    15.711    76.2%    61.766   282
+             R7_E0_FWD     11.793    14.338    81.6%    61.667   282
+             IV_ONLY_RAW    11.007    15.677    65.2%    40.107   282
+             HIST_RAW      13.084    15.680    75.9%    61.766   282
+             historical range vs IV-only: -18.70% mean CRPS (positive = historical better)
+  60 min  PRIMARY intended  318   matched exit  246   common scored  246
+             variant         CRPS       MAE    cov80   width80   own n
+             FLAT          24.351    24.351     0.0%     0.000   246
+             IV_ONLY       16.840    24.351    54.9%    56.926   246
+             HIST          18.096    24.351    81.7%    92.789   246
+             R7_E0_FWD     17.567    24.413    86.6%    92.699   246
+             IV_ONLY_RAW    16.768    24.251    54.9%    56.926   246
+             HIST_RAW      18.034    24.264    82.9%    92.789   246
+             historical range vs IV-only: -7.46% mean CRPS (positive = historical better)
+  120 min    intended  318   matched exit  174   common scored  174
+             variant         CRPS       MAE    cov80   width80   own n
+             FLAT          45.542    45.542     0.0%     0.000   174
+             IV_ONLY       31.857    45.542    41.4%    81.339   174
+             HIST          30.914    45.542    75.9%   134.273   174
+             R7_E0_FWD     30.837    46.415    79.9%   134.258   174
+             IV_ONLY_RAW    31.687    45.387    42.0%    81.339   174
+             HIST_RAW      30.823    45.427    75.3%   134.273   174
+             historical range vs IV-only: +2.96% mean CRPS (positive = historical better)
+
+--- quantile-grid sensitivity   NF   60 min   session 2026-11-12 ---
+  grid N  IV_ONLY crps/cov80/width80    HIST crps/cov80/width80     
+      21     16.858    52.4%    52.869     18.096    81.7%    92.789
+      31     16.848    53.7%    54.280     18.096    81.7%    92.789
+      41     16.844    53.7%    55.023     18.096    81.7%    92.789
+      51     16.842    53.7%    55.483     18.096    81.7%    92.789
+     101     16.840    54.9%    56.434     18.096    81.7%    92.789
+     201     16.840    54.9%    56.926     18.096    81.7%    92.789
+     401     16.840    54.9%    57.177     18.096    81.7%    92.789
+  the historical range is grid-INDEPENDENT by construction; the IV-only range's
+  coverage is not, which is why the grid is pinned at 201 in the protocol
+
+====================================================================================================
+PROXIES: exchange quote event age is UNKNOWN. Fitted IV is a model inverse of a
+midpoint, not the broker's convention; the quoted IV, the fitted IV and every fit
+failure are reported apart. R7_E0_FWD is a REFERENCE: it uses the QUOTED IV and raw
+historical returns and is NOT recentred, so its CRPS is not comparable to the two
+recentred ranges. *_RAW are the same ranges WITHOUT recentring, diagnostics only.
+Per-variant `own n` is printed beside the common set so a model cannot look better
+by scoring fewer rows. MAE must TIE across FLAT, IV_ONLY and HIST: if it does not,
+the common centre is broken and the CRPS comparison is not about shape.
+====================================================================================================
+wrote tools/premium_range_compare/results/range_comparison.json
