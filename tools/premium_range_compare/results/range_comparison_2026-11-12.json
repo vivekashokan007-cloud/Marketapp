@@ -1110,15 +1110,25 @@
     "reconciliation": {
      "admitted_entries_outside_planned_window": 53,
      "coverage_basis": "scored rows inside the plan, over planned opportunities; the denominator is the schedule, never the admitted quotes",
+     "manifest_audit": {
+      "declared_expected": 69,
+      "distinct_valid_slots": 69,
+      "duplicate_rows": 0,
+      "malformed_rows": 0,
+      "present": true,
+      "rows": 69
+     },
      "missing_entry_keys": 0,
      "missing_entry_slots": {},
      "observed_but_not_scored": 91,
      "observed_entries_in_plan": 270,
      "observed_entries_outside_plan": 53,
+     "observed_entries_total": 323,
      "planned_opportunities": 270,
      "schedule_basis": "export_slot_manifest",
      "schedule_state": "VERIFIED",
      "scored_in_plan": 179,
+     "scored_total": 179,
      "usable_coverage": 0.662962962962963
     },
     "schedule": {
@@ -1182,6 +1192,14 @@
      "grid_slots": 69,
      "horizon_min": 120,
      "index": "BNF",
+     "manifest_audit": {
+      "declared_expected": 69,
+      "distinct_valid_slots": 69,
+      "duplicate_rows": 0,
+      "malformed_rows": 0,
+      "present": true,
+      "rows": 69
+     },
      "manifest_expected_slots": 69,
      "manifest_observed_slots": 54,
      "notes": [],
@@ -1399,6 +1417,14 @@
     "reconciliation": {
      "admitted_entries_outside_planned_window": 0,
      "coverage_basis": "scored rows inside the plan, over planned opportunities; the denominator is the schedule, never the admitted quotes",
+     "manifest_audit": {
+      "declared_expected": 69,
+      "distinct_valid_slots": 69,
+      "duplicate_rows": 0,
+      "malformed_rows": 0,
+      "present": true,
+      "rows": 69
+     },
      "missing_entry_keys": 73,
      "missing_entry_slots": {
       "13:45": 1,
@@ -1418,10 +1444,12 @@
      "observed_but_not_scored": 18,
      "observed_entries_in_plan": 323,
      "observed_entries_outside_plan": 0,
+     "observed_entries_total": 323,
      "planned_opportunities": 396,
      "schedule_basis": "export_slot_manifest",
      "schedule_state": "VERIFIED",
      "scored_in_plan": 305,
+     "scored_total": 305,
      "usable_coverage": 0.7702020202020202
     },
     "schedule": {
@@ -1506,6 +1534,14 @@
      "grid_slots": 69,
      "horizon_min": 15,
      "index": "BNF",
+     "manifest_audit": {
+      "declared_expected": 69,
+      "distinct_valid_slots": 69,
+      "duplicate_rows": 0,
+      "malformed_rows": 0,
+      "present": true,
+      "rows": 69
+     },
      "manifest_expected_slots": 69,
      "manifest_observed_slots": 54,
      "notes": [],
@@ -1723,6 +1759,14 @@
     "reconciliation": {
      "admitted_entries_outside_planned_window": 0,
      "coverage_basis": "scored rows inside the plan, over planned opportunities; the denominator is the schedule, never the admitted quotes",
+     "manifest_audit": {
+      "declared_expected": 69,
+      "distinct_valid_slots": 69,
+      "duplicate_rows": 0,
+      "malformed_rows": 0,
+      "present": true,
+      "rows": 69
+     },
      "missing_entry_keys": 55,
      "missing_entry_slots": {
       "13:45": 1,
@@ -1739,10 +1783,12 @@
      "observed_but_not_scored": 36,
      "observed_entries_in_plan": 323,
      "observed_entries_outside_plan": 0,
+     "observed_entries_total": 323,
      "planned_opportunities": 378,
      "schedule_basis": "export_slot_manifest",
      "schedule_state": "VERIFIED",
      "scored_in_plan": 287,
+     "scored_total": 287,
      "usable_coverage": 0.7592592592592593
     },
     "schedule": {
@@ -1824,6 +1870,14 @@
      "grid_slots": 69,
      "horizon_min": 30,
      "index": "BNF",
+     "manifest_audit": {
+      "declared_expected": 69,
+      "distinct_valid_slots": 69,
+      "duplicate_rows": 0,
+      "malformed_rows": 0,
+      "present": true,
+      "rows": 69
+     },
      "manifest_expected_slots": 69,
      "manifest_observed_slots": 54,
      "notes": [],
@@ -2041,6 +2095,14 @@
     "reconciliation": {
      "admitted_entries_outside_planned_window": 0,
      "coverage_basis": "scored rows inside the plan, over planned opportunities; the denominator is the schedule, never the admitted quotes",
+     "manifest_audit": {
+      "declared_expected": 69,
+      "distinct_valid_slots": 69,
+      "duplicate_rows": 0,
+      "malformed_rows": 0,
+      "present": true,
+      "rows": 69
+     },
      "missing_entry_keys": 19,
      "missing_entry_slots": {
       "13:45": 1,
@@ -2051,10 +2113,12 @@
      "observed_but_not_scored": 72,
      "observed_entries_in_plan": 323,
      "observed_entries_outside_plan": 0,
+     "observed_entries_total": 323,
      "planned_opportunities": 342,
      "schedule_basis": "export_slot_manifest",
      "schedule_state": "VERIFIED",
      "scored_in_plan": 251,
+     "scored_total": 251,
      "usable_coverage": 0.7339181286549707
     },
     "schedule": {
@@ -2130,6 +2194,14 @@
      "grid_slots": 69,
      "horizon_min": 60,
      "index": "BNF",
+     "manifest_audit": {
+      "declared_expected": 69,
+      "distinct_valid_slots": 69,
+      "duplicate_rows": 0,
+      "malformed_rows": 0,
+      "present": true,
+      "rows": 69
+     },
      "manifest_expected_slots": 69,
      "manifest_observed_slots": 54,
      "notes": [],
@@ -2349,15 +2421,25 @@
     "reconciliation": {
      "admitted_entries_outside_planned_window": 48,
      "coverage_basis": "scored rows inside the plan, over planned opportunities; the denominator is the schedule, never the admitted quotes",
+     "manifest_audit": {
+      "declared_expected": 69,
+      "distinct_valid_slots": 69,
+      "duplicate_rows": 0,
+      "malformed_rows": 0,
+      "present": true,
+      "rows": 69
+     },
      "missing_entry_keys": 0,
      "missing_entry_slots": {},
      "observed_but_not_scored": 96,
      "observed_entries_in_plan": 270,
      "observed_entries_outside_plan": 48,
+     "observed_entries_total": 318,
      "planned_opportunities": 270,
      "schedule_basis": "export_slot_manifest",
      "schedule_state": "VERIFIED",
      "scored_in_plan": 174,
+     "scored_total": 174,
      "usable_coverage": 0.6444444444444445
     },
     "schedule": {
@@ -2421,6 +2503,14 @@
      "grid_slots": 69,
      "horizon_min": 120,
      "index": "NF",
+     "manifest_audit": {
+      "declared_expected": 69,
+      "distinct_valid_slots": 69,
+      "duplicate_rows": 0,
+      "malformed_rows": 0,
+      "present": true,
+      "rows": 69
+     },
      "manifest_expected_slots": 69,
      "manifest_observed_slots": 53,
      "notes": [],
@@ -2638,6 +2728,14 @@
     "reconciliation": {
      "admitted_entries_outside_planned_window": 0,
      "coverage_basis": "scored rows inside the plan, over planned opportunities; the denominator is the schedule, never the admitted quotes",
+     "manifest_audit": {
+      "declared_expected": 69,
+      "distinct_valid_slots": 69,
+      "duplicate_rows": 0,
+      "malformed_rows": 0,
+      "present": true,
+      "rows": 69
+     },
      "missing_entry_keys": 78,
      "missing_entry_slots": {
       "13:45": 6,
@@ -2657,10 +2755,12 @@
      "observed_but_not_scored": 18,
      "observed_entries_in_plan": 318,
      "observed_entries_outside_plan": 0,
+     "observed_entries_total": 318,
      "planned_opportunities": 396,
      "schedule_basis": "export_slot_manifest",
      "schedule_state": "VERIFIED",
      "scored_in_plan": 300,
+     "scored_total": 300,
      "usable_coverage": 0.7575757575757576
     },
     "schedule": {
@@ -2745,6 +2845,14 @@
      "grid_slots": 69,
      "horizon_min": 15,
      "index": "NF",
+     "manifest_audit": {
+      "declared_expected": 69,
+      "distinct_valid_slots": 69,
+      "duplicate_rows": 0,
+      "malformed_rows": 0,
+      "present": true,
+      "rows": 69
+     },
      "manifest_expected_slots": 69,
      "manifest_observed_slots": 53,
      "notes": [],
@@ -2962,6 +3070,14 @@
     "reconciliation": {
      "admitted_entries_outside_planned_window": 0,
      "coverage_basis": "scored rows inside the plan, over planned opportunities; the denominator is the schedule, never the admitted quotes",
+     "manifest_audit": {
+      "declared_expected": 69,
+      "distinct_valid_slots": 69,
+      "duplicate_rows": 0,
+      "malformed_rows": 0,
+      "present": true,
+      "rows": 69
+     },
      "missing_entry_keys": 60,
      "missing_entry_slots": {
       "13:45": 6,
@@ -2978,10 +3094,12 @@
      "observed_but_not_scored": 36,
      "observed_entries_in_plan": 318,
      "observed_entries_outside_plan": 0,
+     "observed_entries_total": 318,
      "planned_opportunities": 378,
      "schedule_basis": "export_slot_manifest",
      "schedule_state": "VERIFIED",
      "scored_in_plan": 282,
+     "scored_total": 282,
      "usable_coverage": 0.746031746031746
     },
     "schedule": {
@@ -3063,6 +3181,14 @@
      "grid_slots": 69,
      "horizon_min": 30,
      "index": "NF",
+     "manifest_audit": {
+      "declared_expected": 69,
+      "distinct_valid_slots": 69,
+      "duplicate_rows": 0,
+      "malformed_rows": 0,
+      "present": true,
+      "rows": 69
+     },
      "manifest_expected_slots": 69,
      "manifest_observed_slots": 53,
      "notes": [],
@@ -3280,6 +3406,14 @@
     "reconciliation": {
      "admitted_entries_outside_planned_window": 0,
      "coverage_basis": "scored rows inside the plan, over planned opportunities; the denominator is the schedule, never the admitted quotes",
+     "manifest_audit": {
+      "declared_expected": 69,
+      "distinct_valid_slots": 69,
+      "duplicate_rows": 0,
+      "malformed_rows": 0,
+      "present": true,
+      "rows": 69
+     },
      "missing_entry_keys": 24,
      "missing_entry_slots": {
       "13:45": 6,
@@ -3290,10 +3424,12 @@
      "observed_but_not_scored": 72,
      "observed_entries_in_plan": 318,
      "observed_entries_outside_plan": 0,
+     "observed_entries_total": 318,
      "planned_opportunities": 342,
      "schedule_basis": "export_slot_manifest",
      "schedule_state": "VERIFIED",
      "scored_in_plan": 246,
+     "scored_total": 246,
      "usable_coverage": 0.7192982456140351
     },
     "schedule": {
@@ -3369,6 +3505,14 @@
      "grid_slots": 69,
      "horizon_min": 60,
      "index": "NF",
+     "manifest_audit": {
+      "declared_expected": 69,
+      "distinct_valid_slots": 69,
+      "duplicate_rows": 0,
+      "malformed_rows": 0,
+      "present": true,
+      "rows": 69
+     },
      "manifest_expected_slots": 69,
      "manifest_observed_slots": 53,
      "notes": [],
@@ -3675,15 +3819,25 @@
       "reconciliation": {
        "admitted_entries_outside_planned_window": 53,
        "coverage_basis": "scored rows inside the plan, over planned opportunities; the denominator is the schedule, never the admitted quotes",
+       "manifest_audit": {
+        "declared_expected": 69,
+        "distinct_valid_slots": 69,
+        "duplicate_rows": 0,
+        "malformed_rows": 0,
+        "present": true,
+        "rows": 69
+       },
        "missing_entry_keys": 0,
        "missing_entry_slots": {},
        "observed_but_not_scored": 91,
        "observed_entries_in_plan": 270,
        "observed_entries_outside_plan": 53,
+       "observed_entries_total": 323,
        "planned_opportunities": 270,
        "schedule_basis": "export_slot_manifest",
        "schedule_state": "VERIFIED",
        "scored_in_plan": 179,
+       "scored_total": 179,
        "usable_coverage": 0.662962962962963
       },
       "schedule": {
@@ -3747,6 +3901,14 @@
        "grid_slots": 69,
        "horizon_min": 120,
        "index": "BNF",
+       "manifest_audit": {
+        "declared_expected": 69,
+        "distinct_valid_slots": 69,
+        "duplicate_rows": 0,
+        "malformed_rows": 0,
+        "present": true,
+        "rows": 69
+       },
        "manifest_expected_slots": 69,
        "manifest_observed_slots": 54,
        "notes": [],
@@ -3964,6 +4126,14 @@
       "reconciliation": {
        "admitted_entries_outside_planned_window": 0,
        "coverage_basis": "scored rows inside the plan, over planned opportunities; the denominator is the schedule, never the admitted quotes",
+       "manifest_audit": {
+        "declared_expected": 69,
+        "distinct_valid_slots": 69,
+        "duplicate_rows": 0,
+        "malformed_rows": 0,
+        "present": true,
+        "rows": 69
+       },
        "missing_entry_keys": 73,
        "missing_entry_slots": {
         "13:45": 1,
@@ -3983,10 +4153,12 @@
        "observed_but_not_scored": 18,
        "observed_entries_in_plan": 323,
        "observed_entries_outside_plan": 0,
+       "observed_entries_total": 323,
        "planned_opportunities": 396,
        "schedule_basis": "export_slot_manifest",
        "schedule_state": "VERIFIED",
        "scored_in_plan": 305,
+       "scored_total": 305,
        "usable_coverage": 0.7702020202020202
       },
       "schedule": {
@@ -4071,6 +4243,14 @@
        "grid_slots": 69,
        "horizon_min": 15,
        "index": "BNF",
+       "manifest_audit": {
+        "declared_expected": 69,
+        "distinct_valid_slots": 69,
+        "duplicate_rows": 0,
+        "malformed_rows": 0,
+        "present": true,
+        "rows": 69
+       },
        "manifest_expected_slots": 69,
        "manifest_observed_slots": 54,
        "notes": [],
@@ -4288,6 +4468,14 @@
       "reconciliation": {
        "admitted_entries_outside_planned_window": 0,
        "coverage_basis": "scored rows inside the plan, over planned opportunities; the denominator is the schedule, never the admitted quotes",
+       "manifest_audit": {
+        "declared_expected": 69,
+        "distinct_valid_slots": 69,
+        "duplicate_rows": 0,
+        "malformed_rows": 0,
+        "present": true,
+        "rows": 69
+       },
        "missing_entry_keys": 55,
        "missing_entry_slots": {
         "13:45": 1,
@@ -4304,10 +4492,12 @@
        "observed_but_not_scored": 36,
        "observed_entries_in_plan": 323,
        "observed_entries_outside_plan": 0,
+       "observed_entries_total": 323,
        "planned_opportunities": 378,
        "schedule_basis": "export_slot_manifest",
        "schedule_state": "VERIFIED",
        "scored_in_plan": 287,
+       "scored_total": 287,
        "usable_coverage": 0.7592592592592593
       },
       "schedule": {
@@ -4389,6 +4579,14 @@
        "grid_slots": 69,
        "horizon_min": 30,
        "index": "BNF",
+       "manifest_audit": {
+        "declared_expected": 69,
+        "distinct_valid_slots": 69,
+        "duplicate_rows": 0,
+        "malformed_rows": 0,
+        "present": true,
+        "rows": 69
+       },
        "manifest_expected_slots": 69,
        "manifest_observed_slots": 54,
        "notes": [],
@@ -4606,6 +4804,14 @@
       "reconciliation": {
        "admitted_entries_outside_planned_window": 0,
        "coverage_basis": "scored rows inside the plan, over planned opportunities; the denominator is the schedule, never the admitted quotes",
+       "manifest_audit": {
+        "declared_expected": 69,
+        "distinct_valid_slots": 69,
+        "duplicate_rows": 0,
+        "malformed_rows": 0,
+        "present": true,
+        "rows": 69
+       },
        "missing_entry_keys": 19,
        "missing_entry_slots": {
         "13:45": 1,
@@ -4616,10 +4822,12 @@
        "observed_but_not_scored": 72,
        "observed_entries_in_plan": 323,
        "observed_entries_outside_plan": 0,
+       "observed_entries_total": 323,
        "planned_opportunities": 342,
        "schedule_basis": "export_slot_manifest",
        "schedule_state": "VERIFIED",
        "scored_in_plan": 251,
+       "scored_total": 251,
        "usable_coverage": 0.7339181286549707
       },
       "schedule": {
@@ -4695,6 +4903,14 @@
        "grid_slots": 69,
        "horizon_min": 60,
        "index": "BNF",
+       "manifest_audit": {
+        "declared_expected": 69,
+        "distinct_valid_slots": 69,
+        "duplicate_rows": 0,
+        "malformed_rows": 0,
+        "present": true,
+        "rows": 69
+       },
        "manifest_expected_slots": 69,
        "manifest_observed_slots": 54,
        "notes": [],
@@ -4914,15 +5130,25 @@
       "reconciliation": {
        "admitted_entries_outside_planned_window": 48,
        "coverage_basis": "scored rows inside the plan, over planned opportunities; the denominator is the schedule, never the admitted quotes",
+       "manifest_audit": {
+        "declared_expected": 69,
+        "distinct_valid_slots": 69,
+        "duplicate_rows": 0,
+        "malformed_rows": 0,
+        "present": true,
+        "rows": 69
+       },
        "missing_entry_keys": 0,
        "missing_entry_slots": {},
        "observed_but_not_scored": 96,
        "observed_entries_in_plan": 270,
        "observed_entries_outside_plan": 48,
+       "observed_entries_total": 318,
        "planned_opportunities": 270,
        "schedule_basis": "export_slot_manifest",
        "schedule_state": "VERIFIED",
        "scored_in_plan": 174,
+       "scored_total": 174,
        "usable_coverage": 0.6444444444444445
       },
       "schedule": {
@@ -4986,6 +5212,14 @@
        "grid_slots": 69,
        "horizon_min": 120,
        "index": "NF",
+       "manifest_audit": {
+        "declared_expected": 69,
+        "distinct_valid_slots": 69,
+        "duplicate_rows": 0,
+        "malformed_rows": 0,
+        "present": true,
+        "rows": 69
+       },
        "manifest_expected_slots": 69,
        "manifest_observed_slots": 53,
        "notes": [],
@@ -5203,6 +5437,14 @@
       "reconciliation": {
        "admitted_entries_outside_planned_window": 0,
        "coverage_basis": "scored rows inside the plan, over planned opportunities; the denominator is the schedule, never the admitted quotes",
+       "manifest_audit": {
+        "declared_expected": 69,
+        "distinct_valid_slots": 69,
+        "duplicate_rows": 0,
+        "malformed_rows": 0,
+        "present": true,
+        "rows": 69
+       },
        "missing_entry_keys": 78,
        "missing_entry_slots": {
         "13:45": 6,
@@ -5222,10 +5464,12 @@
        "observed_but_not_scored": 18,
        "observed_entries_in_plan": 318,
        "observed_entries_outside_plan": 0,
+       "observed_entries_total": 318,
        "planned_opportunities": 396,
        "schedule_basis": "export_slot_manifest",
        "schedule_state": "VERIFIED",
        "scored_in_plan": 300,
+       "scored_total": 300,
        "usable_coverage": 0.7575757575757576
       },
       "schedule": {
@@ -5310,6 +5554,14 @@
        "grid_slots": 69,
        "horizon_min": 15,
        "index": "NF",
+       "manifest_audit": {
+        "declared_expected": 69,
+        "distinct_valid_slots": 69,
+        "duplicate_rows": 0,
+        "malformed_rows": 0,
+        "present": true,
+        "rows": 69
+       },
        "manifest_expected_slots": 69,
        "manifest_observed_slots": 53,
        "notes": [],
@@ -5527,6 +5779,14 @@
       "reconciliation": {
        "admitted_entries_outside_planned_window": 0,
        "coverage_basis": "scored rows inside the plan, over planned opportunities; the denominator is the schedule, never the admitted quotes",
+       "manifest_audit": {
+        "declared_expected": 69,
+        "distinct_valid_slots": 69,
+        "duplicate_rows": 0,
+        "malformed_rows": 0,
+        "present": true,
+        "rows": 69
+       },
        "missing_entry_keys": 60,
        "missing_entry_slots": {
         "13:45": 6,
@@ -5543,10 +5803,12 @@
        "observed_but_not_scored": 36,
        "observed_entries_in_plan": 318,
        "observed_entries_outside_plan": 0,
+       "observed_entries_total": 318,
        "planned_opportunities": 378,
        "schedule_basis": "export_slot_manifest",
        "schedule_state": "VERIFIED",
        "scored_in_plan": 282,
+       "scored_total": 282,
        "usable_coverage": 0.746031746031746
       },
       "schedule": {
@@ -5628,6 +5890,14 @@
        "grid_slots": 69,
        "horizon_min": 30,
        "index": "NF",
+       "manifest_audit": {
+        "declared_expected": 69,
+        "distinct_valid_slots": 69,
+        "duplicate_rows": 0,
+        "malformed_rows": 0,
+        "present": true,
+        "rows": 69
+       },
        "manifest_expected_slots": 69,
        "manifest_observed_slots": 53,
        "notes": [],
@@ -5845,6 +6115,14 @@
       "reconciliation": {
        "admitted_entries_outside_planned_window": 0,
        "coverage_basis": "scored rows inside the plan, over planned opportunities; the denominator is the schedule, never the admitted quotes",
+       "manifest_audit": {
+        "declared_expected": 69,
+        "distinct_valid_slots": 69,
+        "duplicate_rows": 0,
+        "malformed_rows": 0,
+        "present": true,
+        "rows": 69
+       },
        "missing_entry_keys": 24,
        "missing_entry_slots": {
         "13:45": 6,
@@ -5855,10 +6133,12 @@
        "observed_but_not_scored": 72,
        "observed_entries_in_plan": 318,
        "observed_entries_outside_plan": 0,
+       "observed_entries_total": 318,
        "planned_opportunities": 342,
        "schedule_basis": "export_slot_manifest",
        "schedule_state": "VERIFIED",
        "scored_in_plan": 246,
+       "scored_total": 246,
        "usable_coverage": 0.7192982456140351
       },
       "schedule": {
@@ -5934,6 +6214,14 @@
        "grid_slots": 69,
        "horizon_min": 60,
        "index": "NF",
+       "manifest_audit": {
+        "declared_expected": 69,
+        "distinct_valid_slots": 69,
+        "duplicate_rows": 0,
+        "malformed_rows": 0,
+        "present": true,
+        "rows": 69
+       },
        "manifest_expected_slots": 69,
        "manifest_observed_slots": 53,
        "notes": [],

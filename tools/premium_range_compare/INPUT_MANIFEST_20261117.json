@@ -6,8 +6,10 @@
   "centre": "the observed entry bid/ask midpoint, identical for every variant",
   "comparison_version": "premium_neutral_range_comparison_v2_planned_coverage",
   "coverage_denominator": "the PLANNED schedule from the export's own slot manifest; never the admitted quotes",
+  "coverage_invariant": "scored_in_plan <= observed_entries_in_plan <= planned_opportunities; late quotes counted separately",
   "decision_point_sessions": 20,
-  "decision_sign_threshold": "14 of 20, exact one-sided level 5.765915%",
+  "decision_sign_threshold": "15 of 20, exact one-sided level 2.069473%",
+  "decision_sign_threshold_rejected": "14 of 20, 5.765915%, above the declared level",
   "horizon_tolerance_s": 5.0,
   "horizons_min": [
    15,
@@ -15,11 +17,13 @@
    60,
    120
   ],
+  "isolated_invocation": "every documented command runs under python3 -I from the repository root; checked by subprocess in tests/test_cli_smoke.py",
   "min_prior_sessions": 5,
   "min_usable_coverage": 0.6,
   "primary_horizon_min": 60,
   "quantile_grid_n": 201,
   "r7_pricing_contract": "2.6",
+  "schedule_manifest_validation": "validated against distinct valid slot rows; an inconsistent manifest is INCOMPLETE and the session is excluded, with the coverage ratio withheld and raw counts preserved",
   "schedule_version": "premium_range_planned_schedule_v1",
   "slot_policy": "exact",
   "stopping_rule_version": "premium_range_stopping_rule_v1_exact"
@@ -28,9 +32,9 @@
   "tools/spot_path_baseline/premium_repricing_v2.py": "95e53e25d24ae0369f2c8d8ab63026a0cda499443ddae4041c6ee7ffb373233a"
  },
  "governed_sources": {
-  "planned_schedule.py": "4f2f98eea3d075843dcac1b02257110ebdd1e5051657521747b28317f5e7478e",
-  "range_compare.py": "40ce86a3d442b3d47cec9849230b13e69594fff76dcf518ba96b2d60e0471289",
-  "stopping_rule.py": "19ce42fa589946ec76af152238652790e9a793885efbffd577bb9b10b89484ce",
+  "planned_schedule.py": "5574866f490d50f1dd306b9fae6e4a270bb3850215452c45d45ac82d49caf9c4",
+  "range_compare.py": "48447a5c6ef70888de09361ceec7597b8144830edb6b51d2c046ee2d73e7946b",
+  "stopping_rule.py": "8b89535a7d80a74e2bcfa25542ef46b5759dfcd3da09e510144456177482e24b",
   "tools/spot_path_baseline/premium_repricing_v2.py": "95e53e25d24ae0369f2c8d8ab63026a0cda499443ddae4041c6ee7ffb373233a"
  },
  "inputs_used": {
@@ -48,6 +52,7 @@
    ],
    "handoff_sha256": "903225d9826dfbcac5011a099da1706f901854d40bc2e6d02d7ebdd43f9625e1",
    "independent_results_supplied_by_codex_20261117": {
+    "admitted_entry_quotes": 414,
     "hist_cov80_60": {
      "BNF": 0.781,
      "NF": 0.81
@@ -64,6 +69,7 @@
      "BNF": 41.306,
      "NF": 14.369
     },
+    "late_quotes_outside_planned_window": 72,
     "mae_60": {
      "BNF": 58.562,
      "NF": 20.779
@@ -72,7 +78,8 @@
      "BNF": 342,
      "NF": 342
     },
-    "note": "reported by Codex; NOT reproduced here. Pinned as a regression keyed to this digest."
+    "note": "reported by Codex; NOT reproduced here. Pinned as a regression keyed to this digest.",
+    "reran_corrected_runner": "342 of 342 planned 60-minute rows per index, 100% usable coverage; scores match the prior replay"
    },
    "needed": "the single file whose SHA-256 is above; no other input is missing",
    "status": "ABSENT_ON_THIS_MACHINE"
@@ -105,20 +112,20 @@
    "status": "PRESENT_AND_VERIFIED"
   }
  },
- "manifest_version": "premium_range_comparison_inputs_20261117_v2",
+ "manifest_version": "premium_range_comparison_inputs_20261117_v3",
  "note": "Inputs are NOT committed: raw phone exports stay out of the repository. This manifest records what each run read, by SHA-256, so a result can be tied to its input without the input being in the tree.",
  "protocol": {
-  "file": "PROTOCOL_RANGE_TRIAL_DRAFT_v2.md",
-  "sha256": "697b019de886d24f42ef9c31a9db46d12f6f36038b0160e35251b9137d81a6c9",
-  "supersedes": "PROTOCOL_RANGE_TRIAL_DRAFT_v1.md (deleted)"
+  "file": "PROTOCOL_RANGE_TRIAL_DRAFT_v3.md",
+  "sha256": "34ac14e5688fddccaffc810d129cddb48d658e03d8f661a15f9b29ab35107ce4",
+  "supersedes": "PROTOCOL_RANGE_TRIAL_DRAFT_v2.md (deleted)"
  },
  "runs_committed": {
   "planned_schedule_2026-11-12.txt": "afb85dfcccf5c879d68cee15b673e78c5f4dd7115808ea8415d476d1a155bf10",
-  "range_comparison_2026-11-12.json": "ff9bd2a70557ff85c9060594038a1d66ea256c468ef5d81f8ac6aaf1ded4d548",
+  "range_comparison_2026-11-12.json": "381e99d4a35ec2d846c79dcda573873e7bf6edab1d27232c014d61319dcdc58d",
   "range_comparison_2026-11-12.txt": "c37dea0dbff81c0dd48b75d377320721df5e7b2b6a31b9be4208fe2981af0e4b",
-  "regressions_20261117.py": "845d33383984f79549cafd861cba29509bf5657cd762937b0ed9fff10dd0130e",
-  "regressions_20261117.txt": "268230e1bf3f3ad3c910597f5fc6d861847ebe70023fd691272b32956bceaea2",
-  "stopping_rule_levels.txt": "118d422cc609803a2de4bd614622b87759c96388ef70dc812a3bc4c478b5590a"
+  "regressions_20261117.py": "89ffa32b08c7c2aef30d979f87c5fb45ee9150545e99435ade165d9476837254",
+  "regressions_20261117.txt": "90de772bc3c423c48c0fcb8ba35ace2ecb2c7d3e1f69f0aac6776d22ab515ef3",
+  "stopping_rule_levels.txt": "7250a2eb2c3b4413bbdf754cc29334389be5d59d68d8f6febc986e253f8b8127"
  },
- "supersedes": "premium_range_comparison_inputs_20261116_v1"
+ "supersedes": "premium_range_comparison_inputs_20261117_v2"
 }

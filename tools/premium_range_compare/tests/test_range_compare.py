@@ -820,17 +820,124 @@ class AgainstTheFrozenReplay(unittest.TestCase):
                 self.assertEqual(common, s['variants'][name]['n'], (ix, name))
 
     def test_the_planned_denominator_is_the_schedule_not_the_admitted_quotes(self):
-        """Structural: planned >= admitted on a real session, and the plan is VERIFIED."""
+        """The CORRECTED invariant.
+
+        The first version asserted `planned >= admitted`, which is simply false on a complete
+        capture: the 16 November export admits 414 quotes (69 slots x 6 contracts) against 342
+        planned 60-minute opportunities, because the 72 extra are LATE quotes whose one-hour
+        targets fall outside the planned window. They are not a coverage shortfall and they are
+        not an error -- they are counted separately.
+
+        What must hold, and what is asserted here instead:
+
+            scored_in_plan <= observed_entries_in_plan <= planned_opportunities
+
+        with the outside-window count checked on its own, and the admitted total reconciling as
+        in-plan + outside-plan.
+        """
         for ix in ('NF', 'BNF'):
             s, _r, _c = RC.compare_index_horizon(self.ex, ix, self.hist, self.hd, 60)
             rec, sched = s['reconciliation'], s['schedule']
             self.assertEqual(PS.STATE_VERIFIED, sched['state'], ix)
             self.assertEqual(PS.BASIS_MANIFEST, sched['basis'], ix)
-            self.assertGreaterEqual(rec['planned_opportunities'],
-                                    s['admitted_entry_candidates'], ix)
-            self.assertLessEqual(rec['usable_coverage'], 1.0)
+            self.assertLessEqual(rec['scored_in_plan'], rec['observed_entries_in_plan'], ix)
+            self.assertLessEqual(rec['observed_entries_in_plan'],
+                                 rec['planned_opportunities'], ix)
+            self.assertLessEqual(rec['usable_coverage'], 1.0, ix)
             self.assertEqual(rec['scored_in_plan'] / rec['planned_opportunities'],
-                             rec['usable_coverage'])
+                             rec['usable_coverage'], ix)
+            # the admitted total is accounted for in full: in the plan, or outside it
+            self.assertEqual(rec['observed_entries_total'],
+                             rec['observed_entries_in_plan']
+                             + rec['observed_entries_outside_plan'], ix)
+            # and a late quote is never counted as coverage
+            self.assertLessEqual(rec['admitted_entries_outside_planned_window'],
+                                 rec['observed_entries_outside_plan'], ix)
+
+    def test_a_complete_capture_admits_more_quotes_than_the_60_minute_plan(self):
+        """The 16 November shape, on whichever real export is supplied.
+
+        A capture covering the whole 69-slot grid admits 414 entry quotes while only 342 of
+        them are 60-minute opportunities. If the supplied export is incomplete this skips,
+        saying so, rather than pretending to check it.
+        """
+        for ix in ('NF', 'BNF'):
+            s, _r, _c = RC.compare_index_horizon(self.ex, ix, self.hist, self.hd, 60)
+            rec = s['reconciliation']
+            grid = s['schedule']['grid_slots']
+            contracts = len(s['schedule']['contracts'])
+            if rec['observed_entries_total'] < grid * contracts:
+                continue
+            self.assertEqual(grid * contracts, rec['observed_entries_total'], ix)
+            self.assertGreater(rec['observed_entries_total'],
+                               rec['planned_opportunities'], ix)
+            self.assertEqual(rec['observed_entries_total'] - rec['planned_opportunities'],
+                             rec['admitted_entries_outside_planned_window'], ix)
+            self.assertEqual(1.0, rec['usable_coverage'], ix)
+
+    def test_an_inconsistent_slot_manifest_is_refused_and_the_session_excluded(self):
+        """Codex's reproduction: cropping the manifest as well as the quotes made the runner
+        build a 126-key denominator from 33 surviving rows, call the schedule VERIFIED and
+        accept 126/126 = 100% for a capture that had lost half its session."""
+        cropped = json.loads(json.dumps(self.ex))
+        for ix in list(cropped['premium']['indices']):
+            node = cropped['premium']['indices'][ix]
+            node['records'] = [r for r in node['records'] if R7.mins(r['slot']) <= 12 * 60]
+            node['slot_envelopes'] = [e for e in node['slot_envelopes']
+                                      if R7.mins(e['slot']) <= 12 * 60]
+            node['slot_manifest']['rows'] = [r for r in node['slot_manifest']['rows']
+                                             if R7.mins(r['slot']) <= 12 * 60]
+        for ix in ('NF', 'BNF'):
+            s, _r, _c = RC.compare_index_horizon(cropped, ix, self.hist, self.hd, 60)
+            rec = s['reconciliation']
+            self.assertEqual(PS.STATE_INCOMPLETE_MANIFEST, rec['schedule_state'], ix)
+            self.assertIsNone(rec['usable_coverage'], ix)
+            self.assertIsNone(rec['scored_in_plan'], ix)
+            self.assertEqual(0, rec['planned_opportunities'], ix)
+            # the raw counts survive the refusal
+            self.assertEqual(198, rec['observed_entries_total'], ix)
+            self.assertIn('WITHHELD', rec['coverage_basis'])
+            audit = rec['manifest_audit']
+            self.assertEqual(69, audit['declared_expected'], ix)
+            self.assertEqual(33, audit['distinct_valid_slots'], ix)
+
+    def test_all_three_truncation_cases_behave_differently_and_correctly(self):
+        """Full export, quotes-only truncation, quotes-plus-manifest truncation, both
+        indices -- the three cases Codex asked to see tested together."""
+        self.pinned('planned_60')
+
+        def crop(manifest):
+            doc = json.loads(json.dumps(self.ex))
+            for ix in list(doc['premium']['indices']):
+                node = doc['premium']['indices'][ix]
+                node['records'] = [r for r in node['records']
+                                   if R7.mins(r['slot']) <= 12 * 60]
+                node['slot_envelopes'] = [e for e in node['slot_envelopes']
+                                          if R7.mins(e['slot']) <= 12 * 60]
+                if manifest:
+                    node['slot_manifest']['rows'] = [
+                        r for r in node['slot_manifest']['rows']
+                        if R7.mins(r['slot']) <= 12 * 60]
+            return doc
+
+        quotes_only, both = crop(False), crop(True)
+        for ix in ('NF', 'BNF'):
+            full, _r, _c = RC.compare_index_horizon(self.ex, ix, self.hist, self.hd, 60)
+            q, _r, _c = RC.compare_index_horizon(quotes_only, ix, self.hist, self.hd, 60)
+            b, _r, _c = RC.compare_index_horizon(both, ix, self.hist, self.hd, 60)
+            self.assertEqual(PS.STATE_VERIFIED, full['reconciliation']['schedule_state'], ix)
+            self.assertGreaterEqual(full['reconciliation']['usable_coverage'],
+                                    RC.MIN_USABLE_COVERAGE, ix)
+            self.assertEqual(PS.STATE_VERIFIED, q['reconciliation']['schedule_state'], ix)
+            self.assertAlmostEqual(0.368, q['reconciliation']['usable_coverage'], places=3,
+                                   msg=ix)
+            self.assertLess(q['reconciliation']['usable_coverage'], RC.MIN_USABLE_COVERAGE, ix)
+            self.assertEqual(PS.STATE_INCOMPLETE_MANIFEST,
+                             b['reconciliation']['schedule_state'], ix)
+            self.assertIsNone(b['reconciliation']['usable_coverage'], ix)
+            # the plan is the SAME 342 in the first two cases
+            self.assertEqual(full['reconciliation']['planned_opportunities'],
+                             q['reconciliation']['planned_opportunities'], ix)
 
     def test_the_real_run_is_independent_of_input_order(self):
         a = RC.run([REAL_EXPORT], REAL_SPOTS, horizons=(60,))

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Reproduce the three reproducible defects from the 17 November review, before and after.
+"""Reproduce the reproducible defects from the 17 November reviews, before and after.
 
 Run it against the 12 November export and the pinned spot history:
 
@@ -210,7 +210,61 @@ def main(argv=None):
         print('  %-4s scores identical under a reversed history: %s'
               % (ix, x['variants_common'] == y['variants_common']))
     print('')
-    rule('ALL THREE DEFECTS CLOSED ON THE INPUT THIS MACHINE HAS')
+
+    # ── 4 ────────────────────────────────────────────────────────────────────────────────────
+    rule('4  SCHEDULE MANIFESTS ARE VALIDATED AGAINST THEIR OWN ROWS')
+    print('The defect: cropping the MANIFEST as well as the quotes made the runner build a')
+    print('126-key denominator from 33 surviving rows, call the schedule VERIFIED and accept')
+    print('126/126 = 100% for a capture that had lost half its session.')
+    print('')
+    manifest_cropped = truncate(ex)
+    for ix in list(manifest_cropped['premium']['indices']):
+        node = manifest_cropped['premium']['indices'][ix]
+        node['slot_manifest']['rows'] = [r for r in node['slot_manifest']['rows']
+                                         if R7.mins(r['slot']) <= 12 * 60]
+    dupe = copy.deepcopy(ex)
+    for ix in list(dupe['premium']['indices']):
+        rows = dupe['premium']['indices'][ix]['slot_manifest']['rows']
+        rows.append(dict(rows[0]))
+        dupe['premium']['indices'][ix]['slot_manifest']['expected_slots'] = len(rows)
+    malformed = copy.deepcopy(ex)
+    for ix in list(malformed['premium']['indices']):
+        rows = malformed['premium']['indices'][ix]['slot_manifest']['rows']
+        rows.append({'state': 'OBSERVED'})
+        malformed['premium']['indices'][ix]['slot_manifest']['expected_slots'] = len(rows)
+
+    print('  %-4s %-28s %-42s %8s %9s %10s %8s' %
+          ('idx', 'input', 'schedule state', 'planned', 'scored', 'usable', 'observed'))
+    for ix in sorted(ex['premium']['indices']):
+        for label, doc in (('full export', ex),
+                           ('quotes cropped only', truncate(ex)),
+                           ('quotes AND manifest cropped', manifest_cropped),
+                           ('a duplicate manifest row', dupe),
+                           ('a malformed manifest row', malformed)):
+            s_, _r, _c = RC.compare_index_horizon(doc, ix, hist, hd, 60)
+            rec = s_['reconciliation']
+            cov = rec['usable_coverage']
+            print('  %-4s %-28s %-42s %8d %9s %10s %8d'
+                  % (ix, label, rec['schedule_state'], rec['planned_opportunities'],
+                     rec['scored_in_plan'] if rec['scored_in_plan'] is not None else '-',
+                     ('%.1f%%' % (100 * cov)) if cov is not None else 'WITHHELD',
+                     rec['observed_entries_total']))
+    print('')
+    print('  the audit that explains each refusal, NIFTY:')
+    for label, doc in (('quotes AND manifest cropped', manifest_cropped),
+                       ('a duplicate manifest row', dupe),
+                       ('a malformed manifest row', malformed)):
+        p_ = PS.plan_for(doc['premium']['indices']['NF'], 'NF', 60)
+        a = p_['manifest_audit']
+        print('    %-28s rows %-3d distinct %-3d malformed %d duplicate %d declared %s'
+              % (label, a['rows'], a['distinct_valid_slots'], a['malformed_rows'],
+                 a['duplicate_rows'], a['declared_expected']))
+    print('')
+    print('  and the raw observed counts survive every refusal, so late and missing quote')
+    print('  counts are preserved rather than erased by a withheld ratio.')
+    print('')
+
+    rule('ALL FOUR DEFECTS CLOSED ON THE INPUT THIS MACHINE HAS')
     print('The 16 November evening export (903225d9...) is still absent, so the figures Codex')
     print('reported for it remain independent evidence rather than a reproduction. The pinned')
     print('16 November regression in tests/test_range_compare.py runs the moment it arrives.')

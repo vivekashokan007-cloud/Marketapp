@@ -1,14 +1,14 @@
-# Protocol draft v2 — does a historical premium range add value over an IV-only range?
+# Protocol draft v3 — does a historical premium range add value over an IV-only range?
 
-**Status** DRAFT, revised, not frozen · **Dated** 17 November 2026 IST ·
-**Supersedes** `PROTOCOL_RANGE_TRIAL_DRAFT_v1.md` (deleted; §0 lists every change and why)
+**Status** DRAFT, **ready to freeze** pending one input · **Dated** 17 November 2026 IST ·
+**Supersedes** `PROTOCOL_RANGE_TRIAL_DRAFT_v2.md` (deleted; §0 lists every change and why)
 
 **Governs these files, by SHA-256 at the time of writing:**
 
 | file | sha256 |
 | --- | --- |
-| `tools/premium_range_compare/range_compare.py` | `40ce86a3d442b3d47cec9849230b13e69594fff76dcf518ba96b2d60e0471289` |
-| `tools/premium_range_compare/planned_schedule.py` | `4f2f98eea3d075843dcac1b02257110ebdd1e5051657521747b28317f5e7478e` |
+| `tools/premium_range_compare/range_compare.py` | `48447a5c6ef70888de09361ceec7597b8144830edb6b51d2c046ee2d73e7946b` |
+| `tools/premium_range_compare/planned_schedule.py` | `5574866f490d50f1dd306b9fae6e4a270bb3850215452c45d45ac82d49caf9c4` |
 | `tools/premium_range_compare/stopping_rule.py` | `19ce42fa589946ec76af152238652790e9a793885efbffd577bb9b10b89484ce` |
 | `tools/spot_path_baseline/premium_repricing_v2.py` (frozen R7, **unmodified**) | `95e53e25d24ae0369f2c8d8ab63026a0cda499443ddae4041c6ee7ffb373233a` |
 
@@ -19,7 +19,19 @@ base `124d62ee027941e43decc737e53d202c32b1d214`
 
 ---
 
-## 0 · What changed from v1, and why
+## 0 · What changed, and why
+
+### v2 → v3 (this revision)
+
+| v2 | v3 | why |
+| --- | --- | --- |
+| a slot manifest whose header disagreed with its rows was **noted** and used anyway | the schedule is **refused** as `INCOMPLETE_SCHEDULE_MANIFEST_INCONSISTENT` and the session excluded (§4.1) | a manifest cropped at 12:00 declared 69 expected slots, carried 33 rows, and was accepted as `VERIFIED` with a 126-key denominator against 126 scored rows — **100% coverage for a capture that had lost half its session** |
+| a refused schedule left the plan-relative counts computed against an empty plan | the ratio is **withheld** and the raw observed, scored and late counts are **preserved** (§4.1) | computing against an empty plan reads as "everything is outside the plan", which is not what happened |
+| the trial invariant was `planned >= admitted` | `scored_in_plan ≤ observed_entries_in_plan ≤ planned_opportunities`, with late quotes checked separately (§4.2) | the old invariant is **false on a complete capture**: 16 November admits 414 quotes (69 slots × 6 contracts) against 342 sixty-minute opportunities, the 72 extra being late quotes whose targets fall outside the window |
+| the documented `python3 -I` command failed | the sibling import is resolved explicitly, and a **subprocess smoke check** runs every documented command isolated from the repository root (§12) | isolated mode drops the script's own directory from `sys.path`; a unit test that imports the modules directly cannot catch it |
+| sign requirement ≥ 14 of 20 at 5.7659% | **≥ 15 of 20 at 2.0695%** (§8) | Codex's choice: a comparative-superiority claim uses the threshold at or below 5%, not the nearest one above it |
+
+### v1 → v2
 
 | v1 | v2 | why |
 | --- | --- | --- |
@@ -128,7 +140,51 @@ plan never contained (`observed_entries_outside_plan`). Coverage cannot exceed 1
 
 **An explicitly incomplete state refuses the session rather than scoring it:**
 `INCOMPLETE_COHORT_NOT_RESOLVED`, `INCOMPLETE_PINNED_COUNT_DISAGREES_WITH_COHORT`,
-`INCOMPLETE_NO_SCHEDULE_BASIS`, `INCOMPLETE_NO_ELIGIBLE_SLOT_FOR_THIS_HORIZON`.
+`INCOMPLETE_NO_SCHEDULE_BASIS`, `INCOMPLETE_NO_ELIGIBLE_SLOT_FOR_THIS_HORIZON`,
+`INCOMPLETE_SCHEDULE_MANIFEST_INCONSISTENT` (§4.1).
+
+### 4.1 · A present but inconsistent manifest is incomplete, not usable
+
+The manifest is validated **against its own rows** before any denominator is built from it, and
+against **distinct valid slot keys** rather than the raw row count — so a malformed or
+duplicated row cannot make the arithmetic add up while a real slot is missing. The schedule is
+refused when:
+
+| check | audit field |
+| --- | --- |
+| `expected_slots` disagrees with the distinct valid slot rows | `declared_expected` vs `distinct_valid_slots` |
+| a row has no slot, or one that will not parse | `malformed_rows` |
+| a row repeats a slot key already seen | `duplicate_rows` |
+| `observed_slots` exceeds the distinct valid rows | — |
+
+On a refusal the **coverage ratio is withheld** — not computed against an empty plan, which
+would read as "everything is outside the plan" — while the **raw counts are preserved**:
+`observed_entries_total`, `scored_total` and
+`admitted_entries_outside_planned_window`. Valid late and missing quote counts therefore survive
+the refusal, and the session is excluded from the cohort with the reason and the audit attached.
+
+Measured on 12 November, both indices, the three cases that must behave differently:
+
+| input | schedule state | planned | scored | usable | observed |
+| --- | --- | ---: | ---: | ---: | ---: |
+| full export (NIFTY) | `VERIFIED` | 342 | 246 | 71.9% | 318 |
+| quotes cropped at 12:00 | `VERIFIED` | 342 | 120 | **35.1% → excluded** | 192 |
+| quotes **and** manifest cropped | `INCOMPLETE_SCHEDULE_MANIFEST_INCONSISTENT` | 0 | — | **WITHHELD → excluded** | 192 |
+| a duplicate manifest row | `INCOMPLETE_SCHEDULE_MANIFEST_INCONSISTENT` | 0 | — | WITHHELD | 318 |
+| a malformed manifest row | `INCOMPLETE_SCHEDULE_MANIFEST_INCONSISTENT` | 0 | — | WITHHELD | 318 |
+
+### 4.2 · The coverage invariant
+
+```
+scored_in_plan  ≤  observed_entries_in_plan  ≤  planned_opportunities
+observed_entries_total  =  observed_entries_in_plan + observed_entries_outside_plan
+```
+
+**`planned_opportunities ≥ admitted quotes` is NOT an invariant.** A complete capture admits one
+quote per contract per captured slot — 69 × 6 = **414** on 16 November — while only 342 of those
+are sixty-minute opportunities. The 72 extra are **late quotes** whose planned targets fall past
+the end of the grid: counted in `admitted_entries_outside_planned_window`, never a coverage
+shortfall and never an error.
 
 **Minimum usable coverage: 60% of planned, per index, at the primary horizon** (proposed). The
 corrected 12 November figures are **71.9%** (NIFTY, 246/342) and **73.4%** (BANKNIFTY, 251/342).
@@ -207,7 +263,8 @@ roughly 5%". Computed exactly (`stopping_rule.py`, checked against an independen
 | --- | ---: |
 | ≥ 7 of 10 | **17.19%** (`11/64`) |
 | ≥ 11 of 15 | 5.92% (`1941/32768`) |
-| ≥ 14 of 20 | 5.77% (`15115/262144`) |
+| ≥ 14 of 20 | 5.77% (`15115/262144`) — **not used**: above 5% |
+| **≥ 15 of 20** | **2.07%** (`5425/262144`) — **the adopted threshold** |
 | **crossing at least one of the three** | **18.91%** (`99163/524288`) |
 
 The looks are nested on one accumulating sign sequence, so the per-look tails can be neither
@@ -222,7 +279,7 @@ adoption. Predeclared, as Codex asks:
 | --- | --- |
 | **paired effect** | per session and index, the relative mean-CRPS difference `(IV_ONLY − HIST) / IV_ONLY` on the **common** scored rows. Positive means the historical range is better. |
 | **practical threshold** | mean relative improvement **≥ 5%** across the 20 session means |
-| **sign requirement** | `HIST` better in **≥ 14 of 20** sessions, exact level **5.77%**, stated rather than rounded to 5%. A strict ≤5% rule would need ≥ 15 of 20 (2.07%); 14 is proposed because the sign test is one of **three conjunctive** requirements, so the joint false-adoption rate is below any single one. |
+| **sign requirement** | `HIST` better in **≥ 15 of 20** sessions, exact one-sided level **2.0695%** (`5425/262144`) under independent fair signs. This is the threshold at or below 5%; ≥ 14 of 20 would be 5.7659%, above it. Settled per Codex's instruction: a comparative-superiority claim uses the threshold that meets the level, not the nearest one above it. |
 | **tie handling** | a session whose paired difference is exactly 0 counts as **not** a win for `HIST` and is reported; it is never dropped, because dropping ties changes the denominator of the sign test |
 | **uncertainty** | the exact binomial tail above, plus the across-session mean and the per-session spread. No normal approximation is used at n = 20. |
 | **unit** | the **session mean** per index. Rows within a session are not independent — neighbouring strikes and overlapping windows see the same few underlying moves — and the decision points are counted in sessions. |
@@ -239,8 +296,8 @@ above, and that combined level — not the per-look level — is the rule's.
 | outcome | decision |
 | --- | --- |
 | **both pass the gate** | rank by mean CRPS on common rows. Adopt the better **only if** §8's threshold and sign requirement are met; otherwise **no change**, and the result is reported as "both calibrated, difference not established". |
-| **exactly one passes** | the passing model is the only candidate. It is adopted **on calibration**, and the report states plainly that **CRPS superiority was not established** — a model can qualify on coverage without being the better scorer. If the failing model has the lower CRPS, that fact is reported beside the decision, not suppressed. |
-| **neither passes** | **no adoption.** Neither interval delivers its nominal level, so neither may be published as an 80% interval. The session set is reported with both coverages and the direction of the miss (too narrow or too wide). |
+| **exactly one passes** | the passing model is described as **qualifying on calibration**, and **both** CRPS results are reported. **A calibration pass alone establishes no comparative CRPS result** — the words are Codex's and they are the rule, not a caveat. If the failing model has the lower CRPS, that is reported beside the decision, not suppressed. |
+| **neither passes** | **no selection is recorded.** Neither interval delivers its nominal level, so neither may be published as an 80% interval. The session set is reported with both coverages and the direction of the miss (too narrow or too wide). |
 | **both pass and the difference is immaterial** | "immaterial" is **< 5%** relative mean CRPS, i.e. §8's threshold not met: **no change**, reported as equivalent within the declared threshold. Not as evidence of equivalence. |
 | **the two indices disagree** | they are decided separately. No pooled verdict exists, and a disagreement is a result, not a tie to be broken. |
 
@@ -282,9 +339,11 @@ problem, and `HIST` covers 75.9% at the same horizon.
 
 ### 10.2 · 16 November, independent — not reproduced here
 
-Reported by Codex on 17 November 2026 from the evening export
-(`903225d9826dfbcac5011a099da1706f901854d40bc2e6d02d7ebdd43f9625e1`), which **has never been on
-this machine**:
+Reported by Codex, who **reran the corrected runner** on the evening export
+(`903225d9826dfbcac5011a099da1706f901854d40bc2e6d02d7ebdd43f9625e1`) on 17 November 2026. That
+file **has never been on this machine**, so these remain independent evidence. Codex reports the
+corrected runner scored **342 of 342 planned sixty-minute rows per index — 100% usable coverage**
+— with scores matching the prior replay:
 
 | index, 60 min | matched | `IV_ONLY` CRPS | `HIST` CRPS | `IV_ONLY` cov80 | `HIST` cov80 | MAE (all common-centre variants) |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -293,10 +352,35 @@ this machine**:
 
 Unchanged R7 again SPLIT on both indices. These figures are **pinned as a regression**, keyed to
 that digest, in `tests/test_range_compare.py`; the test skips while the file is absent and runs
-the moment it arrives, confirming them or disagreeing. Under §9 they would read: NIFTY both-pass
-with `IV_ONLY` better on CRPS by 7.0%; BANKNIFTY one-passes (`HIST` only, `IV_ONLY` at 63.5%
-below the band) — the same structural disagreement between indices as 12 November, and matched
-at 342 = the full planned count, meaning that session's capture was complete.
+the moment it arrives, confirming them or disagreeing.
+
+Under §9 they read: NIFTY **both pass** (74.0% and 81.0%) with `IV_ONLY` better on CRPS by 7.0%;
+BANKNIFTY **one passes** — `HIST` at 78.1%, `IV_ONLY` at 63.5% below the band — so `HIST`
+qualifies on calibration there and no comparative CRPS result is claimed, even though `IV_ONLY`
+scores 5.7% better. That is the same structural disagreement between the indices as 12 November,
+with the sides swapped, which §1's separate treatment of the two indices exists for.
+
+Codex's 342 matched quotes per index also **corroborates the planned count independently**: 342
+is the full sixty-minute plan, so that capture was complete, and the 414 admitted quotes Codex
+reports are 69 × 6 with 72 late — exactly the shape §4.2's invariant describes.
+
+## 12 · The commands this protocol is run with
+
+Every documented command must run **isolated**, from the repository root, in the form the
+environment prescribes for a tool that reads supplied data:
+
+```bash
+python3 -I tools/premium_range_compare/range_compare.py <export...> <spots> [--out DIR]
+python3 -I tools/premium_range_compare/planned_schedule.py <export>
+python3 -I tools/premium_range_compare/stopping_rule.py [--simulate N]
+python3 -I tools/premium_range_compare/results/regressions_20261117.py <export> <spots>
+```
+
+`python3 -I` drops the script's own directory from `sys.path`, so sibling imports are resolved
+explicitly in each module rather than relying on it. `tests/test_cli_smoke.py` runs each of these
+as a **subprocess**, isolated, including a multi-export run that exercises the cohort rule — a
+unit test that imports the modules directly cannot catch an isolated-mode import failure,
+because by then the path is already set up.
 
 ## 11 · Scope
 

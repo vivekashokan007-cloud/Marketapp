@@ -40,6 +40,9 @@ import os
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+# HERE is inserted explicitly so `python3 -I` works: isolated mode drops the script's own
+# directory from sys.path, so a sibling import fails without this.
+sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(HERE, '..', 'spot_path_baseline'))
 
 import premium_repricing_v2 as R7          # noqa: E402
@@ -62,6 +65,7 @@ STATE_INCOMPLETE_NO_COHORT = 'INCOMPLETE_COHORT_NOT_RESOLVED'
 STATE_INCOMPLETE_NO_BASIS = 'INCOMPLETE_NO_SCHEDULE_BASIS'
 STATE_INCOMPLETE_CONTRACT_COUNT = 'INCOMPLETE_PINNED_COUNT_DISAGREES_WITH_COHORT'
 STATE_INCOMPLETE_EMPTY_GRID = 'INCOMPLETE_NO_ELIGIBLE_SLOT_FOR_THIS_HORIZON'
+STATE_INCOMPLETE_MANIFEST = 'INCOMPLETE_SCHEDULE_MANIFEST_INCONSISTENT'
 
 
 def window_grid(open_min=PILOT_WINDOW_OPEN_MIN, close_min=PILOT_WINDOW_CLOSE_MIN,
@@ -71,28 +75,55 @@ def window_grid(open_min=PILOT_WINDOW_OPEN_MIN, close_min=PILOT_WINDOW_CLOSE_MIN
 
 
 def manifest_grid(index_node):
-    """(slots, states) from the export's own slot manifest, or (None, None).
+    """(slots, states, audit) from the export's own slot manifest, or (None, None, audit).
 
-    `states` maps a slot minute to the manifest's declared state, so a planned slot that was
-    never captured carries its own reason rather than being inferred from an absence.
+    `audit` is what decides whether the manifest may be trusted, and it is computed from the
+    ROWS rather than from the header:
+
+      `rows`                   how many rows the manifest carries
+      `distinct_valid_slots`   distinct, parseable slot keys among them
+      `malformed_rows`         rows with no slot, or a slot that will not parse
+      `duplicate_rows`         rows repeating a slot key already seen
+      `declared_expected`      the manifest's own `expected_slots`
+
+    THE DEFECT THIS CLOSES.  A manifest cropped at 12:00 declared 69 expected slots and carried
+    33 rows.  The old code noted the disagreement and carried on, so the plan was built from the
+    33 surviving rows: a 126-key denominator against 126 scored rows, reported as VERIFIED and
+    100% coverage, for a capture that had in fact lost more than half its session.  A header
+    that disagrees with its own rows means the schedule cannot be reconstructed from this
+    export, and the only safe answer is to say so.
+
+    Validating against DISTINCT VALID keys, not the raw row count, is what stops a malformed or
+    duplicated row from making the arithmetic add up while a real slot is missing.
     """
+    audit = {'rows': 0, 'distinct_valid_slots': 0, 'malformed_rows': 0,
+             'duplicate_rows': 0, 'declared_expected': None, 'present': False}
     sm = (index_node or {}).get('slot_manifest') or {}
     rows = sm.get('rows')
+    audit['declared_expected'] = sm.get('expected_slots')
     if not isinstance(rows, list) or not rows:
-        return None, None
-    slots, states = [], {}
+        return None, None, audit
+    audit['present'] = True
+    audit['rows'] = len(rows)
+    states, order = {}, []
     for r in rows:
         if not isinstance(r, dict) or not r.get('slot'):
+            audit['malformed_rows'] += 1
             continue
         try:
             m = R7.mins(r['slot'])
-        except (ValueError, AttributeError):
+        except (ValueError, AttributeError, TypeError):
+            audit['malformed_rows'] += 1
             continue
-        slots.append(m)
+        if m in states:
+            audit['duplicate_rows'] += 1
+            continue
         states[m] = r.get('state') or 'STATE_ABSENT'
-    if not slots:
-        return None, None
-    return sorted(slots), states
+        order.append(m)
+    audit['distinct_valid_slots'] = len(order)
+    if not order:
+        return None, None, audit
+    return sorted(order), states, audit
 
 
 def eligible_entry_slots(grid, horizon_min):
@@ -154,17 +185,34 @@ def plan_for(index_node, index_name, horizon_min):
         return out
     out['contracts_expected'] = expected
 
-    grid, states = manifest_grid(index_node)
+    grid, states, audit = manifest_grid(index_node)
+    out['manifest_audit'] = audit
     if grid:
         out['basis'] = BASIS_MANIFEST
         out['slot_states'] = {'%02d:%02d' % (m // 60, m % 60): states[m] for m in grid}
         sm = (index_node or {}).get('slot_manifest') or {}
         out['manifest_expected_slots'] = sm.get('expected_slots')
         out['manifest_observed_slots'] = sm.get('observed_slots')
-        if isinstance(sm.get('expected_slots'), int) and sm['expected_slots'] != len(grid):
+        # ── the manifest must agree with ITSELF before a denominator is built from it ──
+        bad = []
+        declared = audit['declared_expected']
+        if isinstance(declared, int) and declared != audit['distinct_valid_slots']:
+            bad.append('declares %d expected slots but carries %d distinct valid slot rows'
+                       % (declared, audit['distinct_valid_slots']))
+        if audit['malformed_rows']:
+            bad.append('%d malformed row(s) with no usable slot' % audit['malformed_rows'])
+        if audit['duplicate_rows']:
+            bad.append('%d duplicate slot row(s)' % audit['duplicate_rows'])
+        if isinstance(sm.get('observed_slots'), int) and \
+                sm['observed_slots'] > audit['distinct_valid_slots']:
+            bad.append('declares %d observed slots, more than its %d distinct valid rows'
+                       % (sm['observed_slots'], audit['distinct_valid_slots']))
+        if bad:
+            out['state'] = STATE_INCOMPLETE_MANIFEST
             out['notes'].append(
-                'manifest declares %d expected slots and carries %d rows'
-                % (sm['expected_slots'], len(grid)))
+                'the slot manifest is inconsistent with itself, so the planned schedule cannot '
+                'be reconstructed from this export: ' + '; '.join(bad))
+            return out
     else:
         grid = window_grid()
         out['basis'] = BASIS_WINDOW
@@ -197,24 +245,44 @@ def reconcile(plan, observed_entry_keys, scored_keys, outside_window_keys=()):
     here and nowhere else, so no caller can quietly substitute a denominator.
     """
     planned = plan['planned_keys']
-    obs = frozenset(observed_entry_keys) & planned
-    scored = frozenset(scored_keys) & planned
+    all_obs = frozenset(observed_entry_keys)
+    all_scored = frozenset(scored_keys)
+    obs = all_obs & planned
+    scored = all_scored & planned
     missing_slots = collections.Counter()
     for key, m in sorted(planned - obs):
         missing_slots['%02d:%02d' % (m // 60, m % 60)] += 1
     out = {
+        # raw totals, independent of the plan, so a refused schedule still reports what was
+        # actually seen -- late quotes and missing ones alike
+        'observed_entries_total': len(all_obs),
+        'scored_total': len(all_scored),
+        'admitted_entries_outside_planned_window': len(frozenset(outside_window_keys)),
         'planned_opportunities': len(planned),
+        'schedule_state': plan['state'], 'schedule_basis': plan['basis'],
+        'manifest_audit': plan.get('manifest_audit')}
+    if not planned:
+        # no defensible denominator: every plan-relative number is withheld rather than
+        # computed against an empty set, which would read as "everything is outside the plan"
+        out.update({'observed_entries_in_plan': None, 'scored_in_plan': None,
+                    'missing_entry_keys': None, 'missing_entry_slots': {},
+                    'observed_but_not_scored': None,
+                    'observed_entries_outside_plan': None,
+                    'usable_coverage': None,
+                    'coverage_basis': 'WITHHELD: the planned schedule is %s, so no coverage '
+                                      'ratio is defensible. The raw observed and scored totals '
+                                      'above are preserved.' % plan['state']})
+        return out
+    out.update({
         'observed_entries_in_plan': len(obs),
         'scored_in_plan': len(scored),
         'missing_entry_keys': len(planned - obs),
         'missing_entry_slots': dict(missing_slots),
         'observed_but_not_scored': len(obs - scored),
-        'admitted_entries_outside_planned_window': len(frozenset(outside_window_keys)),
-        'observed_entries_outside_plan': len(frozenset(observed_entry_keys) - planned),
-        'usable_coverage': (len(scored) / len(planned)) if planned else None,
+        'observed_entries_outside_plan': len(all_obs - planned),
+        'usable_coverage': len(scored) / len(planned),
         'coverage_basis': 'scored rows inside the plan, over planned opportunities; the '
-                          'denominator is the schedule, never the admitted quotes',
-        'schedule_state': plan['state'], 'schedule_basis': plan['basis']}
+                          'denominator is the schedule, never the admitted quotes'})
     return out
 
 

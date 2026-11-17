@@ -59,6 +59,10 @@ import statistics
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+# HERE is inserted explicitly so the documented `python3 -I` invocation works: isolated mode
+# drops the script's own directory from sys.path, so `import planned_schedule` fails without
+# it. `CliSmoke` in the tests runs the isolated command itself rather than trusting this.
+sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(HERE, '..', 'spot_path_baseline'))
 
 import premium_repricing_v2 as R7          # noqa: E402  the frozen R7 module, unmodified

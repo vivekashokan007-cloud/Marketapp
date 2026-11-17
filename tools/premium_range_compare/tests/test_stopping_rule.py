@@ -118,6 +118,34 @@ class SingleLook(unittest.TestCase):
         self.assertEqual(Fraction(1, 1024), t)
 
 
+class AdoptedRule(unittest.TestCase):
+    """The settled rule, asserted so the protocol's numbers and the code's cannot drift."""
+
+    def test_the_adopted_threshold_is_the_one_that_meets_the_level(self):
+        self.assertEqual(20, SR.ADOPTED_DECISION_SESSIONS)
+        self.assertEqual(15, SR.ADOPTED_SIGN_THRESHOLD)
+        got = 100 * float(SR.tail(SR.ADOPTED_DECISION_SESSIONS, SR.ADOPTED_SIGN_THRESHOLD))
+        self.assertAlmostEqual(2.069473, got, places=5)
+        self.assertAlmostEqual(SR.ADOPTED_EXACT_LEVEL_PCT, got, places=9)
+        self.assertLessEqual(got, 5.0, 'the adopted threshold must MEET the declared level')
+
+    def test_the_rejected_threshold_is_recorded_with_its_level(self):
+        """>= 14 of 20 is 5.7659%, above 5%, so it is named and not used rather than quietly
+        dropped."""
+        self.assertEqual(14, SR.REJECTED_SIGN_THRESHOLD)
+        got = 100 * float(SR.tail(SR.ADOPTED_DECISION_SESSIONS, SR.REJECTED_SIGN_THRESHOLD))
+        self.assertAlmostEqual(5.765915, got, places=5)
+        self.assertGreater(got, 5.0)
+
+    def test_the_adopted_threshold_is_what_single_look_derives(self):
+        k, _t = SR.single_look(SR.ADOPTED_DECISION_SESSIONS, SR.DEFAULT_ALPHA)
+        self.assertEqual(SR.ADOPTED_SIGN_THRESHOLD, k)
+
+    def test_one_look_means_the_rules_level_is_its_own_tail(self):
+        rule = ((SR.ADOPTED_DECISION_SESSIONS, SR.ADOPTED_SIGN_THRESHOLD),)
+        self.assertEqual(SR.tail(*rule[0]), SR.multi_look(rule))
+
+
 class Describe(unittest.TestCase):
 
     def test_the_table_the_protocol_quotes_is_data_not_prose(self):

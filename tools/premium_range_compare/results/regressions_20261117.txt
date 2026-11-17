@@ -62,7 +62,34 @@ reversing the input changed the retained price.
   NF   scores identical under a reversed history: True
 
 ==============================================================================================
-ALL THREE DEFECTS CLOSED ON THE INPUT THIS MACHINE HAS
+4  SCHEDULE MANIFESTS ARE VALIDATED AGAINST THEIR OWN ROWS
+==============================================================================================
+The defect: cropping the MANIFEST as well as the quotes made the runner build a
+126-key denominator from 33 surviving rows, call the schedule VERIFIED and accept
+126/126 = 100% for a capture that had lost half its session.
+
+  idx  input                        schedule state                              planned    scored     usable observed
+  BNF  full export                  VERIFIED                                        342       251      73.4%      323
+  BNF  quotes cropped only          VERIFIED                                        342       120      35.1%      192
+  BNF  quotes AND manifest cropped  INCOMPLETE_SCHEDULE_MANIFEST_INCONSISTENT         0         -   WITHHELD      192
+  BNF  a duplicate manifest row     INCOMPLETE_SCHEDULE_MANIFEST_INCONSISTENT         0         -   WITHHELD      323
+  BNF  a malformed manifest row     INCOMPLETE_SCHEDULE_MANIFEST_INCONSISTENT         0         -   WITHHELD      323
+  NF   full export                  VERIFIED                                        342       246      71.9%      318
+  NF   quotes cropped only          VERIFIED                                        342       120      35.1%      192
+  NF   quotes AND manifest cropped  INCOMPLETE_SCHEDULE_MANIFEST_INCONSISTENT         0         -   WITHHELD      192
+  NF   a duplicate manifest row     INCOMPLETE_SCHEDULE_MANIFEST_INCONSISTENT         0         -   WITHHELD      318
+  NF   a malformed manifest row     INCOMPLETE_SCHEDULE_MANIFEST_INCONSISTENT         0         -   WITHHELD      318
+
+  the audit that explains each refusal, NIFTY:
+    quotes AND manifest cropped  rows 33  distinct 33  malformed 0 duplicate 0 declared 69
+    a duplicate manifest row     rows 70  distinct 69  malformed 0 duplicate 1 declared 70
+    a malformed manifest row     rows 70  distinct 69  malformed 1 duplicate 0 declared 70
+
+  and the raw observed counts survive every refusal, so late and missing quote
+  counts are preserved rather than erased by a withheld ratio.
+
+==============================================================================================
+ALL FOUR DEFECTS CLOSED ON THE INPUT THIS MACHINE HAS
 ==============================================================================================
 The 16 November evening export (903225d9...) is still absent, so the figures Codex
 reported for it remain independent evidence rather than a reproduction. The pinned

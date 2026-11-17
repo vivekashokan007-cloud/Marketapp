@@ -18,7 +18,9 @@ ONE FIXED DECISION POINT at 20 eligible sessions per index:
   >= 16 of 20     0.59%
   >= 17 of 20     0.13%
 
-  DEFAULT: adopt only at >= 15 of 20 paired session wins, exact level 2.07%, ONE look.
+  ADOPTED: adopt only at >= 15 of 20 paired session wins, exact level 2.0695%, ONE look.
+           >= 14 of 20 (5.7659%) is NOT used: it is above the declared level.
+           derived threshold at alpha=0.050: >= 15 (2.0695%)
   No interim adoption. A rule with interim looks must publish its combined level,
   computed as above, and that level -- not the per-look level -- is the rule's.
 ========================================================================================

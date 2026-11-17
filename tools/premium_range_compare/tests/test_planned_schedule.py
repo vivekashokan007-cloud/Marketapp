@@ -109,11 +109,66 @@ class PlanFor(unittest.TestCase):
         self.assertEqual(PS.STATE_INCOMPLETE_EMPTY_GRID, p['state'])
         self.assertEqual(0, p['planned_opportunities'])
 
-    def test_a_manifest_whose_row_count_disagrees_with_its_own_header_is_noted(self):
+    def test_a_manifest_that_disagrees_with_its_own_rows_is_REFUSED(self):
+        """This used to be "noted, not fatal", and that was the defect.
+
+        A manifest cropped at 12:00 declared 69 expected slots and carried 33 rows. The old
+        code noted it and built the plan from the 33 survivors: a 126-key denominator against
+        126 scored rows, VERIFIED, 100% coverage, for a capture that had lost half its session.
+        A header that disagrees with its own rows means the schedule cannot be reconstructed
+        from this export, so the only safe answer is to say so and refuse.
+        """
         p = PS.plan_for(node(expected_slots=70), 'NF', 60)
-        self.assertEqual(PS.STATE_VERIFIED, p['state'], 'noted, not fatal')
-        self.assertTrue(any('declares 70 expected slots and carries 69' in n
-                            for n in p['notes']))
+        self.assertEqual(PS.STATE_INCOMPLETE_MANIFEST, p['state'])
+        self.assertEqual(0, p['planned_opportunities'])
+        self.assertTrue(any('declares 70 expected slots but carries 69 distinct valid slot '
+                            'rows' in n for n in p['notes']), p['notes'])
+
+    def test_the_cropped_manifest_case_in_full(self):
+        """69 declared, 33 rows: refused, with the audit that explains why."""
+        cropped = [s for s in SLOTS_69 if R7.mins(s) <= 12 * 60]
+        self.assertEqual(33, len(cropped))
+        p = PS.plan_for(node(slots=cropped, expected_slots=69), 'NF', 60)
+        self.assertEqual(PS.STATE_INCOMPLETE_MANIFEST, p['state'])
+        self.assertEqual(0, p['planned_opportunities'])
+        a = p['manifest_audit']
+        self.assertEqual({'rows': 33, 'distinct_valid_slots': 33, 'malformed_rows': 0,
+                          'duplicate_rows': 0, 'declared_expected': 69, 'present': True}, a)
+
+    def test_a_duplicate_slot_row_cannot_conceal_a_missing_slot(self):
+        """The reason validation is against DISTINCT VALID keys and not the row count: a
+        duplicated row would otherwise make the arithmetic add up with a real slot missing."""
+        slots = SLOTS_69[:-1]                      # one genuine slot dropped
+        nd = node(slots=slots, expected_slots=69)
+        nd['slot_manifest']['rows'].append(dict(nd['slot_manifest']['rows'][0]))
+        self.assertEqual(69, len(nd['slot_manifest']['rows']), 'the row COUNT now adds up')
+        p = PS.plan_for(nd, 'NF', 60)
+        self.assertEqual(PS.STATE_INCOMPLETE_MANIFEST, p['state'])
+        self.assertEqual(1, p['manifest_audit']['duplicate_rows'])
+        self.assertEqual(68, p['manifest_audit']['distinct_valid_slots'])
+
+    def test_a_malformed_row_is_counted_and_refused(self):
+        for bad in ({'state': 'OBSERVED'}, {'slot': None}, {'slot': 'not-a-clock'},
+                    {'slot': 12}, 'not-a-dict'):
+            nd = node(expected_slots=70)
+            nd['slot_manifest']['rows'].append(bad)
+            p = PS.plan_for(nd, 'NF', 60)
+            self.assertEqual(PS.STATE_INCOMPLETE_MANIFEST, p['state'], bad)
+            self.assertEqual(1, p['manifest_audit']['malformed_rows'], bad)
+
+    def test_a_manifest_claiming_more_observed_than_it_carries_is_refused(self):
+        nd = node()
+        nd['slot_manifest']['observed_slots'] = 70
+        p = PS.plan_for(nd, 'NF', 60)
+        self.assertEqual(PS.STATE_INCOMPLETE_MANIFEST, p['state'])
+        self.assertTrue(any('more than its 69 distinct valid rows' in n for n in p['notes']))
+
+    def test_a_consistent_manifest_is_still_verified(self):
+        """The refusal must not swallow the ordinary case."""
+        p = PS.plan_for(node(), 'NF', 60)
+        self.assertEqual(PS.STATE_VERIFIED, p['state'])
+        self.assertEqual(342, p['planned_opportunities'])
+        self.assertEqual([], [n for n in p['notes'] if 'inconsistent' in n])
 
     def test_the_per_slot_state_is_carried_so_a_missing_slot_has_its_own_reason(self):
         missing = [s for s in SLOTS_69 if R7.mins(s) >= R7.mins('13:45')]
@@ -162,6 +217,39 @@ class Reconcile(unittest.TestCase):
         rec = PS.reconcile(p, (), ())
         self.assertEqual(PS.STATE_INCOMPLETE_CONTRACT_COUNT, rec['schedule_state'])
         self.assertIsNone(rec['usable_coverage'])
+
+    def test_a_refused_schedule_WITHHOLDS_the_ratio_but_keeps_the_raw_counts(self):
+        """Codex: preserve valid late and missing quote counts. A refusal must not erase what
+        was actually observed, and it must not compute a ratio against an empty plan either --
+        which would read as "everything is outside the plan"."""
+        p = PS.plan_for(node(expected_slots=70), 'NF', 60)
+        observed = {('NSE_FO|0', R7.mins('09:20')), ('NSE_FO|1', R7.mins('09:20'))}
+        late = {('NSE_FO|0', R7.mins('14:30'))}
+        rec = PS.reconcile(p, observed, observed, late)
+        self.assertEqual(PS.STATE_INCOMPLETE_MANIFEST, rec['schedule_state'])
+        self.assertEqual(2, rec['observed_entries_total'])
+        self.assertEqual(2, rec['scored_total'])
+        self.assertEqual(1, rec['admitted_entries_outside_planned_window'])
+        self.assertIsNone(rec['usable_coverage'])
+        self.assertIsNone(rec['scored_in_plan'])
+        self.assertIsNone(rec['observed_entries_outside_plan'])
+        self.assertIn('WITHHELD', rec['coverage_basis'])
+        self.assertIsNotNone(rec['manifest_audit'])
+
+    def test_the_corrected_invariant_holds_on_a_verified_plan(self):
+        """scored_in_plan <= observed_entries_in_plan <= planned_opportunities, with late
+        quotes counted apart. `planned >= admitted` is NOT an invariant: a complete capture
+        admits 414 quotes against 342 sixty-minute opportunities."""
+        p = self.plan()
+        in_plan = set(sorted(p['planned_keys'])[:100])
+        late = {('NSE_FO|0', R7.mins('14:30')), ('NSE_FO|1', R7.mins('14:35'))}
+        rec = PS.reconcile(p, in_plan | late, set(sorted(in_plan)[:40]), late)
+        self.assertLessEqual(rec['scored_in_plan'], rec['observed_entries_in_plan'])
+        self.assertLessEqual(rec['observed_entries_in_plan'], rec['planned_opportunities'])
+        self.assertEqual(rec['observed_entries_total'],
+                         rec['observed_entries_in_plan'] + rec['observed_entries_outside_plan'])
+        self.assertEqual(2, rec['admitted_entries_outside_planned_window'])
+        self.assertGreater(rec['observed_entries_total'], rec['scored_in_plan'])
 
 
 if __name__ == '__main__':

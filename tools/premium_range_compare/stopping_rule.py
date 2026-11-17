@@ -45,6 +45,15 @@ DRAFT_LOOKS = ((10, 7), (15, 11), (20, 14))
 DEFAULT_DECISION_SESSIONS = 20
 DEFAULT_ALPHA = 0.05
 
+#: The ADOPTED rule, settled 17 November 2026: a comparative-superiority claim needs the
+#: threshold that MEETS the level, not the nearest one above it.  >= 15 of 20 is 2.0695%;
+#: >= 14 of 20 would be 5.7659%, above 5%, and is therefore not used.  `test_stopping_rule.py`
+#: asserts this pair, so the protocol's numbers and the code's cannot drift apart.
+ADOPTED_DECISION_SESSIONS = 20
+ADOPTED_SIGN_THRESHOLD = 15
+ADOPTED_EXACT_LEVEL_PCT = 2.069473266601562
+REJECTED_SIGN_THRESHOLD = 14            # 5.7659%, above the declared level
+
 
 def tail(n, k):
     """P(X >= k) for n independent fair signs, exactly."""
@@ -161,8 +170,15 @@ def main(argv=None):
             break
     k, t = single_look(a.sessions, a.alpha)
     print('')
-    print('  DEFAULT: adopt only at >= %d of %d paired session wins, exact level %.2f%%, '
-          'ONE look.' % (k, a.sessions, 100 * float(t)))
+    print('  ADOPTED: adopt only at >= %d of %d paired session wins, exact level %.4f%%, '
+          'ONE look.' % (ADOPTED_SIGN_THRESHOLD, ADOPTED_DECISION_SESSIONS,
+                         100 * float(tail(ADOPTED_DECISION_SESSIONS,
+                                          ADOPTED_SIGN_THRESHOLD))))
+    print('           >= %d of %d (%.4f%%) is NOT used: it is above the declared level.'
+          % (REJECTED_SIGN_THRESHOLD, ADOPTED_DECISION_SESSIONS,
+             100 * float(tail(ADOPTED_DECISION_SESSIONS, REJECTED_SIGN_THRESHOLD))))
+    print('           derived threshold at alpha=%.3f: >= %d (%.4f%%)'
+          % (a.alpha, k, 100 * float(t)))
     print('  No interim adoption. A rule with interim looks must publish its combined level,')
     print('  computed as above, and that level -- not the per-look level -- is the rule\'s.')
     print('=' * 88)
