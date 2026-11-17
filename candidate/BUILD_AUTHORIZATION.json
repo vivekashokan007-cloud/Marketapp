@@ -1,0 +1,12 @@
+{
+  "schema": "marketradar.candidate_build_authorization.v1",
+  "artifact_only": true,
+  "native_sha": "8bac68fb9b509823b821eb54353f49482217b2ef",
+  "pwa_sha": "742a655a679334d3ed3abc3863aef5d111f2daa9",
+  "version_code": "531",
+  "version_name": "2.6.100",
+  "cert_sha256": "fb6042a2eb61045368e8d7b95db6f6d49b04d4b8da2e51b865ca77803a44b478",
+  "approved_by": "Vivek (vivekashokan007-cloud, repository owner)",
+  "approval_reference": "Owner instruction in the Grok chat, 17 November 2026 13:34 IST (in-chat approval to Grok): build the paired candidate 2.6.100 / versionCode 531 from the reviewed heads MarketVivi b6ec98812ac0fa64f3c3658e36c805ea94c870ca and Marketapp 78881112a831ad13d5c6f93111c8a1c36e6adae9, run the local gates, push to a new candidate-build branch, and let the artifact-only candidate APK workflow run; Vivek approves the candidate-apk environment himself. The reviewed trees are replayed on the real b530 history (native tree equals 78881112's tree ce7eded9; PWA tree equals b6ec9881's plus the untouched .agents/workflows/push.md that the API tarball omits), followed by the identity-only bump. Scope: this artifact-only candidate build only. NOT approval to merge, tag, release, publish Pages or promote Latest.",
+  "codex_final_check_reference": "Codex acceptance note 'Grok acceptance - Trade R2 and v4 roster draft 3' (17 November 2026 IST, attachment 6c30fb8612cbd1fe0df3e902b2b10dc73d555195999b1ab5532b02622982353f.md): 'Trade R2 clears patch review - MarketVivi b6ec98812ac0fa64f3c3658e36c805ea94c870ca, Marketapp 78881112a831ad13d5c6f93111c8a1c36e6adae9 ... Proceed with paired candidate packaging through the existing workflow. Synchronize the native and PWA build identities and cache version.'"
+}
