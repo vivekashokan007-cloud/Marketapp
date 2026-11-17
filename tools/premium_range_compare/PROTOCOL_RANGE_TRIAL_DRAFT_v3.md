@@ -7,7 +7,7 @@
 
 | file | sha256 |
 | --- | --- |
-| `tools/premium_range_compare/range_compare.py` | `48447a5c6ef70888de09361ceec7597b8144830edb6b51d2c046ee2d73e7946b` |
+| `tools/premium_range_compare/range_compare.py` | `cd3900073c3513957f43949d777a2bd32aed11b2e4a6f092e2db80025ab2f4e7` |
 | `tools/premium_range_compare/planned_schedule.py` | `5574866f490d50f1dd306b9fae6e4a270bb3850215452c45d45ac82d49caf9c4` |
 | `tools/premium_range_compare/stopping_rule.py` | `19ce42fa589946ec76af152238652790e9a793885efbffd577bb9b10b89484ce` |
 | `tools/spot_path_baseline/premium_repricing_v2.py` (frozen R7, **unmodified**) | `95e53e25d24ae0369f2c8d8ab63026a0cda499443ddae4041c6ee7ffb373233a` |
@@ -29,6 +29,7 @@ base `124d62ee027941e43decc737e53d202c32b1d214`
 | a refused schedule left the plan-relative counts computed against an empty plan | the ratio is **withheld** and the raw observed, scored and late counts are **preserved** (§4.1) | computing against an empty plan reads as "everything is outside the plan", which is not what happened |
 | the trial invariant was `planned >= admitted` | `scored_in_plan ≤ observed_entries_in_plan ≤ planned_opportunities`, with late quotes checked separately (§4.2) | the old invariant is **false on a complete capture**: 16 November admits 414 quotes (69 slots × 6 contracts) against 342 sixty-minute opportunities, the 72 extra being late quotes whose targets fall outside the window |
 | the documented `python3 -I` command failed | the sibling import is resolved explicitly, and a **subprocess smoke check** runs every documented command isolated from the repository root (§12) | isolated mode drops the script's own directory from `sys.path`; a unit test that imports the modules directly cannot catch it |
+| an export that captured nothing crashed the CLI, and the no-rows result omitted fields the scored path provides | the no-rows result carries the **same keys**, plan-relative numbers are formatted as withheld, and the structural tests **skip with a reason** on an export with no premium records | found by pointing the suite at a third real export (13 November, `NO_PREMIUM_DATA`): `%d` on a withheld `None` raised `TypeError`, and `admitted_entry_candidates` was missing from the early return. A state the producer can legitimately report must not be an error here |
 | sign requirement ≥ 14 of 20 at 5.7659% | **≥ 15 of 20 at 2.0695%** (§8) | Codex's choice: a comparative-superiority claim uses the threshold at or below 5%, not the nearest one above it |
 
 ### v1 → v2

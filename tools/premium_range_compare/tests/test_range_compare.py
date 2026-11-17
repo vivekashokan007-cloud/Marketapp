@@ -764,6 +764,22 @@ class AgainstTheFrozenReplay(unittest.TestCase):
         cls.hist, cls.meta = RC.load_history(REAL_SPOTS)
         cls.hd = sorted(d for d in cls.r7_hist if d < cls.session)
         cls.key, cls.exp = expectations_for(REAL_EXPORT)
+        cls.indices = sorted((cls.ex.get('premium') or {}).get('indices') or {})
+        cls.with_data = [ix for ix in cls.indices
+                         if (cls.ex['premium']['indices'][ix].get('records') or [])]
+
+    def needs_data(self):
+        """Skip, saying so, when the supplied export carries no premium records.
+
+        A structural test that claims to hold "for any real export" must hold or skip on one
+        that captured nothing -- `NO_PREMIUM_DATA_FOR_THIS_INDEX` is a real state, not an
+        error. Found by pointing the suite at a third real export that had none.
+        """
+        if not self.with_data:
+            self.skipTest('%s carries no premium records (state %s); nothing to compare'
+                          % (self.session,
+                             (self.ex.get('premium') or {}).get('state')))
+        return self.with_data
 
     def pinned(self, field):
         """The expected value for this exact input, or skip saying what was wanted."""
@@ -779,7 +795,7 @@ class AgainstTheFrozenReplay(unittest.TestCase):
 
     def test_admission_matches_the_frozen_replay(self):
         """Same rows, same entry and exit acquisitions, same exclusion counts, any session."""
-        for ix in ('NF', 'BNF'):
+        for ix in self.needs_data():
             _s, r7rows, r7cov, _l = R7.score_index(self.ex, ix, self.r7_hist, self.hd,
                                                    self.session)
             mine, myrows, mycov = RC.compare_index_horizon(self.ex, ix, self.hist, self.hd, 60)
@@ -795,7 +811,7 @@ class AgainstTheFrozenReplay(unittest.TestCase):
 
     def test_the_reference_variant_reproduces_the_frozen_primary_score(self):
         """Whatever the session, the reference must equal the frozen replay's own number."""
-        for ix in ('NF', 'BNF'):
+        for ix in self.needs_data():
             _s, r7rows, _c, _l = R7.score_index(self.ex, ix, self.r7_hist, self.hd,
                                                 self.session)
             r7 = statistics.fmean(r['E0_FWD']['crps'] for r in r7rows if 'E0_FWD' in r)
@@ -803,7 +819,7 @@ class AgainstTheFrozenReplay(unittest.TestCase):
             self.assertAlmostEqual(r7, mine['variants']['R7_E0_FWD']['crps'], places=6, msg=ix)
 
     def test_mae_ties_on_the_real_rows_at_every_horizon(self):
-        for ix in ('NF', 'BNF'):
+        for ix in self.needs_data():
             for h in RC.HORIZONS_MIN:
                 s, _r, _c = RC.compare_index_horizon(self.ex, ix, self.hist, self.hd, h)
                 v = s['variants_common']
@@ -813,7 +829,7 @@ class AgainstTheFrozenReplay(unittest.TestCase):
                                        msg=(ix, h))
 
     def test_every_variant_is_scored_on_the_same_rows_as_the_common_set(self):
-        for ix in ('NF', 'BNF'):
+        for ix in self.needs_data():
             s, _r, _c = RC.compare_index_horizon(self.ex, ix, self.hist, self.hd, 60)
             common = s['common_scored']
             for name in ('FLAT',) + RC.RANGE_VARIANTS:
@@ -835,7 +851,7 @@ class AgainstTheFrozenReplay(unittest.TestCase):
         with the outside-window count checked on its own, and the admitted total reconciling as
         in-plan + outside-plan.
         """
-        for ix in ('NF', 'BNF'):
+        for ix in self.needs_data():
             s, _r, _c = RC.compare_index_horizon(self.ex, ix, self.hist, self.hd, 60)
             rec, sched = s['reconciliation'], s['schedule']
             self.assertEqual(PS.STATE_VERIFIED, sched['state'], ix)
@@ -861,7 +877,7 @@ class AgainstTheFrozenReplay(unittest.TestCase):
         them are 60-minute opportunities. If the supplied export is incomplete this skips,
         saying so, rather than pretending to check it.
         """
-        for ix in ('NF', 'BNF'):
+        for ix in self.needs_data():
             s, _r, _c = RC.compare_index_horizon(self.ex, ix, self.hist, self.hd, 60)
             rec = s['reconciliation']
             grid = s['schedule']['grid_slots']
@@ -879,6 +895,7 @@ class AgainstTheFrozenReplay(unittest.TestCase):
         """Codex's reproduction: cropping the manifest as well as the quotes made the runner
         build a 126-key denominator from 33 surviving rows, call the schedule VERIFIED and
         accept 126/126 = 100% for a capture that had lost half its session."""
+        self.needs_data()
         cropped = json.loads(json.dumps(self.ex))
         for ix in list(cropped['premium']['indices']):
             node = cropped['premium']['indices'][ix]
@@ -887,7 +904,7 @@ class AgainstTheFrozenReplay(unittest.TestCase):
                                       if R7.mins(e['slot']) <= 12 * 60]
             node['slot_manifest']['rows'] = [r for r in node['slot_manifest']['rows']
                                              if R7.mins(r['slot']) <= 12 * 60]
-        for ix in ('NF', 'BNF'):
+        for ix in self.with_data:
             s, _r, _c = RC.compare_index_horizon(cropped, ix, self.hist, self.hd, 60)
             rec = s['reconciliation']
             self.assertEqual(PS.STATE_INCOMPLETE_MANIFEST, rec['schedule_state'], ix)
@@ -940,9 +957,10 @@ class AgainstTheFrozenReplay(unittest.TestCase):
                              q['reconciliation']['planned_opportunities'], ix)
 
     def test_the_real_run_is_independent_of_input_order(self):
+        self.needs_data()
         a = RC.run([REAL_EXPORT], REAL_SPOTS, horizons=(60,))
         b = RC.run([REAL_EXPORT], REAL_SPOTS, horizons=(60,), reverse_input=True)
-        for ix in ('NF', 'BNF'):
+        for ix in self.with_data:
             self.assertEqual(a['indices'][ix]['h60']['variants_common'],
                              b['indices'][ix]['h60']['variants_common'], ix)
             self.assertEqual(a['indices'][ix]['h60']['reconciliation'],
@@ -975,7 +993,7 @@ class AgainstTheFrozenReplay(unittest.TestCase):
                       'collapsed_identical_duplicates', 'slots_from_inferred_clock'):
             self.assertEqual(ma[field], mb[field], field)
         hd = sorted(d for d in a if d < self.session)
-        for ix in ('NF', 'BNF'):
+        for ix in self.with_data:
             x, _r, _c = RC.compare_index_horizon(self.ex, ix, a, hd, 60)
             y, _r, _c = RC.compare_index_horizon(self.ex, ix, b, hd, 60)
             self.assertEqual(x['variants_common'], y['variants_common'], ix)
@@ -1069,6 +1087,10 @@ class CohortResolution(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.mkdtemp()
         self.ex = json.load(open(REAL_EXPORT))
+        if not any((self.ex['premium']['indices'][ix].get('records') or [])
+                   for ix in (self.ex.get('premium') or {}).get('indices') or {}):
+            self.skipTest('%s carries no premium records; the cohort rules need scored rows'
+                          % self.ex['manifest'].get('session_date_used'))
 
     def truncated(self, name='truncated.json'):
         doc = json.loads(json.dumps(self.ex))
@@ -1089,7 +1111,7 @@ class CohortResolution(unittest.TestCase):
         self.assertEqual(1, len(out['sessions']))
         self.assertEqual(1, out['inputs_kept'][0]['duplicate_inputs_collapsed'])
         self.assertEqual([], out['inputs_excluded'])
-        for ix in ('NF', 'BNF'):
+        for ix in sorted(out['across_sessions']):
             self.assertEqual(1, out['across_sessions'][ix]['h60']['sessions'], ix)
 
     def test_competing_exports_for_one_session_are_excluded_not_chosen(self):

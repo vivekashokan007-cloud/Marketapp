@@ -510,11 +510,22 @@ def compare_index_horizon(ex, ix, hist, hist_dates, horizon_min, slot_policy=DEF
     # is no longer the denominator, and the two are reported side by side on purpose
     cov['admitted_entry_candidates'] = len(entries)
     if not entries:
+        # THE SAME KEYS AS THE NORMAL PATH.  An early return that omits fields the scored path
+        # provides is a defect in its own right: a caller written against the normal shape
+        # raises KeyError on an export that happens to carry no premium data, which is a real
+        # state (`NO_PREMIUM_DATA_FOR_THIS_INDEX`) and not an error. Found by pointing the
+        # suite at a third real export that had none.
+        rec = PS.reconcile(plan, (), ())
         return ({'state': 'NO_ENTRY_CANDIDATES', 'horizon_min': horizon_min,
-                 'index': ix, 'schedule': _plan_view(plan),
+                 'index': ix, 'slot_policy': slot_policy,
+                 'schedule': _plan_view(plan),
                  'planned_opportunities': plan['planned_opportunities'],
-                 'coverage': dict(cov), 'variants': {}, 'variants_common': {},
-                 'reconciliation': PS.reconcile(plan, (), ())}, [], cov)
+                 'reconciliation': rec,
+                 'usable_coverage': rec['usable_coverage'],
+                 'admitted_entry_candidates': 0,
+                 'matched_exit': 0, 'common_scored': 0,
+                 'coverage': dict(cov), 'iv_fit_failures': {},
+                 'variants': {}, 'variants_common': {}}, [], cov)
 
     observed_keys, scored_keys, outside_keys = set(), set(), set()
     last_planned_min = (R7.mins(plan['eligible_entry_slots'][-1])
@@ -1128,17 +1139,22 @@ def run(export_paths, spots_path, horizons=HORIZONS_MIN, slot_policy=DEFAULT_SLO
     return out
 
 
-#!/usr/bin/env python3
 def _fmt(summary, label):
     rec = summary.get('reconciliation') or {}
     sched = summary.get('schedule') or {}
     cov = rec.get('usable_coverage')
-    lines = ['  %-10s planned %4d   admitted %4d   matched exit %4d   scored %4d   '
-             'usable %s'
-             % (label, rec.get('planned_opportunities', 0),
-                summary.get('admitted_entry_candidates', 0),
-                summary.get('matched_exit', 0), rec.get('scored_in_plan', 0),
-                ('%.1f%%' % (100 * cov)) if cov is not None else 'n/a')]
+    # `scored_in_plan` is deliberately None when the schedule is refused and the ratio is
+    # WITHHELD, so every plan-relative number here is formatted through `num`. `%d` on None
+    # raised TypeError and took the whole CLI down on an export that captured nothing.
+    def num(v, width=4):
+        return ('%*d' % (width, v)) if isinstance(v, int) else ('%*s' % (width, '-'))
+    lines = ['  %-10s planned %s   admitted %s   matched exit %s   scored %s   usable %s'
+             % (label, num(rec.get('planned_opportunities')),
+                num(summary.get('admitted_entry_candidates')),
+                num(summary.get('matched_exit')), num(rec.get('scored_in_plan')),
+                ('%.1f%%' % (100 * cov)) if cov is not None
+                else ('WITHHELD' if rec.get('schedule_state') not in (None, PS.STATE_VERIFIED)
+                      else 'n/a'))]
     if sched.get('state') != PS.STATE_VERIFIED:
         lines.append('             SCHEDULE %s (basis %s)'
                      % (sched.get('state'), sched.get('basis')))

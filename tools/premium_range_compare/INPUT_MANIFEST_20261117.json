@@ -33,7 +33,7 @@
  },
  "governed_sources": {
   "planned_schedule.py": "5574866f490d50f1dd306b9fae6e4a270bb3850215452c45d45ac82d49caf9c4",
-  "range_compare.py": "48447a5c6ef70888de09361ceec7597b8144830edb6b51d2c046ee2d73e7946b",
+  "range_compare.py": "cd3900073c3513957f43949d777a2bd32aed11b2e4a6f092e2db80025ab2f4e7",
   "stopping_rule.py": "8b89535a7d80a74e2bcfa25542ef46b5759dfcd3da09e510144456177482e24b",
   "tools/spot_path_baseline/premium_repricing_v2.py": "95e53e25d24ae0369f2c8d8ab63026a0cda499443ddae4041c6ee7ffb373233a"
  },
@@ -45,6 +45,13 @@
    "session_date_used": "2026-11-12",
    "sha256": "5f399accefabd0dd3f1f1f3bb829bb71fd6ae56a309dfc92db5ac18e6d3444cb",
    "status": "PRESENT_AND_VERIFIED"
+  },
+  "export_2026-11-13": {
+   "premium_state": "NO_PREMIUM_DATA",
+   "session_date_used": "2026-11-13",
+   "sha256": "4f544bee59af9020d5eb2846161d8ebffa7010a0d0e1492ef41a92ac41f51301",
+   "status": "PRESENT_AND_VERIFIED",
+   "used_for": "a cross-check on a third real export: it carries no premium records, which exposed two defects of mine -- the no-rows result omitted keys the scored path provides, and the CLI formatted a withheld None with %d. Both fixed; the structural tests now skip with a reason on such an export."
   },
   "export_2026-11-16_evening": {
    "blocks": [
@@ -116,7 +123,7 @@
  "note": "Inputs are NOT committed: raw phone exports stay out of the repository. This manifest records what each run read, by SHA-256, so a result can be tied to its input without the input being in the tree.",
  "protocol": {
   "file": "PROTOCOL_RANGE_TRIAL_DRAFT_v3.md",
-  "sha256": "34ac14e5688fddccaffc810d129cddb48d658e03d8f661a15f9b29ab35107ce4",
+  "sha256": "395bdfe032f745ae823f6272a032ffb22de1a203fad7b3e6347ea43b9beabb86",
   "supersedes": "PROTOCOL_RANGE_TRIAL_DRAFT_v2.md (deleted)"
  },
  "runs_committed": {
