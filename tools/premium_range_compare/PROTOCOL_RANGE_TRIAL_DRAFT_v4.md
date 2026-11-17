@@ -1,19 +1,26 @@
-# Protocol draft v3 — does a historical premium range add value over an IV-only range?
+# Protocol draft v4 — does a historical premium range add value over an IV-only range?
 
 **Status** DRAFT, **ready to freeze** pending one input · **Dated** 17 November 2026 IST ·
-**Supersedes** `PROTOCOL_RANGE_TRIAL_DRAFT_v2.md` (deleted; §0 lists every change and why)
+**Supersedes** `PROTOCOL_RANGE_TRIAL_DRAFT_v3.md` (deleted; §0 lists every change and why)
+
+The hashes below are **checked by a test** (`tests/test_protocol_hashes.py`), which also
+requires the input manifest to agree with them and the version strings named here to exist in
+the code. v3 claimed a stale hash for `stopping_rule.py`; a hash nobody checks is decoration.
 
 **Governs these files, by SHA-256 at the time of writing:**
 
 | file | sha256 |
 | --- | --- |
-| `tools/premium_range_compare/range_compare.py` | `cd3900073c3513957f43949d777a2bd32aed11b2e4a6f092e2db80025ab2f4e7` |
-| `tools/premium_range_compare/planned_schedule.py` | `5574866f490d50f1dd306b9fae6e4a270bb3850215452c45d45ac82d49caf9c4` |
-| `tools/premium_range_compare/stopping_rule.py` | `19ce42fa589946ec76af152238652790e9a793885efbffd577bb9b10b89484ce` |
+| `tools/premium_range_compare/range_compare.py` | `131135129d4b3487277cd3addc2bf98136176c517fef66f153d135b29f5afbb9` |
+| `tools/premium_range_compare/planned_schedule.py` | `4b35e6e7e04dc5ab807f82f46f9566e358d6f6cea61209bca34a8b547efc2bd4` |
+| `tools/premium_range_compare/stopping_rule.py` | `8b89535a7d80a74e2bcfa25542ef46b5759dfcd3da09e510144456177482e24b` |
 | `tools/spot_path_baseline/premium_repricing_v2.py` (frozen R7, **unmodified**) | `95e53e25d24ae0369f2c8d8ab63026a0cda499443ddae4041c6ee7ffb373233a` |
 
 **Versions** comparison `premium_neutral_range_comparison_v2_planned_coverage` · schedule
-`premium_range_planned_schedule_v1` · stopping rule `premium_range_stopping_rule_v1_exact` ·
+`premium_range_planned_schedule_v3_authoritative_rules` · capture rules
+`premium_capture_cohort_pilot_window_0920_1505_exclusive_v1` · session calendar
+`nse_regular_session_calendar_v1_app_holidays` · stopping rule
+`premium_range_stopping_rule_v1_exact` ·
 R7 pricing contract `2.6` · **branch** `review/premium-neutral-range-comparison-20261116`,
 base `124d62ee027941e43decc737e53d202c32b1d214`
 
@@ -21,7 +28,19 @@ base `124d62ee027941e43decc737e53d202c32b1d214`
 
 ## 0 · What changed, and why
 
-### v2 → v3 (this revision)
+### v3 → v4 (this revision)
+
+| v3 | v4 | why |
+| --- | --- | --- |
+| the plan came from the export's own `slot_manifest`, validated against **itself** | the plan comes from **authoritative rules** — the capture-window rules and a versioned session calendar — and the manifest is only ever validated **against** it (§4) | self-consistency is cheap. Cropping the manifest rows to 33 and resetting **both** totals to 33 produced a self-consistent manifest, a 126-key plan and **126/126 = 100%** with `eligible=true`, for a session that had lost more than half its capture |
+| a manifest slot was any value `R7.mins` would parse | a manifest slot must be **in the authoritative grid**, or the manifest is invalid (§4.1) | a row reading `15:99` parsed to minute 999 and pushed the 60-minute denominator from 342 to 414. A bad clock now invalidates the claim, not the plan |
+| a present but empty manifest fell back to the window and read as `VERIFIED` | present but with no usable row is **invalid** (§4.1) | absent and broken are different facts |
+| a refused manifest withheld every plan-relative number | the **plan is preserved** and `diagnostic_coverage` is reported; `usable_coverage` is withheld because the session cannot enter the cohort (§4.3) | the authoritative denominator does not depend on the manifest, so 126/342 = 36.8% is still the honest figure and worth printing |
+| the session date was not consulted | the **session calendar** decides whether the regular grid applies at all, with the holidays read from the app's own `brain.py` and its digest recorded (§4) | a weekend, a holiday, an uncovered year and a declared non-regular session are different facts, and none may be planned on the regular grid by default |
+| a pinned expectation was skipped when its provenance label said "independent" | the **digest guard** decides whether an assertion runs; provenance is recorded, not acted on (§10.2) | the 16 November assertion would have stayed asleep on the very export it was written for |
+| the governed hashes were hand-maintained | **checked by a test**, together with the manifest and the version strings | v3 listed a stale `stopping_rule.py` hash |
+
+### v2 → v3
 
 | v2 | v3 | why |
 | --- | --- | --- |
@@ -107,15 +126,22 @@ correction found index spot with `r = 0` gave entry basis errors of 8.27 (NIFTY)
 
 ## 4 · Coverage — against the planned schedule
 
-**The denominator is the plan, never the admitted quotes.** `planned_schedule.py` derives it
-before any realised quote is read:
+**The denominator comes from rules the export cannot influence.** `planned_schedule.py` builds
+it from two authoritative, versioned sources, before any realised quote, row or count is read:
 
-1. **preferred basis** — the export's own `slot_manifest`: `expected_slots`, one row per slot,
-   a per-slot state. The 12 November export declares **69** expected slots (09:20–15:00 on a
-   5-minute grid), 53 observed for NIFTY and 54 for BANKNIFTY, the rest
-   `NOT_OBSERVED_UNEXPLAINED` from 13:45 on;
-2. **fallback basis** — the declared pilot capture window, reported as `FALLBACK` because a
-   window the export does not itself declare is an assumption about the producing build.
+| source | version | what it decides |
+| --- | --- | --- |
+| capture-window rules, mirrored from `PremiumCaptureCohort` | `premium_capture_cohort_pilot_window_0920_1505_exclusive_v1` | the slot grid: 09:20 inclusive to 15:05 exclusive in 5-minute steps, **69 slots** |
+| session calendar, holidays read from the app's own `brain.py` with its digest recorded | `nse_regular_session_calendar_v1_app_holidays` | whether this date is a **regular session** at all |
+
+A weekend, a listed holiday, a date outside the calendar's covered years and a session declared
+non-regular are each distinguished and **refused** — none is planned on the regular grid by
+default. Reading the holidays from `brain.py` rather than restating them means this tool cannot
+disagree with the application about which days traded.
+
+The export supplies only the **contract identities** (`cohort.pinned_contracts`, cross-checked
+against `contracts_expected`). Its records, envelopes, quotes, manifest rows and manifest counts
+are **never** inputs to the plan.
 
 An **eligible entry slot** is one whose *planned target* is still inside the grid. On a 69-slot
 grid: 66 at 15 min, 63 at 30, **57 at 60**, 45 at 120. The plan is the cross product of eligible
@@ -141,38 +167,47 @@ plan never contained (`observed_entries_outside_plan`). Coverage cannot exceed 1
 
 **An explicitly incomplete state refuses the session rather than scoring it:**
 `INCOMPLETE_COHORT_NOT_RESOLVED`, `INCOMPLETE_PINNED_COUNT_DISAGREES_WITH_COHORT`,
-`INCOMPLETE_NO_SCHEDULE_BASIS`, `INCOMPLETE_NO_ELIGIBLE_SLOT_FOR_THIS_HORIZON`,
-`INCOMPLETE_SCHEDULE_MANIFEST_INCONSISTENT` (§4.1).
+`INCOMPLETE_SESSION_NOT_IN_CALENDAR`, `INCOMPLETE_SESSION_NOT_A_REGULAR_SESSION`,
+`INCOMPLETE_NO_ELIGIBLE_SLOT_FOR_THIS_HORIZON`. A manifest problem is a separate, named state
+that keeps the plan (§4.1).
 
-### 4.1 · A present but inconsistent manifest is incomplete, not usable
+### 4.1 · The manifest is a claim, validated against the authoritative plan
 
-The manifest is validated **against its own rows** before any denominator is built from it, and
-against **distinct valid slot keys** rather than the raw row count — so a malformed or
-duplicated row cannot make the arithmetic add up while a real slot is missing. The schedule is
-refused when:
+The manifest never sources the plan; it is the producer's own record of what it attempted, and
+this is where that claim is checked. Three outcomes:
 
-| check | audit field |
-| --- | --- |
-| `expected_slots` disagrees with the distinct valid slot rows | `declared_expected` vs `distinct_valid_slots` |
-| a row has no slot, or one that will not parse | `malformed_rows` |
-| a row repeats a slot key already seen | `duplicate_rows` |
-| `observed_slots` exceeds the distinct valid rows | — |
+| outcome | when | effect |
+| --- | --- | --- |
+| `VERIFIED` | the rows cover the authoritative grid exactly, the declared counts agree with it, no duplicate, malformed or out-of-grid row | eligible |
+| `MANIFEST_PRESENT_BUT_INVALID` | present with no usable row, no row list, a row whose slot will not parse, a row naming a slot **outside the authoritative grid** (`15:99`, `08:00`, `15:05`), or a duplicate row | **ineligible**, plan preserved |
+| `MANIFEST_DISAGREES_WITH_AUTHORITATIVE_SCHEDULE` | the rows do not cover the grid, `expected_slots` disagrees with the authoritative grid size, or `observed_slots` exceeds the valid rows | **ineligible**, plan preserved |
+| `VERIFIED_NO_MANIFEST_CROSS_CHECK` | no manifest at all | eligible, with the absence of a cross-check stated |
 
-On a refusal the **coverage ratio is withheld** — not computed against an empty plan, which
-would read as "everything is outside the plan" — while the **raw counts are preserved**:
-`observed_entries_total`, `scored_total` and
-`admitted_entries_outside_planned_window`. Valid late and missing quote counts therefore survive
-the refusal, and the session is excluded from the cohort with the reason and the audit attached.
+Validating against **distinct valid slot keys in the grid** — not the raw row count — is what
+stops a duplicated row from making the arithmetic add up while a real slot is missing.
 
-Measured on 12 November, both indices, the three cases that must behave differently:
+Measured on 12 November, both indices, the four cases that must behave differently:
 
-| input | schedule state | planned | scored | usable | observed |
+| input | schedule state | planned | scored | usable | diagnostic |
 | --- | --- | ---: | ---: | ---: | ---: |
-| full export (NIFTY) | `VERIFIED` | 342 | 246 | 71.9% | 318 |
-| quotes cropped at 12:00 | `VERIFIED` | 342 | 120 | **35.1% → excluded** | 192 |
-| quotes **and** manifest cropped | `INCOMPLETE_SCHEDULE_MANIFEST_INCONSISTENT` | 0 | — | **WITHHELD → excluded** | 192 |
-| a duplicate manifest row | `INCOMPLETE_SCHEDULE_MANIFEST_INCONSISTENT` | 0 | — | WITHHELD | 318 |
-| a malformed manifest row | `INCOMPLETE_SCHEDULE_MANIFEST_INCONSISTENT` | 0 | — | WITHHELD | 318 |
+| full export (NIFTY / BANKNIFTY) | `VERIFIED` | 342 | 246 / 251 | 71.9% / 73.4% | same |
+| quotes + envelopes cropped at 12:00, manifest intact | `VERIFIED` | 342 | 126 | **36.8% → excluded** | 36.8% |
+| quotes + envelopes + manifest cropped, both totals reset to 33 | `MANIFEST_DISAGREES_WITH_AUTHORITATIVE_SCHEDULE` | **342** | 126 | **withheld → excluded** | **36.8%** |
+| present manifest with no usable rows, or a `15:99` slot | `MANIFEST_PRESENT_BUT_INVALID` | **342** | 246 / 251 | withheld → excluded | 71.9% / 73.4% |
+
+### 4.3 · A refused manifest keeps the plan and reports diagnostic coverage
+
+Because the denominator is authoritative, a refused manifest does not cost us the number: the
+plan stays **342** and `diagnostic_coverage` is reported. `usable_coverage` is withheld, because
+the session cannot enter the cohort — the two are named differently so neither can be read as
+the other. The raw counts (`observed_entries_total`, `scored_total`,
+`admitted_entries_outside_planned_window`) are preserved in every case, so valid late and
+missing quote counts survive the refusal.
+
+Both ratios are withheld only when the **plan itself** is unknown
+(`INCOMPLETE_COHORT_NOT_RESOLVED`, `INCOMPLETE_PINNED_COUNT_DISAGREES_WITH_COHORT`,
+`INCOMPLETE_SESSION_NOT_IN_CALENDAR`, `INCOMPLETE_SESSION_NOT_A_REGULAR_SESSION`,
+`INCOMPLETE_NO_ELIGIBLE_SLOT_FOR_THIS_HORIZON`), where no denominator is defensible.
 
 ### 4.2 · The coverage invariant
 
@@ -340,7 +375,7 @@ problem, and `HIST` covers 75.9% at the same horizon.
 
 ### 10.2 · 16 November, independent — not reproduced here
 
-Reported by Codex, who **reran the corrected runner** on the evening export
+Codex **reran the corrected runner** on the evening export
 (`903225d9826dfbcac5011a099da1706f901854d40bc2e6d02d7ebdd43f9625e1`) on 17 November 2026. That
 file **has never been on this machine**, so these remain independent evidence. Codex reports the
 corrected runner scored **342 of 342 planned sixty-minute rows per index — 100% usable coverage**
@@ -352,8 +387,14 @@ corrected runner scored **342 of 342 planned sixty-minute rows per index — 100
 | BANKNIFTY | 342 | 41.306 | 43.819 | 63.5% | 78.1% | 58.562 |
 
 Unchanged R7 again SPLIT on both indices. These figures are **pinned as a regression**, keyed to
-that digest, in `tests/test_range_compare.py`; the test skips while the file is absent and runs
-the moment it arrives, confirming them or disagreeing.
+that digest, in `tests/test_range_compare.py`. The **digest guard** decides whether the
+assertion runs; the provenance label is recorded on the test and never used to skip it. So the
+assertion is live the moment that file is present, and until then it skips naming the digest it
+wants.
+
+The 414-admitted / 342-planned / 72-late shape is tested now rather than waited on:
+`CompleteCapture` builds a fixture covering the whole authoritative 69-slot grid and asserts
+exactly those three numbers, with `usable_coverage` 1.0.
 
 Under §9 they read: NIFTY **both pass** (74.0% and 81.0%) with `IV_ONLY` better on CRPS by 7.0%;
 BANKNIFTY **one passes** — `HIST` at 78.1%, `IV_ONLY` at 63.5% below the band — so `HIST`

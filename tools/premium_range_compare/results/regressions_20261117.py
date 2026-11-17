@@ -109,8 +109,8 @@ def main(argv=None):
     print('')
     print('  the plan is unchanged by the truncation, which is the point:')
     for ix in sorted(ex['premium']['indices']):
-        pf = PS.plan_for(ex['premium']['indices'][ix], ix, 60)
-        pt = PS.plan_for(trunc['premium']['indices'][ix], ix, 60)
+        pf = PS.plan_for(ex['premium']['indices'][ix], ix, 60, session)
+        pt = PS.plan_for(trunc['premium']['indices'][ix], ix, 60, session)
         print('  %-4s full plan %d keys, truncated plan %d keys, identical: %s  (basis %s)'
               % (ix, pf['planned_opportunities'], pt['planned_opportunities'],
                  pf['planned_keys'] == pt['planned_keys'], pf['basis']))
@@ -254,7 +254,7 @@ def main(argv=None):
     for label, doc in (('quotes AND manifest cropped', manifest_cropped),
                        ('a duplicate manifest row', dupe),
                        ('a malformed manifest row', malformed)):
-        p_ = PS.plan_for(doc['premium']['indices']['NF'], 'NF', 60)
+        p_ = PS.plan_for(doc['premium']['indices']['NF'], 'NF', 60, session)
         a = p_['manifest_audit']
         print('    %-28s rows %-3d distinct %-3d malformed %d duplicate %d declared %s'
               % (label, a['rows'], a['distinct_valid_slots'], a['malformed_rows'],
@@ -264,8 +264,77 @@ def main(argv=None):
     print('  counts are preserved rather than erased by a withheld ratio.')
     print('')
 
-    rule('ALL FOUR DEFECTS CLOSED ON THE INPUT THIS MACHINE HAS')
-    print('The 16 November evening export (903225d9...) is still absent, so the figures Codex')
+    # ── 5 ────────────────────────────────────────────────────────────────────────────────────
+    rule('5  THE PLAN COMES FROM AUTHORITATIVE RULES, NOT FROM THE EXPORT')
+    print('The defect: the plan came from the export\'s own slot manifest, validated against')
+    print('ITSELF -- and self-consistency is cheap. Cropping the rows to 33 AND resetting both')
+    print('totals to 33 gave a self-consistent manifest, a 126-key plan and 126/126 = 100%')
+    print('with eligible=true. A row reading 15:99 parsed to minute 999 and pushed the')
+    print('60-minute denominator from 342 to 414.')
+    print('')
+    cal = PS.load_session_calendar()
+    print('  capture rules  %s' % PS.CAPTURE_WINDOW_RULES_VERSION)
+    print('                 %s' % PS.PILOT_WINDOW_LABEL)
+    print('  calendar       %s   source %s   sha256 %s   holidays %d'
+          % (cal['version'], cal['source'], cal['sha256'][:16], cal['holiday_count']))
+    print('')
+
+    def variant(doc, at=None, crop_manifest=False, reset_totals=False, bad_slot=None,
+                empty=False):
+        out = copy.deepcopy(doc)
+        for ix in list(out['premium']['indices']):
+            n = out['premium']['indices'][ix]
+            sm = n.get('slot_manifest') or {}
+            if at is not None:
+                n['records'] = [r for r in n['records'] if R7.mins(r['slot']) <= at]
+                n['slot_envelopes'] = [e for e in n['slot_envelopes']
+                                       if R7.mins(e['slot']) <= at]
+                if crop_manifest:
+                    sm['rows'] = [r for r in sm['rows'] if R7.mins(r['slot']) <= at]
+                    if reset_totals:
+                        sm['expected_slots'] = len(sm['rows'])
+                        sm['observed_slots'] = len(sm['rows'])
+            if bad_slot:
+                sm['rows'].append({'slot': bad_slot, 'state': 'OBSERVED'})
+            if empty:
+                n['slot_manifest'] = {'rows': [], 'expected_slots': 0, 'observed_slots': 0}
+        return out
+
+    cases = [('1  full export', ex),
+             ('2  quotes+envelopes cropped @12:00, manifest intact', variant(ex, at=12 * 60)),
+             ('3  quotes+envelopes+manifest cropped, totals reset',
+              variant(ex, at=12 * 60, crop_manifest=True, reset_totals=True)),
+             ('4a present manifest with no usable rows', variant(ex, empty=True)),
+             ('4b present manifest with slot 15:99', variant(ex, bad_slot='15:99')),
+             ('4c present manifest with slot 15:05 (valid clock, outside the grid)',
+              variant(ex, bad_slot='15:05'))]
+    print('  %-62s %-4s %-46s %7s %7s %9s %10s'
+          % ('case', 'idx', 'schedule state', 'planned', 'scored', 'usable', 'diagnostic'))
+    for label, doc in cases:
+        for ix in sorted(doc['premium']['indices']):
+            s_, _r, _c = RC.compare_index_horizon(doc, ix, hist, hd, 60)
+            r = s_['reconciliation']
+            fmt = lambda v: '-' if v is None else ('%.1f%%' % (100 * v))
+            print('  %-62s %-4s %-46s %7d %7s %9s %10s'
+                  % (label if ix == sorted(doc['premium']['indices'])[0] else '', ix,
+                     r['schedule_state'], r['planned_opportunities'],
+                     r['scored_in_plan'] if r['scored_in_plan'] is not None else '-',
+                     fmt(r['usable_coverage']), fmt(r['diagnostic_coverage'])))
+    print('')
+    print('  the planned count is 342 in EVERY row above: the export cannot move it.')
+    print('')
+    print('  and a session the calendar cannot classify is refused rather than planned:')
+    for date in ('2026-11-14', '2026-12-25', '2027-01-04'):
+        p_ = PS.plan_for(ex['premium']['indices']['NF'], 'NF', 60, date, cal)
+        print('    %-12s %-38s planned %d   %s'
+              % (date, p_['state'], p_['planned_opportunities'],
+                 (p_['notes'] or [''])[0]))
+    print('')
+
+    rule('ALL FIVE DEFECTS CLOSED ON THE INPUT THIS MACHINE HAS')
+    print('Case 1 at 342/342 with 414 admitted needs the 16 November evening export, which is')
+    print('still absent; `CompleteCapture` in the test suite asserts that shape on a fixture')
+    print('covering the whole authoritative 69-slot grid. The figures Codex')
     print('reported for it remain independent evidence rather than a reproduction. The pinned')
     print('16 November regression in tests/test_range_compare.py runs the moment it arrives.')
     return 0

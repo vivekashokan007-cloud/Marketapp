@@ -1,9 +1,12 @@
-premium_range_planned_schedule_v1   export_2026-11-12.json
-  BNF    15 min  VERIFIED                 basis export_slot_manifest         grid 69  eligible 66  planned 396
-  BNF    30 min  VERIFIED                 basis export_slot_manifest         grid 69  eligible 63  planned 378
-  BNF    60 min  VERIFIED                 basis export_slot_manifest         grid 69  eligible 57  planned 342
-  BNF   120 min  VERIFIED                 basis export_slot_manifest         grid 69  eligible 45  planned 270
-  NF     15 min  VERIFIED                 basis export_slot_manifest         grid 69  eligible 66  planned 396
-  NF     30 min  VERIFIED                 basis export_slot_manifest         grid 69  eligible 63  planned 378
-  NF     60 min  VERIFIED                 basis export_slot_manifest         grid 69  eligible 57  planned 342
-  NF    120 min  VERIFIED                 basis export_slot_manifest         grid 69  eligible 45  planned 270
+premium_range_planned_schedule_v3_authoritative_rules   export_2026-11-12.json   session 2026-11-12
+  capture rules  premium_capture_cohort_pilot_window_0920_1505_exclusive_v1
+                 09:20 inclusive to 15:05 exclusive, 5-minute steps  (mirrored from PremiumCaptureCohort.WINDOW_OPEN_MIN / WINDOW_CLOSE_MIN / the five-minute poll grid)
+  calendar       nse_regular_session_calendar_v1_app_holidays  source app/src/main/python/brain.py  sha256 304115d9f9f347a3  holidays 15
+  BNF    15 min  VERIFIED                                      grid 69  eligible 66  planned 396
+  BNF    30 min  VERIFIED                                      grid 69  eligible 63  planned 378
+  BNF    60 min  VERIFIED                                      grid 69  eligible 57  planned 342
+  BNF   120 min  VERIFIED                                      grid 69  eligible 45  planned 270
+  NF     15 min  VERIFIED                                      grid 69  eligible 66  planned 396
+  NF     30 min  VERIFIED                                      grid 69  eligible 63  planned 378
+  NF     60 min  VERIFIED                                      grid 69  eligible 57  planned 342
+  NF    120 min  VERIFIED                                      grid 69  eligible 45  planned 270

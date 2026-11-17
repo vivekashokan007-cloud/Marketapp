@@ -1,6 +1,6 @@
 input   export_2026-11-12.json  sha256 5f399accefabd0dd3f1f1f3bb829bb71  session 2026-11-12
 history spots_20261021_20261104.jsonl  sha256 f6f29ed8fd6e1290f3d0f59e9be2cdd3  rows 855
-runner  premium_neutral_range_comparison_v2_planned_coverage   schedule premium_range_planned_schedule_v1
+runner  premium_neutral_range_comparison_v2_planned_coverage   schedule premium_range_planned_schedule_v3_authoritative_rules
 
 ==============================================================================================
 1  COVERAGE IS COUNTED AGAINST THE PLANNED SCHEDULE, NOT THE ADMITTED QUOTES
@@ -19,8 +19,8 @@ that stopped capturing had fewer "intended" opportunities and its ratio ROSE.
   NF   truncated: 120/192 = 62.5% (PASS)  vs planned 120/342 = 35.1% (FAIL)
 
   the plan is unchanged by the truncation, which is the point:
-  BNF  full plan 342 keys, truncated plan 342 keys, identical: True  (basis export_slot_manifest)
-  NF   full plan 342 keys, truncated plan 342 keys, identical: True  (basis export_slot_manifest)
+  BNF  full plan 342 keys, truncated plan 342 keys, identical: True  (basis authoritative_capture_rules_and_session_calendar)
+  NF   full plan 342 keys, truncated plan 342 keys, identical: True  (basis authoritative_capture_rules_and_session_calendar)
 
   missing planned entry slots on the truncated input, by slot:
   BNF  150 keys across 25 slots, 12:00 .. 14:00
@@ -71,14 +71,14 @@ The defect: cropping the MANIFEST as well as the quotes made the runner build a
   idx  input                        schedule state                              planned    scored     usable observed
   BNF  full export                  VERIFIED                                        342       251      73.4%      323
   BNF  quotes cropped only          VERIFIED                                        342       120      35.1%      192
-  BNF  quotes AND manifest cropped  INCOMPLETE_SCHEDULE_MANIFEST_INCONSISTENT         0         -   WITHHELD      192
-  BNF  a duplicate manifest row     INCOMPLETE_SCHEDULE_MANIFEST_INCONSISTENT         0         -   WITHHELD      323
-  BNF  a malformed manifest row     INCOMPLETE_SCHEDULE_MANIFEST_INCONSISTENT         0         -   WITHHELD      323
+  BNF  quotes AND manifest cropped  MANIFEST_DISAGREES_WITH_AUTHORITATIVE_SCHEDULE      342       120   WITHHELD      192
+  BNF  a duplicate manifest row     MANIFEST_PRESENT_BUT_INVALID                    342       251   WITHHELD      323
+  BNF  a malformed manifest row     MANIFEST_PRESENT_BUT_INVALID                    342       251   WITHHELD      323
   NF   full export                  VERIFIED                                        342       246      71.9%      318
   NF   quotes cropped only          VERIFIED                                        342       120      35.1%      192
-  NF   quotes AND manifest cropped  INCOMPLETE_SCHEDULE_MANIFEST_INCONSISTENT         0         -   WITHHELD      192
-  NF   a duplicate manifest row     INCOMPLETE_SCHEDULE_MANIFEST_INCONSISTENT         0         -   WITHHELD      318
-  NF   a malformed manifest row     INCOMPLETE_SCHEDULE_MANIFEST_INCONSISTENT         0         -   WITHHELD      318
+  NF   quotes AND manifest cropped  MANIFEST_DISAGREES_WITH_AUTHORITATIVE_SCHEDULE      342       120   WITHHELD      192
+  NF   a duplicate manifest row     MANIFEST_PRESENT_BUT_INVALID                    342       246   WITHHELD      318
+  NF   a malformed manifest row     MANIFEST_PRESENT_BUT_INVALID                    342       246   WITHHELD      318
 
   the audit that explains each refusal, NIFTY:
     quotes AND manifest cropped  rows 33  distinct 33  malformed 0 duplicate 0 declared 69
@@ -89,8 +89,44 @@ The defect: cropping the MANIFEST as well as the quotes made the runner build a
   counts are preserved rather than erased by a withheld ratio.
 
 ==============================================================================================
-ALL FOUR DEFECTS CLOSED ON THE INPUT THIS MACHINE HAS
+5  THE PLAN COMES FROM AUTHORITATIVE RULES, NOT FROM THE EXPORT
 ==============================================================================================
-The 16 November evening export (903225d9...) is still absent, so the figures Codex
+The defect: the plan came from the export's own slot manifest, validated against
+ITSELF -- and self-consistency is cheap. Cropping the rows to 33 AND resetting both
+totals to 33 gave a self-consistent manifest, a 126-key plan and 126/126 = 100%
+with eligible=true. A row reading 15:99 parsed to minute 999 and pushed the
+60-minute denominator from 342 to 414.
+
+  capture rules  premium_capture_cohort_pilot_window_0920_1505_exclusive_v1
+                 09:20 inclusive to 15:05 exclusive, 5-minute steps
+  calendar       nse_regular_session_calendar_v1_app_holidays   source app/src/main/python/brain.py   sha256 304115d9f9f347a3   holidays 15
+
+  case                                                           idx  schedule state                                 planned  scored    usable diagnostic
+  1  full export                                                 BNF  VERIFIED                                           342     251     73.4%      73.4%
+                                                                 NF   VERIFIED                                           342     246     71.9%      71.9%
+  2  quotes+envelopes cropped @12:00, manifest intact            BNF  VERIFIED                                           342     126     36.8%      36.8%
+                                                                 NF   VERIFIED                                           342     126     36.8%      36.8%
+  3  quotes+envelopes+manifest cropped, totals reset             BNF  MANIFEST_DISAGREES_WITH_AUTHORITATIVE_SCHEDULE     342     126         -      36.8%
+                                                                 NF   MANIFEST_DISAGREES_WITH_AUTHORITATIVE_SCHEDULE     342     126         -      36.8%
+  4a present manifest with no usable rows                        BNF  MANIFEST_PRESENT_BUT_INVALID                       342     251         -      73.4%
+                                                                 NF   MANIFEST_PRESENT_BUT_INVALID                       342     246         -      71.9%
+  4b present manifest with slot 15:99                            BNF  MANIFEST_PRESENT_BUT_INVALID                       342     251         -      73.4%
+                                                                 NF   MANIFEST_PRESENT_BUT_INVALID                       342     246         -      71.9%
+  4c present manifest with slot 15:05 (valid clock, outside the grid) BNF  MANIFEST_PRESENT_BUT_INVALID                       342     251         -      73.4%
+                                                                 NF   MANIFEST_PRESENT_BUT_INVALID                       342     246         -      71.9%
+
+  the planned count is 342 in EVERY row above: the export cannot move it.
+
+  and a session the calendar cannot classify is refused rather than planned:
+    2026-11-14   INCOMPLETE_SESSION_NOT_IN_CALENDAR     planned 0   session 2026-11-14 is a weekend
+    2026-12-25   INCOMPLETE_SESSION_NOT_IN_CALENDAR     planned 0   session 2026-12-25 is an NSE holiday
+    2027-01-04   INCOMPLETE_SESSION_NOT_IN_CALENDAR     planned 0   session 2027-01-04 is outside the calendar years 2026-2026
+
+==============================================================================================
+ALL FIVE DEFECTS CLOSED ON THE INPUT THIS MACHINE HAS
+==============================================================================================
+Case 1 at 342/342 with 414 admitted needs the 16 November evening export, which is
+still absent; `CompleteCapture` in the test suite asserts that shape on a fixture
+covering the whole authoritative 69-slot grid. The figures Codex
 reported for it remain independent evidence rather than a reproduction. The pinned
 16 November regression in tests/test_range_compare.py runs the moment it arrives.

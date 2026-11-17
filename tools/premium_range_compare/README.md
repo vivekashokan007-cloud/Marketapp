@@ -11,10 +11,10 @@ respect to its inputs.
 | file | what it is |
 | --- | --- |
 | `range_compare.py` | the runner: one centre, two candidate ranges, the frozen model as a reference, every refusal named, coverage against the **planned schedule**, cohort resolution, a deterministic historical join, and a quantile-grid sensitivity sweep |
-| `planned_schedule.py` | the planned opportunity set, derived from the export's own slot manifest **before** any realised quote is read — the denominator coverage is measured against |
+| `planned_schedule.py` | the planned opportunity set, derived from **authoritative** capture-window rules and a versioned session calendar — never from the export's counts, rows or quotes. The export's slot manifest is validated **against** it |
 | `stopping_rule.py` | exact binomial tails and the exact multi-look level, computed rather than asserted, with a Monte Carlo cross-check |
-| `PROTOCOL_RANGE_TRIAL_DRAFT_v3.md` | the trial rules, dated and hashed, **ready to freeze** pending one input. §0 lists every change from v1 and v2 with its reason |
-| `tests/` | 122 checks across four modules, no network. 97 run anywhere; 25 need the real inputs and skip loudly without them. `test_cli_smoke.py` runs every documented command as an **isolated subprocess** |
+| `PROTOCOL_RANGE_TRIAL_DRAFT_v4.md` | the trial rules, dated and hashed, **ready to freeze** pending one input. §0 lists every change from v1, v2 and v3 with its reason, and the hashes are checked by a test |
+| `tests/` | 142 checks across five modules, no network. `test_cli_smoke.py` runs every documented command as an **isolated subprocess**; `test_protocol_hashes.py` checks the protocol's claimed hashes against the files and the manifest |
 | `results/` | the machine-readable scores and printed runs for 12 November, the planned-schedule derivation, the stopping-rule levels, and `regressions_20261117.{py,txt}` — the three defects reproduced before and after, from the same inputs |
 | `INPUT_MANIFEST_20261117.json` | every input by SHA-256, the governed source hashes, the independent 16 November figures, and the discrepancies found |
 | `tests/test_cli_smoke.py` | the documented `python3 -I` commands, run as subprocesses from the repository root |
@@ -48,7 +48,7 @@ python3 -I tools/spot_path_baseline/premium_repricing_v2.py \
     <export.json> <spots.jsonl> --out <dir>
 
 # the tests. 7 of them need the real inputs:
-cd tools/premium_range_compare && python3 -m unittest discover -s tests      # 122 run, 25 skipped
+cd tools/premium_range_compare && python3 -m unittest discover -s tests      # 142 run
 RANGE_EXPORT=<export_2026-11-12.json> RANGE_SPOTS=<spots.jsonl> \
     python3 -m unittest discover -s tests          # 52 run, 0 skipped
 ```
@@ -76,11 +76,17 @@ The denominator is the **planned** schedule — 57 eligible entry slots × 6 pin
 the export's own slot manifest — not the admitted quotes. Counting against admitted quotes let a
 capture truncated at 12:00 report 62.5% and pass a 60% gate when its honest figure was 35.1%.
 
-The manifest is validated **against its own rows** before any denominator is built from it: a
-header that disagrees with its distinct valid slot rows, a duplicate row or a malformed row makes
-the schedule `INCOMPLETE_SCHEDULE_MANIFEST_INCONSISTENT`, the coverage ratio is **withheld** and
-the session is excluded — while the raw observed, scored and late counts are preserved. Cropping
-the manifest as well as the quotes used to yield `VERIFIED` and 126/126 = 100%.
+The plan comes from **authoritative rules** — the capture-window rules mirrored from
+`PremiumCaptureCohort` and a session calendar whose holidays are read from the app's own
+`brain.py` — so the export cannot move it. Its slot manifest is validated **against** that plan:
+a slot outside the grid (`15:99`, `15:05`), a duplicate, a malformed row or no usable row makes
+it `MANIFEST_PRESENT_BUT_INVALID`; rows that do not cover the grid, or declared counts that
+disagree with it, make it `MANIFEST_DISAGREES_WITH_AUTHORITATIVE_SCHEDULE`. Either way the plan
+is preserved, `diagnostic_coverage` is reported and `usable_coverage` is withheld because the
+session cannot enter the cohort.
+
+Cropping the manifest **and resetting both its totals** used to yield `VERIFIED` and
+126/126 = 100%; it now reports 342 planned, 126 scored, 36.8% diagnostic, excluded.
 
 `planned ≥ admitted` is **not** an invariant: a complete capture admits 69 × 6 = 414 entry quotes
 against 342 sixty-minute opportunities, the 72 extra being late quotes whose targets fall past the

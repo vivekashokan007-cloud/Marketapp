@@ -2,7 +2,7 @@
 NEUTRAL PREMIUM RANGE COMPARISON   premium_neutral_range_comparison_v2_planned_coverage   (R7 pricing contract 2.6)
 ====================================================================================================
 sessions 2026-11-12   quantile grid 201   min prior sessions 5   exit window +/-5 s
-inputs supplied 1 -> kept 1, excluded 0; coverage denominator: the PLANNED schedule, from the export's own slot manifest or the declared capture window; never the admitted quotes
+inputs supplied 1 -> kept 1, excluded 0; coverage denominator: the AUTHORITATIVE capture-window rules and session calendar; never the export's counts, rows or quotes
 history spots_20261021_20261104.jsonl  f6f29ed8fd6e1290  rows 855  slot policy exact  prior sessions used 11
 centre: the observed entry bid/ask midpoint, identical for every variant
 primary horizon 60 min; 15, 30, 120 reported separately and never used to pick the primary

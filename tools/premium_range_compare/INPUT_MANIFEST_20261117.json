@@ -3,9 +3,10 @@
  "branch": "review/premium-neutral-range-comparison-20261116",
  "declared": "2026-11-17 IST",
  "declared_settings": {
+  "capture_window_rules_version": "premium_capture_cohort_pilot_window_0920_1505_exclusive_v1",
   "centre": "the observed entry bid/ask midpoint, identical for every variant",
   "comparison_version": "premium_neutral_range_comparison_v2_planned_coverage",
-  "coverage_denominator": "the PLANNED schedule from the export's own slot manifest; never the admitted quotes",
+  "coverage_denominator": "the AUTHORITATIVE capture-window rules and session calendar; never the export's counts, rows or quotes",
   "coverage_invariant": "scored_in_plan <= observed_entries_in_plan <= planned_opportunities; late quotes counted separately",
   "decision_point_sessions": 20,
   "decision_sign_threshold": "15 of 20, exact one-sided level 2.069473%",
@@ -20,11 +21,13 @@
   "isolated_invocation": "every documented command runs under python3 -I from the repository root; checked by subprocess in tests/test_cli_smoke.py",
   "min_prior_sessions": 5,
   "min_usable_coverage": 0.6,
+  "pinned_expectation_guard": "the SHA-256 digest decides whether an assertion runs; the provenance label is recorded, never used to skip",
   "primary_horizon_min": 60,
   "quantile_grid_n": 201,
   "r7_pricing_contract": "2.6",
-  "schedule_manifest_validation": "validated against distinct valid slot rows; an inconsistent manifest is INCOMPLETE and the session is excluded, with the coverage ratio withheld and raw counts preserved",
-  "schedule_version": "premium_range_planned_schedule_v1",
+  "schedule_manifest_validation": "validated AGAINST the authoritative grid; a slot outside the grid, a duplicate, a malformed row or no usable row makes it invalid, and rows that do not cover the grid make it a mismatch. Either way the plan is preserved and diagnostic coverage is reported while usable coverage is withheld",
+  "schedule_version": "premium_range_planned_schedule_v3_authoritative_rules",
+  "session_calendar_version": "nse_regular_session_calendar_v1_app_holidays",
   "slot_policy": "exact",
   "stopping_rule_version": "premium_range_stopping_rule_v1_exact"
  },
@@ -32,8 +35,8 @@
   "tools/spot_path_baseline/premium_repricing_v2.py": "95e53e25d24ae0369f2c8d8ab63026a0cda499443ddae4041c6ee7ffb373233a"
  },
  "governed_sources": {
-  "planned_schedule.py": "5574866f490d50f1dd306b9fae6e4a270bb3850215452c45d45ac82d49caf9c4",
-  "range_compare.py": "cd3900073c3513957f43949d777a2bd32aed11b2e4a6f092e2db80025ab2f4e7",
+  "planned_schedule.py": "4b35e6e7e04dc5ab807f82f46f9566e358d6f6cea61209bca34a8b547efc2bd4",
+  "range_compare.py": "131135129d4b3487277cd3addc2bf98136176c517fef66f153d135b29f5afbb9",
   "stopping_rule.py": "8b89535a7d80a74e2bcfa25542ef46b5759dfcd3da09e510144456177482e24b",
   "tools/spot_path_baseline/premium_repricing_v2.py": "95e53e25d24ae0369f2c8d8ab63026a0cda499443ddae4041c6ee7ffb373233a"
  },
@@ -119,20 +122,26 @@
    "status": "PRESENT_AND_VERIFIED"
   }
  },
- "manifest_version": "premium_range_comparison_inputs_20261117_v3",
+ "manifest_version": "premium_range_comparison_inputs_20261117_v4",
  "note": "Inputs are NOT committed: raw phone exports stay out of the repository. This manifest records what each run read, by SHA-256, so a result can be tied to its input without the input being in the tree.",
  "protocol": {
-  "file": "PROTOCOL_RANGE_TRIAL_DRAFT_v3.md",
-  "sha256": "395bdfe032f745ae823f6272a032ffb22de1a203fad7b3e6347ea43b9beabb86",
-  "supersedes": "PROTOCOL_RANGE_TRIAL_DRAFT_v2.md (deleted)"
+  "file": "PROTOCOL_RANGE_TRIAL_DRAFT_v4.md",
+  "hashes_checked_by": "tests/test_protocol_hashes.py",
+  "sha256": "87a3e8b3903e4bbe58d659deb71f1e0e44d2c7df33b615008e1d09a27207d1d0",
+  "supersedes": "PROTOCOL_RANGE_TRIAL_DRAFT_v3.md (deleted)"
  },
  "runs_committed": {
-  "planned_schedule_2026-11-12.txt": "afb85dfcccf5c879d68cee15b673e78c5f4dd7115808ea8415d476d1a155bf10",
-  "range_comparison_2026-11-12.json": "381e99d4a35ec2d846c79dcda573873e7bf6edab1d27232c014d61319dcdc58d",
-  "range_comparison_2026-11-12.txt": "c37dea0dbff81c0dd48b75d377320721df5e7b2b6a31b9be4208fe2981af0e4b",
-  "regressions_20261117.py": "89ffa32b08c7c2aef30d979f87c5fb45ee9150545e99435ade165d9476837254",
-  "regressions_20261117.txt": "90de772bc3c423c48c0fcb8ba35ace2ecb2c7d3e1f69f0aac6776d22ab515ef3",
+  "planned_schedule_2026-11-12.txt": "c5a3ebb82bcf2b5f887b52335b1d30e75c58102a25567ee3a17951011d9d57bb",
+  "range_comparison_2026-11-12.json": "ab977dfc2ce577361b8158e64b1c2cf1e79d0cf83b0f57c9c4438495c255c0e0",
+  "range_comparison_2026-11-12.txt": "0de17f5219f0d04a0d1983f52a586ea83c3073a19b8f37a962ef34f6a4b2636c",
+  "regressions_20261117.py": "497ddf2cdaa39d6a5eb4096353e807995300c43a21328c6a83713dc4db9ec849",
+  "regressions_20261117.txt": "ef0adc620f785833109909ff5df8208e2a91004fdcc3ea2a68dce83a140e6366",
   "stopping_rule_levels.txt": "7250a2eb2c3b4413bbdf754cc29334389be5d59d68d8f6febc986e253f8b8127"
  },
- "supersedes": "premium_range_comparison_inputs_20261117_v2"
+ "session_calendar": {
+  "sha256": "304115d9f9f347a39c4ff79bf7ca5d90b026b41436049a16c52d397e4d44c40a",
+  "source": "app/src/main/python/brain.py",
+  "version": "nse_regular_session_calendar_v1_app_holidays"
+ },
+ "supersedes": "premium_range_comparison_inputs_20261117_v3"
 }

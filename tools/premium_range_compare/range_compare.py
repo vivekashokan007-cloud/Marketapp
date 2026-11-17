@@ -490,7 +490,8 @@ def admit(ex, ix):
 # ── one index, one horizon ───────────────────────────────────────────────────────────────────
 
 
-def compare_index_horizon(ex, ix, hist, hist_dates, horizon_min, slot_policy=DEFAULT_SLOT_POLICY):
+def compare_index_horizon(ex, ix, hist, hist_dates, horizon_min, slot_policy=DEFAULT_SLOT_POLICY,
+                          session_date=None, calendar=None):
     """Score every variant for one index at one horizon.  Returns (summary, rows, coverage).
 
     THE COVERAGE LEDGER IS BUILT FROM INTENDED OPPORTUNITIES, not from what happened to score.
@@ -501,7 +502,9 @@ def compare_index_horizon(ex, ix, hist, hist_dates, horizon_min, slot_policy=DEF
     scored.
     """
     node = ((ex.get('premium') or {}).get('indices') or {}).get(ix) or {}
-    plan = PS.plan_for(node, ix, horizon_min)
+    session_date = session_date or ((ex.get('manifest') or {}).get('session_date_used')
+                                   or (ex.get('manifest') or {}).get('session_date_requested'))
+    plan = PS.plan_for(node, ix, horizon_min, session_date, calendar)
     q, pc, fwd_by_acq, entries, by_contract, cov = admit(ex, ix)
     cov['planned_opportunities'] = plan['planned_opportunities']
     cov['schedule_state'] = plan['state']
@@ -860,8 +863,10 @@ def run_session(export_path, spots_path, horizons=HORIZONS_MIN,
     session = ex['manifest']['session_date_used']
     hist, hmeta = load_history(spots_path, slot_policy)
     hist_dates = sorted(d for d in hist if d < session)
+    calendar = PS.load_session_calendar()
 
     out = {'session': session,
+           'session_calendar': {k: v for k, v in calendar.items() if k != 'holidays'},
            'export': {'path': os.path.basename(export_path),
                       'sha256': hashlib.sha256(open(export_path, 'rb').read()).hexdigest()},
            'history': hmeta,
@@ -872,7 +877,7 @@ def run_session(export_path, spots_path, horizons=HORIZONS_MIN,
         out['indices'][ix] = {}
         for h in horizons:
             summary, _rows, _cov = compare_index_horizon(ex, ix, hist, hist_dates, h,
-                                                         slot_policy)
+                                                         slot_policy, session, calendar)
             out['indices'][ix]['h%d' % h] = summary
     return out
 
@@ -956,7 +961,7 @@ def grid_sensitivity(export_path, spots_path, index_name, horizon_min,
             QUANTILE_GRID = tuple((i + 0.5) / n for i in range(n))
             GRID_Z = tuple(norm_ppf(p) for p in QUANTILE_GRID)
             s, _r, _c = compare_index_horizon(ex, index_name, hist, hist_dates, horizon_min,
-                                              slot_policy)
+                                              slot_policy, session)
             v = (s.get('variants_common') or {})
             rows.append({'grid_n': n,
                          'IV_ONLY': v.get('IV_ONLY'), 'HIST': v.get('HIST'),
@@ -1058,10 +1063,14 @@ def session_eligibility(session_result, horizon=PRIMARY_HORIZON_MIN,
         sched = (node.get('schedule') or {}).get('state')
         cov = rec.get('usable_coverage')
         reasons = []
-        if sched != PS.STATE_VERIFIED:
+        if sched not in PS.ELIGIBLE_STATES:
             reasons.append('schedule_%s' % str(sched).lower())
         if cov is None:
-            reasons.append('no_usable_coverage_computed')
+            diag = rec.get('diagnostic_coverage')
+            reasons.append('no_usable_coverage_computed'
+                           + ('' if diag is None else
+                              ' (diagnostic coverage %.3f against the authoritative plan)'
+                              % diag))
         elif cov < min_coverage:
             reasons.append('usable_coverage_%.3f_below_%.2f' % (cov, min_coverage))
         leading = None
@@ -1070,10 +1079,13 @@ def session_eligibility(session_result, horizon=PRIMARY_HORIZON_MIN,
             leading = 'missing_entry_slots=%d keys across %d slots' % (
                 rec.get('missing_entry_keys', 0), len(missing))
         out[ix] = {'eligible': not reasons, 'usable_coverage': cov,
+                   'diagnostic_coverage': rec.get('diagnostic_coverage'),
                    'planned_opportunities': rec.get('planned_opportunities'),
                    'scored_in_plan': rec.get('scored_in_plan'),
                    'schedule_state': sched, 'reasons': reasons,
                    'leading_shortfall': leading,
+                   'manifest_state': (rec.get('manifest_audit') or {}).get('state'),
+                   'manifest_reasons': (rec.get('manifest_audit') or {}).get('reasons'),
                    'min_usable_coverage': min_coverage}
     return out
 
@@ -1104,6 +1116,8 @@ def run(export_paths, spots_path, horizons=HORIZONS_MIN, slot_policy=DEFAULT_SLO
     out = {'comparison_version': COMPARISON_VERSION,
            'r7_contract_version': R7_CONTRACT_VERSION,
            'schedule_version': PS.SCHEDULE_VERSION,
+           'capture_window_rules_version': PS.CAPTURE_WINDOW_RULES_VERSION,
+           'session_calendar_version': PS.SESSION_CALENDAR_VERSION,
            'primary_horizon_min': PRIMARY_HORIZON_MIN,
            'horizons_min': list(horizons),
            'horizon_tolerance_s': HORIZON_TOL_S,
@@ -1116,8 +1130,8 @@ def run(export_paths, spots_path, horizons=HORIZONS_MIN, slot_policy=DEFAULT_SLO
            'uncentred_diagnostics': list(DIAGNOSTIC_UNCENTRED),
            'reference_variant_not_recentred': 'R7_E0_FWD',
            'event_age': 'UNKNOWN -- no verified exchange quote event clock',
-           'coverage_denominator': 'the PLANNED schedule, from the export\'s own slot manifest '
-                                   'or the declared capture window; never the admitted quotes',
+           'coverage_denominator': 'the AUTHORITATIVE capture-window rules and session '
+                                   'calendar; never the export\'s counts, rows or quotes',
            'aggregation': 'rows -> session mean per index -> mean across ELIGIBLE sessions',
            'inputs_supplied': len(export_paths),
            'inputs_kept': [{k: v for k, v in it.items() if k != 'path'} for it in keep],
@@ -1155,9 +1169,15 @@ def _fmt(summary, label):
                 ('%.1f%%' % (100 * cov)) if cov is not None
                 else ('WITHHELD' if rec.get('schedule_state') not in (None, PS.STATE_VERIFIED)
                       else 'n/a'))]
-    if sched.get('state') != PS.STATE_VERIFIED:
-        lines.append('             SCHEDULE %s (basis %s)'
-                     % (sched.get('state'), sched.get('basis')))
+    if sched.get('state') not in PS.ELIGIBLE_STATES:
+        diag = rec.get('diagnostic_coverage')
+        lines.append('             SCHEDULE %s%s'
+                     % (sched.get('state'),
+                        '' if diag is None
+                        else '   diagnostic coverage %.1f%% of the authoritative plan'
+                             % (100 * diag)))
+        for why in ((rec.get('manifest_audit') or {}).get('reasons') or []):
+            lines.append('               manifest: %s' % why)
     if rec.get('missing_entry_keys'):
         lines.append('             missing %d planned entry keys across %d slots; '
                      'admitted outside the planned window %d'

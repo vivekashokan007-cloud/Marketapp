@@ -20,6 +20,7 @@ The properties these pin, in the order the handoff asks for them:
 """
 import datetime
 import json
+import os
 import shutil
 import tempfile
 import math
@@ -155,7 +156,10 @@ def export(quotes, index_name='NF', session=SESSION, expiry=EXPIRY, underlying='
     # the fixture declares its OWN slot manifest, so `planned_schedule` reads a VERIFIED basis
     # rather than falling back to the pilot window. `manifest_slots` lets a test plan a grid
     # wider than the slots it actually captured, which is how a missing slot is exercised.
-    grid = manifest_slots or sorted(quotes)
+    # the manifest enumerates the AUTHORITATIVE grid by default, which is what a real
+    # producer's manifest does; only the fixture's own clocks are marked OBSERVED. A test that
+    # wants a narrower or wider manifest passes `manifest_slots` explicitly.
+    grid = manifest_slots or [PS.hhmm(m) for m in PS.window_grid()]
     observed = set(quotes)
     manifest = {'expected_slots': len(grid), 'observed_slots': len(observed),
                 'capture_started_slot': None,
@@ -524,14 +528,15 @@ class CoverageLedger(unittest.TestCase):
         """A session that simply stopped capturing must not look like a session that scored."""
         # the plan covers 09:20 and 10:20, so the 09:20 entry IS a planned opportunity whose
         # exit slot was never captured: it stays in the denominator
-        summary, rows, cov = self.session({'09:20': FORWARD},
-                                          manifest_slots=['09:20', '10:20'])
+        summary, rows, cov = self.session({'09:20': FORWARD})
         rec = summary['reconciliation']
         self.assertEqual(PS.STATE_VERIFIED, summary['schedule']['state'])
-        self.assertEqual(6, rec['planned_opportunities'], 'one eligible slot x six contracts')
-        self.assertEqual(6, rec['observed_entries_in_plan'])
-        self.assertEqual(0, rec['scored_in_plan'])
+        # the plan is the AUTHORITATIVE 342 whatever this fixture captured
+        self.assertEqual(342, rec['planned_opportunities'])
+        self.assertEqual(6, rec['observed_entries_in_plan'], 'one slot x six contracts')
+        self.assertEqual(0, rec['scored_in_plan'], 'no exit, so nothing scored')
         self.assertEqual(0.0, rec['usable_coverage'])
+        self.assertEqual(336, rec['missing_entry_keys'])
         self.assertEqual(0, summary['matched_exit'])
         self.assertEqual(0, summary['common_scored'])
         self.assertEqual(6, cov['rej_no_exit_quote_within_tolerance'])
@@ -541,8 +546,7 @@ class CoverageLedger(unittest.TestCase):
         self.assertTrue(all(r.get('nearest_exit_deviation_s') is None for r in rows))
 
     def test_an_exit_outside_the_window_reports_how_far_outside_it_was(self):
-        summary, rows, cov = self.session({'09:20': FORWARD, '10:25': FORWARD},
-                                          manifest_slots=['09:20', '10:20', '10:25'])
+        summary, rows, cov = self.session({'09:20': FORWARD, '10:25': FORWARD})
         self.assertEqual(12, summary['admitted_entry_candidates'])
         self.assertEqual(0, summary['matched_exit'])
         self.assertEqual(12, cov['rej_no_exit_quote_within_tolerance'])
@@ -553,9 +557,10 @@ class CoverageLedger(unittest.TestCase):
     def test_a_scored_opportunity_reports_every_variant_and_its_centring(self):
         summary, rows, cov = self.session({'09:20': FORWARD, '10:20': FORWARD + 40.0})
         rec = summary['reconciliation']
-        self.assertEqual(6, rec['planned_opportunities'])
-        self.assertEqual(6, rec['scored_in_plan'])
-        self.assertEqual(1.0, rec['usable_coverage'], 'every planned opportunity scored')
+        self.assertEqual(342, rec['planned_opportunities'])
+        self.assertEqual(6, rec['scored_in_plan'], 'the 09:20 entries scored at 10:20')
+        self.assertEqual(12, rec['observed_entries_in_plan'],
+                         'both slots offered an entry; only the first could reach an exit')
         self.assertEqual(6, summary['matched_exit'])
         self.assertEqual(6, summary['common_scored'])
         scored = [r for r in rows if r['scores']]
@@ -637,6 +642,66 @@ class CoverageLedger(unittest.TestCase):
         summary, _rows, cov = RC.compare_index_horizon(ex, 'NF', hist, hd, 30)
         self.assertEqual(0, summary['common_scored'])
         self.assertGreater(cov['rej_target_at_or_after_expiry'], 0)
+
+
+class CompleteCapture(unittest.TestCase):
+    """The 16 November SHAPE, built here because that export is not on this machine.
+
+    A capture covering the whole authoritative 69-slot grid admits 69 x 6 = 414 entry quotes
+    while only 342 of them are sixty-minute opportunities; the 72 extra are LATE quotes whose
+    targets fall past the end of the grid. Codex reports exactly those numbers for the evening
+    export, and this fixture reproduces the shape deterministically so the invariant is tested
+    rather than waited on.
+    """
+
+    def build(self):
+        grid = [PS.hhmm(m) for m in PS.window_grid()]
+        quotes = {c: FORWARD + 0.5 * i for i, c in enumerate(grid)}
+        clocks = sorted(set(grid) | {PS.hhmm(m + 60) for m in PS.window_grid()})
+        rows = history(['2026-11-%02d' % d for d in range(1, 10)], clocks)
+        hist, _ = RC.load_history(write_history(rows))
+        hd = sorted(d for d in hist if d < SESSION)
+        return export(quotes), hist, hd
+
+    def test_a_complete_capture_scores_every_planned_opportunity(self):
+        ex, hist, hd = self.build()
+        s, _rows, _cov = RC.compare_index_horizon(ex, 'NF', hist, hd, 60)
+        rec = s['reconciliation']
+        self.assertEqual(PS.STATE_VERIFIED, rec['schedule_state'])
+        self.assertEqual(414, rec['observed_entries_total'], '69 slots x 6 contracts')
+        self.assertEqual(342, rec['planned_opportunities'], '57 eligible slots x 6')
+        self.assertEqual(342, rec['scored_in_plan'])
+        self.assertEqual(1.0, rec['usable_coverage'])
+        self.assertEqual(72, rec['admitted_entries_outside_planned_window'],
+                         'the 12 slots from 14:05 to 15:00, x 6 contracts')
+        self.assertEqual(72, rec['observed_entries_outside_plan'])
+
+    def test_the_corrected_invariant_holds_where_the_old_one_failed(self):
+        """`planned >= admitted` would fail here, 342 >= 414. The corrected chain holds."""
+        ex, hist, hd = self.build()
+        s, _rows, _cov = RC.compare_index_horizon(ex, 'NF', hist, hd, 60)
+        rec = s['reconciliation']
+        self.assertGreater(rec['observed_entries_total'], rec['planned_opportunities'])
+        self.assertLessEqual(rec['scored_in_plan'], rec['observed_entries_in_plan'])
+        self.assertLessEqual(rec['observed_entries_in_plan'], rec['planned_opportunities'])
+        self.assertEqual(rec['observed_entries_total'],
+                         rec['observed_entries_in_plan'] + rec['observed_entries_outside_plan'])
+
+    def test_such_a_session_is_eligible_and_reaches_the_aggregate(self):
+        ex, hist, hd = self.build()
+        import tempfile as _t
+        path = os.path.join(_t.mkdtemp(), 'complete.json')
+        with open(path, 'w') as fh:
+            json.dump(ex, fh)
+        spots = write_history(history(
+            ['2026-11-%02d' % d for d in range(1, 10)],
+            sorted({PS.hhmm(m) for m in PS.window_grid()}
+                   | {PS.hhmm(m + 60) for m in PS.window_grid()})))
+        out = RC.run([path], spots, horizons=(60,))
+        for ix, e in out['sessions'][0]['eligibility'].items():
+            self.assertTrue(e['eligible'], (ix, e))
+            self.assertEqual(1.0, e['usable_coverage'], ix)
+            self.assertEqual(342, e['planned_opportunities'], ix)
 
 
 class OrderIndependence(unittest.TestCase):
@@ -765,6 +830,7 @@ class AgainstTheFrozenReplay(unittest.TestCase):
         cls.hd = sorted(d for d in cls.r7_hist if d < cls.session)
         cls.key, cls.exp = expectations_for(REAL_EXPORT)
         cls.indices = sorted((cls.ex.get('premium') or {}).get('indices') or {})
+        cls.provenance = 'unlabelled'
         cls.with_data = [ix for ix in cls.indices
                          if (cls.ex['premium']['indices'][ix].get('records') or [])]
 
@@ -782,13 +848,21 @@ class AgainstTheFrozenReplay(unittest.TestCase):
         return self.with_data
 
     def pinned(self, field):
-        """The expected value for this exact input, or skip saying what was wanted."""
+        """The expected value for this exact input, or skip saying what was wanted.
+
+        THE CORRECTION HERE. The digest guard decides whether an assertion RUNS; the
+        provenance label only records where the expectation came from. The previous version
+        conflated the two and skipped a pinned expectation whose SHA-256 matched, purely
+        because the number had originally been reported by Codex rather than reproduced here --
+        so the assertion would have stayed asleep on the very export it was written for.
+
+        Provenance is recorded on the test instead (`self.provenance`), so a reader of the run
+        can still tell an independently supplied expectation from a locally reproduced one.
+        """
         if not self.exp or field not in self.exp:
             self.skipTest('no %r expectation pinned for %s; pinned inputs are %s'
                           % (field, self.key, sorted(EXPECTED)))
-        if self.exp.get('source', '').startswith('INDEPENDENT'):
-            self.skipTest('%s is independent evidence, not reproduced here: %s'
-                          % (self.key[0], self.exp['source']))
+        self.provenance = self.exp.get('source', 'unlabelled')
         return self.exp[field]
 
     # ── structural: these hold for ANY real export ──
@@ -855,7 +929,7 @@ class AgainstTheFrozenReplay(unittest.TestCase):
             s, _r, _c = RC.compare_index_horizon(self.ex, ix, self.hist, self.hd, 60)
             rec, sched = s['reconciliation'], s['schedule']
             self.assertEqual(PS.STATE_VERIFIED, sched['state'], ix)
-            self.assertEqual(PS.BASIS_MANIFEST, sched['basis'], ix)
+            self.assertEqual(PS.BASIS_AUTHORITATIVE, sched['basis'], ix)
             self.assertLessEqual(rec['scored_in_plan'], rec['observed_entries_in_plan'], ix)
             self.assertLessEqual(rec['observed_entries_in_plan'],
                                  rec['planned_opportunities'], ix)
@@ -907,16 +981,20 @@ class AgainstTheFrozenReplay(unittest.TestCase):
         for ix in self.with_data:
             s, _r, _c = RC.compare_index_horizon(cropped, ix, self.hist, self.hd, 60)
             rec = s['reconciliation']
-            self.assertEqual(PS.STATE_INCOMPLETE_MANIFEST, rec['schedule_state'], ix)
+            # v3: the plan is AUTHORITATIVE, so it survives the refusal and the diagnostic
+            # ratio is still reported -- 126/342 = 36.8% -- while `usable_coverage` is
+            # withheld because the session cannot enter the cohort.
+            self.assertEqual(PS.STATE_MANIFEST_MISMATCH, rec['schedule_state'], ix)
+            self.assertEqual(342, rec['planned_opportunities'], ix)
+            self.assertEqual(126, rec['scored_in_plan'], ix)
+            self.assertAlmostEqual(0.368, rec['diagnostic_coverage'], places=3, msg=ix)
             self.assertIsNone(rec['usable_coverage'], ix)
-            self.assertIsNone(rec['scored_in_plan'], ix)
-            self.assertEqual(0, rec['planned_opportunities'], ix)
-            # the raw counts survive the refusal
+            self.assertIn('DIAGNOSTIC ONLY', rec['coverage_basis'])
             self.assertEqual(198, rec['observed_entries_total'], ix)
-            self.assertIn('WITHHELD', rec['coverage_basis'])
             audit = rec['manifest_audit']
-            self.assertEqual(69, audit['declared_expected'], ix)
+            self.assertEqual(69, audit['authoritative_slots'], ix)
             self.assertEqual(33, audit['distinct_valid_slots'], ix)
+            self.assertFalse(audit['covers_authoritative_grid'], ix)
 
     def test_all_three_truncation_cases_behave_differently_and_correctly(self):
         """Full export, quotes-only truncation, quotes-plus-manifest truncation, both
@@ -949,12 +1027,16 @@ class AgainstTheFrozenReplay(unittest.TestCase):
             self.assertAlmostEqual(0.368, q['reconciliation']['usable_coverage'], places=3,
                                    msg=ix)
             self.assertLess(q['reconciliation']['usable_coverage'], RC.MIN_USABLE_COVERAGE, ix)
-            self.assertEqual(PS.STATE_INCOMPLETE_MANIFEST,
+            self.assertEqual(PS.STATE_MANIFEST_MISMATCH,
                              b['reconciliation']['schedule_state'], ix)
             self.assertIsNone(b['reconciliation']['usable_coverage'], ix)
-            # the plan is the SAME 342 in the first two cases
+            self.assertAlmostEqual(0.368, b['reconciliation']['diagnostic_coverage'],
+                                   places=3, msg=ix)
+            # the plan is the SAME 342 in ALL THREE cases, which is the v3 property
             self.assertEqual(full['reconciliation']['planned_opportunities'],
                              q['reconciliation']['planned_opportunities'], ix)
+            self.assertEqual(full['reconciliation']['planned_opportunities'],
+                             b['reconciliation']['planned_opportunities'], ix)
 
     def test_the_real_run_is_independent_of_input_order(self):
         self.needs_data()
@@ -1052,6 +1134,46 @@ class AgainstTheFrozenReplay(unittest.TestCase):
         self.assertLess(abs(v['IV_ONLY']['cov80'] - v['IV_ONLY_RAW']['cov80']), 0.01)
         self.assertGreater(v['HIST']['cov80'], v['IV_ONLY']['cov80'] + 0.3)
         self.assertGreater(v['HIST']['width80'], v['IV_ONLY']['width80'])
+
+    def test_the_pinned_60_minute_scores_for_this_export(self):
+        """Runs on whichever pinned digest is supplied, independent of provenance.
+
+        For 16 November these are Codex's independently verified values, and this is the
+        assertion their reply asked to be ACTIVATED rather than skipped: the digest guard still
+        decides whether it runs, and the provenance label is recorded, not used to skip.
+        """
+        iv = self.pinned('iv_only_crps_60')
+        hist = self.exp['hist_crps_60']
+        ivcov = self.exp.get('iv_only_cov80_60')
+        hcov = self.exp.get('hist_cov80_60')
+        for ix in sorted(iv):
+            if ix not in self.with_data:
+                continue
+            s, _r, _c = RC.compare_index_horizon(self.ex, ix, self.hist, self.hd, 60)
+            v = s['variants_common']
+            self.assertAlmostEqual(iv[ix], v['IV_ONLY']['crps'], places=3,
+                                   msg=(ix, 'IV_ONLY', self.provenance))
+            self.assertAlmostEqual(hist[ix], v['HIST']['crps'], places=3,
+                                   msg=(ix, 'HIST', self.provenance))
+            if ivcov:
+                self.assertAlmostEqual(ivcov[ix], v['IV_ONLY']['cov80'], places=3, msg=ix)
+            if hcov:
+                self.assertAlmostEqual(hcov[ix], v['HIST']['cov80'], places=3, msg=ix)
+
+    def test_the_pinned_matched_count_for_this_export(self):
+        """16 November pins 342 matched per index; 12 November pins its own counts."""
+        want = self.exp.get('matched_60') if self.exp else None
+        if not want:
+            self.skipTest('no matched_60 pinned for %s' % (self.key,))
+        self.provenance = self.exp.get('source', 'unlabelled')
+        for ix in sorted(want):
+            if ix not in self.with_data:
+                continue
+            s, _r, _c = RC.compare_index_horizon(self.ex, ix, self.hist, self.hd, 60)
+            self.assertEqual(want[ix], s['reconciliation']['scored_in_plan'],
+                             (ix, self.provenance))
+            self.assertEqual(342, s['reconciliation']['planned_opportunities'], ix)
+            self.assertEqual(1.0, s['reconciliation']['usable_coverage'], ix)
 
     def test_the_truncated_capture_fails_the_coverage_gate(self):
         """Codex's reproduction, on the input this machine has.
