@@ -60,8 +60,8 @@ android {
         applicationId = "com.marketradar.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 530
-        versionName = "2.6.99"
+        versionCode = 531
+        versionName = "2.6.100"
         
         ndk {
             abiFilters += listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64")

@@ -20,15 +20,15 @@ class B515CandidatePwaTest {
      *
      * Why this is centralised: SEVEN independent hardcoded copies of this identity existed, at FOUR different values
      * (877b02fd/517/2.6.86, 7005a751/523/2.6.92, 3f3f46ad/526/2.6.95, and 526/2.6.95 for the native pair alone);
-     * 3f3f46ad/526/2.6.95, 12a1920e/527/2.6.96, 524caa77/528/2.6.97 and 5abafc93/529/2.6.98 are superseded by the 2.6.99 b530 premium-capture candidate pair, which is why these live in one place.
+     * 3f3f46ad/526/2.6.95, 12a1920e/527/2.6.96, 524caa77/528/2.6.97, 5abafc93/529/2.6.98 and 348a9a36/530/2.6.99 are superseded by the 2.6.100 b531 Trade R2 candidate pair, which is why these live in one place.
      * Two of them were in *this file* and disagreed with each other, and only the ones reached by the push-triggered
      * CI were ever noticed. This class compiles into testDebugUnitTest AND testCandidateUnitTest, so these literals
      * are enforced on every push and in the candidate variant, and the duplicates are no longer needed.
      */
-    private val acceptedMarketViviSha = "348a9a3688c3cfd4ffe2585ee5aa7d188563d596"
-    private val acceptedAppJsSha256 = "007dad12ecbd0ed461bf0482b8125ecb19e417f67c2d4e8a6ea433f194516ad2"
-    private val acceptedVersionName = "2.6.99"
-    private val acceptedVersionCode = 530
+    private val acceptedMarketViviSha = "742a655a679334d3ed3abc3863aef5d111f2daa9"
+    private val acceptedAppJsSha256 = "9d5ff3dd701d57392cda59dc36765ab9400ed493bcb1817a8a6ea8664a1a853a"
+    private val acceptedVersionName = "2.6.100"
+    private val acceptedVersionCode = 531
 
     /**
      * The app.js cache-bust revision, named rather than typed inline.
@@ -39,7 +39,7 @@ class B515CandidatePwaTest {
      * integer argument. CI caught it. Keeping it up here means the next bump changes five named
      * values in one place and nothing else.
      */
-    private val acceptedAppJsV = 1394
+    private val acceptedAppJsV = 1395
 
     private fun file(rel: String) = listOf(File(rel), File("app/$rel")).first { it.exists() }
     private fun src(n: String) = file("src/main/java/com/marketradar/app/$n").readText()
