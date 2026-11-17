@@ -806,6 +806,7 @@ class MainActivity : AppCompatActivity() {
                     getIndexSelector: function() { return AndroidBridge.getIndexSelector(); },
                     indexAuthorityChoose: function(i, d, c) { return AndroidBridge.indexAuthorityChoose(String(i || ''), String(d || ''), String(c || '')); },
                     singleLegAdmit: function(i) { return AndroidBridge.singleLegAdmit(String(i || '')); },
+                    singleLegAdmitDisplayed: function(i, d, k) { return AndroidBridge.singleLegAdmitDisplayed(String(i || ''), String(d || ''), String(k || '')); },
                     singleLegAdmitStatus: function(r) { return AndroidBridge.singleLegAdmitStatus(String(r || '')); },
                     setSingleLegCapital: function(v) { return AndroidBridge.setSingleLegCapital(Number(v)); },
                     getSingleLegCapital: function() { return AndroidBridge.getSingleLegCapital(); },

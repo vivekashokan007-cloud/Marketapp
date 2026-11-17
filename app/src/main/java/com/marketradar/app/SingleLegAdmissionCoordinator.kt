@@ -17,6 +17,12 @@ import java.util.concurrent.Executors
  *  - Python receives a StateProbe and re-reads the same state again UNDER the store lock at commit, plus a
  *    commit deadline; after a PyTimeout the request stays PENDING/RECONCILING until a definitive outcome is
  *    read or fenced under the admission lock (single_leg_request_cancel).
+ *  - Codex review 17 Nov 2026 (A1): a tap is bound to the proposal the page DISPLAYED.  submit() carries the
+ *    displayed decision id and instrument key; the FIRST native read must match both or the request is rejected
+ *    DISPLAYED_PROPOSAL_CHANGED:<field> (requires_new_tap) before any quote fetch or commit.  The later
+ *    re-read-after-fetch and the Python commit-time probe are unchanged.
+ *  - A3: uncovered short single-leg proposals (SELL_*) are not offered for admission from any card:
+ *    UNCOVERED_SHORT_NOT_OFFERED before any broker call.  Plans, research capture and exits are untouched.
  * Pure Kotlin (no Android types) so the paused-transport integration tests run on the JVM.
  */
 class SingleLegAdmissionCoordinator(
@@ -86,11 +92,25 @@ class SingleLegAdmissionCoordinator(
         while (completed.size > 50) { val k = completed.keys.first(); completed.remove(k); statuses.remove(k) }
     }
 
-    /** Non-blocking: returns PENDING with the request id. */
-    fun submit(index: String, requestId: String = UUID.randomUUID().toString()): String {
+    /** The identity the page displayed when the user tapped (A1). */
+    data class Displayed(val decisionId: String?, val instrumentKey: String?)
+
+    /**
+     * Non-blocking: returns PENDING with the request id.  A tap without a complete displayed identity is rejected
+     * immediately (DISPLAYED_IDENTITY_REQUIRED) and never queued.
+     */
+    fun submit(index: String, displayedDecisionId: String?, displayedInstrumentKey: String?,
+               requestId: String = UUID.randomUUID().toString()): String {
         val ix = index.trim().uppercase()
+        val shown = Displayed(displayedDecisionId?.trim()?.takeIf { it.isNotEmpty() },
+                              displayedInstrumentKey?.trim()?.takeIf { it.isNotEmpty() })
+        if (shown.decisionId == null || shown.instrumentKey == null) {
+            val j = rej("DISPLAYED_IDENTITY_REQUIRED").put("index", ix).put("requires_new_tap", true)
+            done(requestId, j)
+            return JSONObject(j.toString()).put("request_id", requestId).toString()
+        }
         put(requestId, JSONObject().put("status", "PENDING").put("phase", "QUEUED").put("index", ix))
-        executor.execute { run(ix, requestId) }
+        executor.execute { run(ix, requestId, shown) }
         return JSONObject().put("status", "PENDING").put("request_id", requestId).put("index", ix).toString()
     }
 
@@ -106,11 +126,22 @@ class SingleLegAdmissionCoordinator(
         return JSONObject().put("status", "PENDING").put("phase", "OUTCOME_UNCONFIRMED").put("request_id", requestId).toString()
     }
 
-    internal fun run(ix: String, id: String) {
+    internal fun run(ix: String, id: String, shown: Displayed) {
         try {
-            val s0 = readState(ix)
+            val s0 = readState(ix)                      // FIRST read: must be the proposal the user saw
             if (s0.resultJson == null) return done(id, rej("NO_CURRENT_RESULT"))
             if (s0.decisionId == null || s0.instrumentKey == null) return done(id, rej("NO_PROPOSAL"))
+            val changed = when {
+                s0.decisionId != shown.decisionId -> "decision_id"
+                s0.instrumentKey != shown.instrumentKey -> "instrument_key"
+                else -> null
+            }
+            if (changed != null) return done(id, rej("DISPLAYED_PROPOSAL_CHANGED:$changed").put("index", ix)
+                .put("requires_new_tap", true)
+                .put("displayed", JSONObject().put("decision_id", shown.decisionId).put("instrument_key", shown.instrumentKey))
+                .put("current", JSONObject().put("decision_id", s0.decisionId).put("instrument_key", s0.instrumentKey)))
+            if ((s0.action ?: "").trim().uppercase().startsWith("SELL"))
+                return done(id, rej("UNCOVERED_SHORT_NOT_OFFERED").put("index", ix).put("action", s0.action))
             var q: ManagedReadAdapters.QuoteFetch? = null
             var m: ManagedReadAdapters.MarginFetch? = null
             val tr = transport()

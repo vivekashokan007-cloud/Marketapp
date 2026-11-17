@@ -40,7 +40,7 @@ class SingleLegAdmissionCoordinatorTest {
             fetches.incrementAndGet(); entered.countDown(); release.await(5, TimeUnit.SECONDS)
             ManagedReadAdapters.Response(200, """{"status":"success","data":{}}""")
         }
-        val coord = SingleLegAdmissionCoordinator(
+        var coord = SingleLegAdmissionCoordinator(
             readState = { st.get() }, transport = { transport },
             clocks = ManagedReadAdapters.Clocks({ wall.get() }, { wall.get() }),
             admit = { c -> admits.incrementAndGet(); admitResult(c) },
@@ -48,6 +48,8 @@ class SingleLegAdmissionCoordinatorTest {
             cancel = { cancels.incrementAndGet(); cancelResult(it) },
             executor = Executors.newSingleThreadExecutor(),
             sleeper = { wall.addAndGet(it * 20); Thread.sleep(1) })
+
+        fun copyWith(c: SingleLegAdmissionCoordinator): Rig { coord = c; return this }
 
         fun await(id: String): JSONObject {
             val end = System.currentTimeMillis() + 5000
@@ -63,7 +65,7 @@ class SingleLegAdmissionCoordinatorTest {
     private fun changedDuringFetch(change: (SingleLegAdmissionCoordinator.State) -> SingleLegAdmissionCoordinator.State,
                                    field: String) {
         val rig = Rig(state())
-        val p = JSONObject(rig.coord.submit("NF", "r1"))
+        val p = JSONObject(rig.coord.submit("NF", "idx1_a", "NSE_FO|1", "r1"))
         assertEquals("PENDING", p.getString("status"))               // non-blocking: returns before the fetch ends
         assertTrue(rig.entered.await(5, TimeUnit.SECONDS))
         assertEquals("PENDING", JSONObject(rig.coord.status("r1")).getString("status"))
@@ -89,7 +91,7 @@ class SingleLegAdmissionCoordinatorTest {
         val seen = AtomicReference<SingleLegAdmissionCoordinator.Call?>(null)
         val base = rig.admitResult
         rig.admitResult = { c -> seen.set(c); base(c) }
-        rig.coord.submit("NF", "r2")
+        rig.coord.submit("NF", "idx1_a", "NSE_FO|1", "r2")
         rig.release.countDown()
         val out = rig.await("r2")
         assertEquals("ADMITTED", out.getString("status"))
@@ -108,7 +110,7 @@ class SingleLegAdmissionCoordinatorTest {
         val rig = Rig(state())
         rig.admitResult = { c -> rig.st.set(rig.st.get().copy(enabled = false)); rig.lastProbe.set(c.probe.current());
             """{"status":"REJECTED","reason":"SINGLE_LEG_PAPER_DISABLED_AT_ADMISSION"}""" }
-        rig.coord.submit("NF", "r3"); rig.release.countDown()
+        rig.coord.submit("NF", "idx1_a", "NSE_FO|1", "r3"); rig.release.countDown()
         rig.await("r3")
         assertFalse(JSONObject(rig.lastProbe.get()).getBoolean("enabled"))
     }
@@ -119,7 +121,7 @@ class SingleLegAdmissionCoordinatorTest {
         val n = AtomicInteger(0)
         rig.reconcileResult = { id -> if (n.incrementAndGet() < 3) """{"found":false,"status":"NOT_RECORDED"}"""
             else """{"found":true,"status":"ADMITTED","position_id":"sl1_x","request_id":"$id"}""" }
-        rig.coord.submit("NF", "r4"); rig.release.countDown()
+        rig.coord.submit("NF", "idx1_a", "NSE_FO|1", "r4"); rig.release.countDown()
         val out = rig.await("r4")
         assertEquals("ADMITTED", out.getString("status"))
         assertTrue(out.getBoolean("reconciled"))
@@ -134,7 +136,7 @@ class SingleLegAdmissionCoordinatorTest {
         val busy = AtomicInteger(0)
         rig.cancelResult = { id -> if (busy.incrementAndGet() < 4) """{"found":false,"status":"OUTCOME_UNCONFIRMED","reason":"STORE_LOCK_BUSY"}"""
             else """{"found":true,"status":"ADMITTED","position_id":"sl1_x","request_id":"$id"}""" }
-        rig.coord.submit("NF", "r5"); rig.release.countDown()
+        rig.coord.submit("NF", "idx1_a", "NSE_FO|1", "r5"); rig.release.countDown()
         val seen = mutableListOf<String>()
         val end = System.currentTimeMillis() + 5000
         var out: JSONObject? = null
@@ -152,7 +154,7 @@ class SingleLegAdmissionCoordinatorTest {
         val rig = Rig(state())
         rig.admitResult = { null }
         rig.reconcileResult = { """{"found":false,"status":"NOT_RECORDED"}""" }
-        rig.coord.submit("NF", "r5b"); rig.release.countDown()
+        rig.coord.submit("NF", "idx1_a", "NSE_FO|1", "r5b"); rig.release.countDown()
         val out = rig.await("r5b")
         assertEquals("CANCELLED_BEFORE_COMMIT", out.getString("reason"))
         assertTrue(out.getBoolean("fence"))
@@ -174,29 +176,110 @@ class SingleLegAdmissionCoordinatorTest {
         rig.admitResult = { null }
         rig.reconcileResult = { """{"found":false}""" }
         rig.cancelResult = { """{"found":false,"status":"OUTCOME_UNCONFIRMED"}""" }
-        rig.coord.submit("NF", "keep"); rig.release.countDown()
+        rig.coord.submit("NF", "idx1_a", "NSE_FO|1", "keep"); rig.release.countDown()
         Thread.sleep(50)
         val other = Rig(state(enabled = false))
-        repeat(60) { other.coord.submit("NF", "o$it") }
+        repeat(60) { other.coord.submit("NF", "idx1_a", "NSE_FO|1", "o$it") }
         val st = JSONObject(rig.coord.status("keep"))
         assertEquals("PENDING", st.getString("status"))
     }
 
     @Test fun gatesClosedMakeNoBrokerCall() {
         val rig = Rig(state(enabled = false))
-        rig.coord.submit("NF", "r6")
+        rig.coord.submit("NF", "idx1_a", "NSE_FO|1", "r6")
         rig.await("r6")
         assertEquals(0, rig.fetches.get())
         assertEquals(1, rig.admits.get())                             // Python still records the named reason
     }
 
     @Test fun noProposalAndMissingCapital() {
-        val rig = Rig(state(decisionId = null)); rig.coord.submit("NF", "r7")
+        val rig = Rig(state(decisionId = null)); rig.coord.submit("NF", "idx1_a", "NSE_FO|1", "r7")
         assertEquals("NO_PROPOSAL", rig.await("r7").getString("reason"))
         val p = state(capital = null).probeJson()
         assertTrue(JSONObject(p).isNull("capital"))
         assertNull(state(capital = null).diff(state(capital = null)))
         assertEquals("NaN", JSONObject(state(capital = Double.NaN).probeJson()).getString("capital"))
+    }
+
+    // ---- Codex review 17 Nov 2026 (A1): the tap is bound to the DISPLAYED decision id + instrument key ----
+
+    /** Executor that holds the worker until released, so state can change BEFORE the first native read. */
+    private class GatedExecutor : java.util.concurrent.Executor {
+        val queued = java.util.concurrent.LinkedBlockingQueue<Runnable>()
+        override fun execute(r: Runnable) { queued.add(r) }
+        fun runNext() { queued.poll(5, TimeUnit.SECONDS)!!.run() }
+    }
+
+    private fun gatedRig(initial: SingleLegAdmissionCoordinator.State): Pair<Rig, GatedExecutor> {
+        val rig = Rig(initial)
+        val gate = GatedExecutor()
+        val coord = SingleLegAdmissionCoordinator(
+            readState = { rig.st.get() }, transport = { rig.transport },
+            clocks = ManagedReadAdapters.Clocks({ rig.wall.get() }, { rig.wall.get() }),
+            admit = { c -> rig.admits.incrementAndGet(); rig.admitResult(c) },
+            reconcile = { rig.reconcileResult(it) }, cancel = { rig.cancels.incrementAndGet(); rig.cancelResult(it) },
+            executor = gate, sleeper = { rig.wall.addAndGet(it * 20); Thread.sleep(1) })
+        rig.release.countDown()
+        return Pair(rig.copyWith(coord), gate)
+    }
+
+    private fun replacedBeforeFirstRead(change: (SingleLegAdmissionCoordinator.State) -> SingleLegAdmissionCoordinator.State,
+                                        field: String) {
+        val (rig, gate) = gatedRig(state())
+        val p = JSONObject(rig.coord.submit("NF", "idx1_a", "NSE_FO|1", "b1"))   // the user tapped what was displayed
+        assertEquals("PENDING", p.getString("status"))
+        rig.st.set(change(rig.st.get()))            // a poll publishes a replacement BEFORE the worker's first read
+        gate.runNext()                              // worker starts now
+        val out = rig.await("b1")
+        assertEquals("REJECTED", out.getString("status"))
+        assertEquals("DISPLAYED_PROPOSAL_CHANGED:$field", out.getString("reason"))
+        assertTrue(out.getBoolean("requires_new_tap"))
+        assertEquals("idx1_a", out.getJSONObject("displayed").getString("decision_id"))
+        assertEquals("NSE_FO|1", out.getJSONObject("displayed").getString("instrument_key"))
+        assertEquals(0, rig.fetches.get())          // no quote/margin fetch for the substituted proposal
+        assertEquals(0, rig.admits.get())           // and nothing reaches commit
+    }
+
+    @Test fun replacementDecisionBeforeFirstReadIsRejected() =
+        replacedBeforeFirstRead({ it.copy(decisionId = "idx1_b") }, "decision_id")
+    @Test fun replacementInstrumentBeforeFirstReadIsRejected() =
+        replacedBeforeFirstRead({ it.copy(instrumentKey = "NSE_FO|2", quoteNeeded = listOf("NSE_FO|2")) }, "instrument_key")
+    @Test fun replacementBothBeforeFirstReadReportsDecisionFirst() =
+        replacedBeforeFirstRead({ it.copy(decisionId = "idx1_b", instrumentKey = "NSE_FO|2") }, "decision_id")
+
+    @Test fun displayedIdentityMatchingFirstReadProceedsWithExistingRevalidation() {
+        val (rig, gate) = gatedRig(state())
+        rig.coord.submit("NF", "idx1_a", "NSE_FO|1", "b2")
+        gate.runNext()
+        assertEquals("ADMITTED", rig.await("b2").getString("status"))
+        assertEquals(1, rig.fetches.get()); assertEquals(1, rig.admits.get())
+        // and the existing after-fetch re-read still catches a change DURING the fetch
+        changedDuringFetch({ it.copy(decisionId = "idx1_c") }, "decision_id")
+    }
+
+    @Test fun missingDisplayedIdentityIsRejectedWithoutQueueing() {
+        val (rig, gate) = gatedRig(state())
+        for ((d, k) in listOf(null to "NSE_FO|1", "idx1_a" to null, " " to "NSE_FO|1", "idx1_a" to "")) {
+            val out = JSONObject(rig.coord.submit("NF", d, k, "m-$d-$k"))
+            assertEquals("REJECTED", out.getString("status"))
+            assertEquals("DISPLAYED_IDENTITY_REQUIRED", out.getString("reason"))
+            assertTrue(JSONObject(rig.coord.status("m-$d-$k")).getBoolean("completed"))
+        }
+        assertTrue(gate.queued.isEmpty())
+        assertEquals(0, rig.fetches.get()); assertEquals(0, rig.admits.get())
+    }
+
+    // ---- A3: uncovered short single-leg proposals are never admitted from any card ----
+    @Test fun uncoveredShortIsNotOfferedAndMakesNoBrokerCall() {
+        for (a in listOf("SELL_PE", "SELL_CE")) {
+            val (rig, gate) = gatedRig(state().copy(action = a))
+            rig.coord.submit("NF", "idx1_a", "NSE_FO|1", "s-$a")
+            gate.runNext()
+            val out = rig.await("s-$a")
+            assertEquals("REJECTED", out.getString("status"))
+            assertEquals("UNCOVERED_SHORT_NOT_OFFERED", out.getString("reason"))
+            assertEquals(0, rig.fetches.get()); assertEquals(0, rig.admits.get())
+        }
     }
 
     @Test fun unknownRequestFencesUnderLock() {

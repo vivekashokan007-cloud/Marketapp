@@ -183,3 +183,18 @@ test('8. C1 pilot: status/get/set forwarded; set returns the re-read status; abs
   assert.equal(JSON.parse(old.setC1CapturePilotEnabled(true)).reason, 'NATIVE_METHOD_ABSENT');
   assert.equal(kotlinEvMethods().length, EXPECTED_EV_COUNT, 'ev API count unchanged by C1');
 });
+
+test('9. A1 (17 Nov review): bound single-leg admission is declared in Kotlin and forwarded with the displayed identity', () => {
+  const kt = nativeBridgeSource();
+  assert.match(kt, /@JavascriptInterface\s+fun singleLegAdmitDisplayed\(index: String, decisionId: String, instrumentKey: String\)/);
+  assert.match(kt, /fun singleLegAdmitDisplayed\([^)]*\): String = try \{\s*singleLegCoordinator\.submit\(index, decisionId, instrumentKey\)/);
+  // the index-only entry is kept for older pages but submits WITHOUT identity, which the coordinator rejects
+  assert.match(kt, /fun singleLegAdmit\(index: String\): String = try \{\s*singleLegCoordinator\.submit\(index, null, null\)/);
+  const { ab, calls } = spy({ singleLegAdmitDisplayed: () => '{"status":"PENDING","request_id":"r"}' });
+  const nb = runFacade({ AndroidBridge: ab });
+  assert.deepEqual(calls, [], 'injection calls nothing');
+  assert.equal(nb.singleLegAdmitDisplayed('BNF', 'd1', 'NSE_FO|9'), '{"status":"PENDING","request_id":"r"}');
+  nb.singleLegAdmitDisplayed('NF', null, undefined);
+  assert.deepEqual(calls.map(c => [c.name, ...c.args]), [['singleLegAdmitDisplayed', 'BNF', 'd1', 'NSE_FO|9'], ['singleLegAdmitDisplayed', 'NF', '', '']]);
+  assert.equal(kotlinEvMethods().length, EXPECTED_EV_COUNT, 'ev API count unchanged');
+});

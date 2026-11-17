@@ -1921,9 +1921,19 @@ class NativeBridge(private val context: Context) {
             })
     }
 
+    // Codex review 17 Nov 2026 (A1): the tap carries the decision id and instrument key the page DISPLAYED; the
+    // coordinator's first read must match both.  The index-only entry no longer admits anything: an unbound tap
+    // (e.g. an older page) gets DISPLAYED_IDENTITY_REQUIRED and must be re-tapped from a page that sends identity.
+    @JavascriptInterface
+    fun singleLegAdmitDisplayed(index: String, decisionId: String, instrumentKey: String): String = try {
+        singleLegCoordinator.submit(index, decisionId, instrumentKey)
+    } catch (e: Exception) {
+        "{\"status\":\"ERROR\"}"
+    }
+
     @JavascriptInterface
     fun singleLegAdmit(index: String): String = try {
-        singleLegCoordinator.submit(index)
+        singleLegCoordinator.submit(index, null, null)
     } catch (e: Exception) {
         "{\"status\":\"ERROR\"}"
     }

@@ -31,6 +31,7 @@ const result = JSON.parse(resultJson);
 // --- AndroidBridge stand-in (emulates the coordinator contract; calls the REAL Python) ---
 let capital = null;
 const pending = {};
+const firstRead = {};
 let seq = 0;
 const AndroidBridge = {
   getSingleLegPaperEnabled: () => true,
@@ -40,7 +41,21 @@ const AndroidBridge = {
   getSingleLegCapital: () => JSON.stringify(capital == null ? { status: 'UNSET' } : { status: 'SET', capital }),
   setSingleLegCapital: v => { if (!(v > 0)) return JSON.stringify({ status: 'REJECTED', reason: 'CAPITAL_CONFIG_INVALID' }); capital = v; return JSON.stringify({ status: 'OK', capital: v }); },
   singleLegAdmit: ix => { const id = `pair-${++seq}`; pending[id] = ix; return JSON.stringify({ status: 'PENDING', request_id: id, index: ix }); },
+  // 17 Nov review (A1): emulates SingleLegAdmissionCoordinator.submit(index, displayedDecisionId, displayedKey):
+  // missing identity -> DISPLAYED_IDENTITY_REQUIRED; first read of the CURRENT result must match both ids.
+  singleLegAdmitDisplayed: (ix, d, k) => {
+    const id = `pair-${++seq}`;
+    if (!d || !k) return JSON.stringify({ status: 'REJECTED', reason: 'DISPLAYED_IDENTITY_REQUIRED', completed: true, request_id: id });
+    const cur = JSON.parse(readFileSync(resultPath, 'utf8'));
+    const plan = cur.single_leg_by_index?.[ix] || {}, dec = cur.by_index?.[ix] || {};
+    const did = plan.decision_id && plan.decision_id === dec.decision_id ? plan.decision_id : null;
+    const field = did !== d ? 'decision_id' : plan.instrument_key !== k ? 'instrument_key' : null;
+    if (field) { firstRead[id] = { status: 'REJECTED', reason: `DISPLAYED_PROPOSAL_CHANGED:${field}`, requires_new_tap: true, completed: true, request_id: id }; }
+    else pending[id] = ix;
+    return JSON.stringify({ status: 'PENDING', request_id: id, index: ix });
+  },
   singleLegAdmitStatus: id => {
+    if (firstRead[id]) { const o = firstRead[id]; delete firstRead[id]; return JSON.stringify(o); }
     if (pending[id]) { delete pending[id]; const o = JSON.parse(py('admit', sl, id, capital == null ? 'null' : String(capital), resultPath)); return JSON.stringify({ ...o, completed: true }); }
     // unknown id (stand-in for a restarted coordinator): definitive reconcile under the admission lock
     const c = JSON.parse(py('cancel', sl, id));
@@ -55,13 +70,17 @@ const NB = runFacade(ctx);
 // --- real PWA functions ---
 const src = readFileSync(path.join(V, 'app.js'), 'utf8');
 const fn = name => { const m = new RegExp(`^function ${name}\\(`, 'm').exec(src); assert.ok(m, `app.js defines ${name}`); return src.slice(m.index, src.indexOf('\n}\n', m.index) + 3); };
-const FNS = ['getIndexSelector', 'iaEsc', 'singleLegEnabled', 'loadSingleLegStore', 'admitSingleLeg', 'pollSingleLegAdmit',
-  'finishSingleLegAdmit', 'saveSingleLegPending', 'resumeSingleLegPending', 'singleLegCapital', 'renderSingleLegCard', 'reviewNet', 'renderReviewGroups', 'renderDailyReviewCard'];
+// 17 Nov review: + the shared admission check/button (A1-A3) and helpers b530's cards call (iaTodayIst, review inputs).
+const FNS = ['getIndexSelector', 'iaEsc', 'iaTodayIst', 'singleLegEnabled', 'loadSingleLegStore', 'singleLegAdmissionCheck', 'singleLegAdmitButton',
+  'admitSingleLegFromButton', 'admitSingleLeg', 'pollSingleLegAdmit',
+  'finishSingleLegAdmit', 'saveSingleLegPending', 'resumeSingleLegPending', 'singleLegCapital', 'renderSingleLegCard', 'reviewNet', 'renderReviewGroups',
+  'sessionEvidenceSupported', 'renderSessionEvidenceLine', 'renderReviewInputs', 'renderDailyReviewCard'];
+const BUY_RE = (src.match(/^const SL_OUTRIGHT_BUY_ACTION = .*$/m) || [''])[0];
 const alerts = [];
 const timers = [];
 const pctx = vm.createContext({ JSON, String, Object, Array, Math, Intl, Date, Number, window: { NativeBridge: NB }, alert: m => alerts.push(m),
   setTimeout: f => timers.push(f), localStorage: (() => { const m = {}; return { getItem: k => m[k] ?? null, setItem: (k, v) => { m[k] = v; } }; })() });
-vm.runInContext(`const INDEX_SELECTOR_KEY='mr_index_selector_v1'; let DAILY_REVIEW_CACHE=null; let SINGLE_LEG_STORE=null; const SINGLE_LEG_PENDING_KEY='mr_single_leg_pending_v1'; let SINGLE_LEG_PENDING={}; let SINGLE_LEG_POLLING={};\n${FNS.map(fn).join('\n')}`, pctx);
+vm.runInContext(`const INDEX_SELECTOR_KEY='mr_index_selector_v1'; let DAILY_REVIEW_CACHE=null; let SINGLE_LEG_STORE=null; const SINGLE_LEG_PENDING_KEY='mr_single_leg_pending_v1'; let SINGLE_LEG_PENDING={}; let SINGLE_LEG_POLLING={}; let SESSION_EVIDENCE_RESULT=null;\n${BUY_RE}\n${FNS.map(fn).join('\n')}`, pctx);
 const drain = () => { let n = 0; while (timers.length && n++ < 20) timers.shift()(); };
 
 // 1. bridge surface: every NativeBridge method the PWA calls for single-leg / daily review exists in the facade
@@ -73,23 +92,34 @@ const missingAll = used.filter(n => typeof NB[n] !== 'function');
 // 2. card renders the Python-published proposal
 check('single-leg card renders the published Python plan and capital-unset warning', () => {
   const html = pctx.renderSingleLegCard(result);
-  assert.match(html, /admitSingleLeg\('NF'\)/);
+  const nf = result.single_leg_by_index.NF;
+  assert.ok(html.includes(`data-index="NF" data-decision-id="${nf.decision_id}" data-instrument-key="${nf.instrument_key}" onclick="admitSingleLegFromButton(this)"`), 'bound admit button');
   assert.match(html, /not set/);
 });
+const NFID = () => [result.single_leg_by_index.NF.decision_id, result.single_leg_by_index.NF.instrument_key];
 // 3. admission with capital UNSET -> named rejection from Python, surfaced
 check('capital unset -> CAPITAL_CONFIG_UNAVAILABLE via PENDING/status poll', () => {
-  const p = pctx.admitSingleLeg('NF'); assert.equal(p.status, 'PENDING'); drain();
+  const p = pctx.admitSingleLeg('NF', ...NFID()); assert.equal(p.status, 'PENDING'); drain();
   assert.match(alerts.at(-1) || '', /CAPITAL_CONFIG_UNAVAILABLE/);
 });
 // 4. capital set via the facade, then admission succeeds and the store read renders the position
 check('capital set -> ADMITTED; store read renders the simulated position', () => {
   assert.equal(JSON.parse(NB.setSingleLegCapital(250000)).status, 'OK');
-  const n = alerts.length; pctx.admitSingleLeg('NF'); drain();
+  const n = alerts.length; pctx.admitSingleLeg('NF', ...NFID()); drain();
   assert.equal(alerts.length, n, alerts.at(-1));
   const html = pctx.renderSingleLegCard(result);
   assert.match(html, /Local Paper positions/);
   assert.match(html, /simulated fill \(broker snapshot\)/);
   assert.match(html, /Capital: ₹250000/);
+});
+// 4b. A1: a displayed identity that is no longer current is rejected at the first read with a clear report
+check('displayed identity replaced before first read -> DISPLAYED_PROPOSAL_CHANGED, requires a new tap', () => {
+  const n = alerts.length; const [d, k] = NFID();
+  pctx.admitSingleLeg('NF', d + '_old', k); drain();
+  assert.equal(alerts.length, n + 1); assert.match(alerts.at(-1), /proposal changed after you tapped \(decision_id\)/);
+  pctx.admitSingleLeg('NF', d, k + '_old'); drain();
+  assert.match(alerts.at(-1), /DISPLAYED_PROPOSAL_CHANGED:instrument_key/);
+  assert.equal(JSON.parse(NB.singleLegAdmitDisplayed('NF', '', '')).reason, 'DISPLAYED_IDENTITY_REQUIRED');
 });
 // 5. reconcile by request id through the facade
 check('request status reconciles by id after completion', () => {
