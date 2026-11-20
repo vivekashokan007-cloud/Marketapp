@@ -408,6 +408,16 @@ def exit_contract():
 def open_position(plan, entry_ts, entry_direction):
     if not (isinstance(plan, dict) and plan.get('admit')):
         raise ValueError('plan not admitted')
+    pos = _open_position(plan, entry_ts, entry_direction)
+    fb = plan.get('expiry_fallback')
+    if isinstance(fb, dict) and fb.get('status') == 'APPLIED':
+        # expiry_fallback_v1 provenance (small, bounded); absent on every ordinary-day position
+        pos['expiry_fallback'] = {k: fb.get(k) for k in ('id', 'trade_expiry', 'fallback_expiry', 'decision_id',
+                                                        'selection_cutoff', 'chain_clocks', 'contracts_receipt')}
+    return pos
+
+
+def _open_position(plan, entry_ts, entry_direction):
     return {'policy_id': POLICY_ID, 'index': plan['index'], 'action': plan['action'], 'strike': plan['strike'],
             'option_type': plan['option_type'], 'expiry': plan['contract']['expiry'],
             'instrument_key': plan['contract']['instrument_key'], 'lot_size': plan['contract']['lot_size'],

@@ -161,7 +161,8 @@ object ManagedReadAdapters {
     }
 
     /** Production transport: bounded timeouts, bearer token per request, never logged. */
-    class HttpTransport(private val token: () -> String) : Transport {
+    class HttpTransport(private val maxBodyBytes: Int, private val token: () -> String) : Transport {
+        constructor(token: () -> String) : this(MAX_BODY_BYTES, token)
         override fun call(method: String, url: String, body: String?): Response {
             val c = URL(url).openConnection() as HttpURLConnection
             try {
@@ -178,7 +179,7 @@ object ManagedReadAdapters {
                 val code = c.responseCode
                 val stream = if (code in 200..299) c.inputStream else c.errorStream
                 val text = stream?.use { s ->
-                    val buf = s.readNBytesCompat(MAX_BODY_BYTES + 1)
+                    val buf = s.readNBytesCompat(maxBodyBytes + 1)
                     String(buf)
                 }
                 return Response(code, text)

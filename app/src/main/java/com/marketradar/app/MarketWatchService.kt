@@ -190,6 +190,8 @@ class MarketWatchService : Service() {
         private const val PY_PAPER_MENU_ENRICH_TIMEOUT_MS = 4_000L
         private const val PY_AGENT_TIMEOUT_MS = 3_000L
         private const val PY_POLL_TIMEOUT_KEY = "poll.brain"
+        private const val PY_EXPIRY_FALLBACK_TIMEOUT_KEY = "poll.expiry_fallback"
+        private const val PY_EXPIRY_FALLBACK_TIMEOUT_MS = 15_000L
         private const val PY_SNAPSHOT_TIMEOUT_KEY = "poll.snapshot"
         private const val PY_PAPER_MENU_TIMEOUT_KEY = "poll.paper_menu_capture"
         // Evidence batch 1 (Item B): once-per-session Paper decision-menu capture state.
@@ -2245,6 +2247,50 @@ class MarketWatchService : Service() {
         return gap
     }
 
+    /**
+     * expiry_fallback_v1 (REVIEW DRAFT r1): only when the analysis result names an index whose own-expiry-day
+     * policy BUY needs later-expiry evidence. Read-only broker requests through [ExpiryFallbackAcquirer]; the
+     * Python planner re-plans at its own clock (the selection cutoff) and the result is patched in place.
+     * Any failure leaves the analysis plan (already a named WAIT: EXPIRY_FALLBACK_EVIDENCE_PENDING).
+     */
+    private fun applyExpiryFallback(brain: com.chaquo.python.PyObject, resultObj: JSONObject, ctxObj: JSONObject, openTradesJson: String) {
+        try {
+            val needs = ExpiryFallbackAcquirer.needs(resultObj)
+            if (needs.isEmpty()) return
+            val tok = (prefs.getString("auth_token", "") ?: "").trim()
+            if (tok.isEmpty()) {
+                LogBuffer.add('W', TAG, "EXPIRY_FALLBACK_SKIP: reason=NO_TOKEN")
+                return
+            }
+            val clocks = ManagedReadAdapters.Clocks({ System.currentTimeMillis() }, { android.os.SystemClock.elapsedRealtime() })
+            val sess = IndexAuthorityContext.istSession(System.currentTimeMillis())
+            val slDir = IndexAuthorityContext.singleLegDir(filesDir)
+            val ev = ExpiryFallbackAcquirer.acquire(needs, slDir, sess,
+                { cap -> ManagedReadAdapters.HttpTransport(cap) { tok } }, clocks,
+                { ix, listing, cutoff ->
+                    brain.callAttr("single_leg_expiry_fallback_resolve", ix, sess, listing, cutoff).toString()
+                },
+                { raw, spot -> formatChainForBrain(raw, spot) })
+            val minCtx = JSONObject()
+            for (k in listOf("capital", "singleLegPaperEnabled", "executionMode", "indexSelector", "nfExpiry",
+                    "bnfExpiry", "nfDTE", "bnfDTE", "session_date")) {
+                if (ctxObj.has(k)) minCtx.put(k, ctxObj.get(k))
+            }
+            val patchStr = PyTimeout.callWithTimeout(PY_EXPIRY_FALLBACK_TIMEOUT_KEY, PY_EXPIRY_FALLBACK_TIMEOUT_MS) {
+                brain.callAttr("single_leg_expiry_fallback_apply", slDir.absolutePath, resultObj.toString(),
+                    minCtx.toString(), ev.toString(), null, openTradesJson).toString()
+            } ?: run {
+                LogBuffer.add('W', TAG, "EXPIRY_FALLBACK_FAIL: reason=PY_TIMEOUT")
+                return
+            }
+            val patch = JSONObject(patchStr)
+            val n = ExpiryFallbackAcquirer.applyPatch(resultObj, patch)
+            LogBuffer.add('I', TAG, "EXPIRY_FALLBACK: applied=$n ${ExpiryFallbackAcquirer.logLine(ev, patch)}")
+        } catch (e: Exception) {
+            LogBuffer.add('W', TAG, "EXPIRY_FALLBACK_FAIL: ${e.javaClass.simpleName}")
+        }
+    }
+
     private fun formatChainForBrain(chain: JSONObject, spot: Double): JSONObject =
         OptionChainBrainFormatter.format(chain, spot) { Log.e(TAG, it) }
 
@@ -2941,6 +2987,9 @@ class MarketWatchService : Service() {
                     .put("brain_result_started_at_ms", brainAnalyzeStartedAtMs)
                     .put("brain_result_completed_at_ms", brainAnalyzeCompletedAtMs)
                     .put("brain_result_duration_ms", brainAnalyzeDurationMs)
+                // expiry_fallback_v1: own-expiry-day Paper BUY -> acquire the later-expiry evidence and re-plan
+                // BEFORE the persist delta is detached and anything is published (never on a refresh).
+                if (!isRefresh) applyExpiryFallback(brain, resultObj, ctxObj, openTradesJson)
                 // R5 s2: authority state delta leaves the result; persisted by the serialized IO worker below
                 val iaPersist = try { IndexAuthorityContext.takePersist(resultObj) } catch (e: Exception) { null }
                 // Evidence batch 1 (Item B): detach the menu before anything else reads, caches,
