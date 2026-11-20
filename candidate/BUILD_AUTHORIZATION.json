@@ -1,0 +1,12 @@
+{
+  "approval_reference": "20 November 2026 IST, Market Radar project chat: owner requested implementation of the agreed single-leg work and a build for the phone. This commit queues the existing signed artifact-only candidate workflow. The GitHub candidate-apk environment requires owner approval.",
+  "approved_by": "Vivek Ashokan P (Market Radar owner, via ChatGPT project)",
+  "artifact_only": true,
+  "cert_sha256": "fb6042a2eb61045368e8d7b95db6f6d49b04d4b8da2e51b865ca77803a44b478",
+  "codex_final_check_reference": "Scoped code review and local PWA (343 pass, 2 skip), native bridge (9 pass), Python trace/export (8 pass) and pinned PWA staging checks. Full Android and Python CI remain workflow gates before signing.",
+  "native_sha": "0e327a13ca3461681a332254db1b4bc812533fc5",
+  "pwa_sha": "314abbff64005214907a4691f54406bb8b28fb4e",
+  "schema": "marketradar.candidate_build_authorization.v1",
+  "version_code": "532",
+  "version_name": "2.6.101"
+}
