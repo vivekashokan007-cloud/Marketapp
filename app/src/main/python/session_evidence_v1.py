@@ -14,6 +14,11 @@ Contract (Claude brief PM1-5 as corrected by Codex PM1 s6):
     (status OVER_CAP / AUTHORITY_OVER_CAP), never an oversized document.  The originals stay on disk.
   * the manifest states the capture schema, the sampling limitation and the deployed capabilities.
   * the exporter never creates quotes, fills or historical logs that were not stored.
+  * OPTIONAL (Codex reply 20 Nov 2026): single_leg_trace_v1/<date>.json (mr.single_leg_trace.v1, compact page +
+    native Trade-tab trace of the single-leg Paper path).  Read only when its directory exists (a build that never
+    wrote one exports exactly as before), re-filtered through an allow-list (no free numbers, token-like strings
+    redacted), summarised per index (NF and BNF separately), and attached AFTER the released parts with staged
+    degradation (full -> no RENDER -> summary -> OMITTED_FOR_CAP -> absent) so it never truncates a released part.
 """
 from __future__ import annotations
 
@@ -173,6 +178,140 @@ def _single_leg(files_dir, session):
                              if _ist_date((v or {}).get('receipt_ms') or (v or {}).get('receipt_wall_ms')) == session
                              or str((v or {}).get('received_at') or '')[:10] == session}
     return part
+
+
+
+# ── Codex reply 20 Nov 2026: optional single-leg Trade trace (mr.single_leg_trace.v1) ──────────────────────────
+TRACE_DIR = 'single_leg_trace_v1'
+TRACE_READ_CAP = 512 * 1024
+TRACE_KINDS = ('CONFIG', 'RENDER', 'TAP', 'REFUSED', 'SUBMITTED', 'OUTCOME', 'RECOVERY_STARTED', 'RECOVERY_BRIDGE_WAIT',
+               'RECOVERY_OUTCOME', 'N_SUBMIT', 'N_QUOTE_STARTED', 'N_OUTCOME')
+TRACE_FIELDS = ('kind', 't_ms', 'index', 'source', 'app', 'pwa', 'session_date', 'index_selector', 'decision_id',
+                'instrument_key', 'row_state', 'branch', 'index_action', 'request_id', 'phase', 'status', 'reason',
+                'origin', 'stage', 'action', 'pending_request_id', 'outcome_status', 'enabled', 'capital_set',
+                'paper_mode', 'trade_visible', 'action_exposed', 'quote_requested', 'requires_new_tap', 'reconciled',
+                'recovered', 'bridge_ready', 'reasons')
+TRACE_DOC_FIELDS = ('schema', 'session_date', 'dropped_renders', 'dropped_other', 'deduped_renders', 'rejected_records',
+                    'truncated', 'limits', 'reset_unreadable', 'page_queue_dropped')
+_TRACE_TOKENISH = re.compile(r'(?i)(bearer|token|secret|password|eyJ[A-Za-z0-9_-]{8,})')
+TERMINAL_OUTCOMES = ('ADMITTED', 'DUPLICATE_IGNORED', 'REJECTED', 'CANCELLED', 'ERROR')
+
+
+def _trace_clean(r):
+    """Allow-listed copy of one stored trace record (defence in depth: the native store already allow-lists)."""
+    if not isinstance(r, dict) or r.get('kind') not in TRACE_KINDS:
+        return None
+    out = {}
+    for k in TRACE_FIELDS:
+        if k not in r or r[k] is None:
+            continue
+        v = r[k]
+        if k == 'reasons':
+            v = [str(x)[:120] for x in (v if isinstance(v, list) else [])][:8]
+        elif isinstance(v, bool) or (k == 't_ms' and isinstance(v, int)):
+            pass
+        elif isinstance(v, (int, float)):
+            continue                                   # no free numbers (a capital amount can never ride along)
+        else:
+            v = str(v)[:120]
+        if isinstance(v, str) and _TRACE_TOKENISH.search(v):
+            v = '[REDACTED]'
+        out[k] = v
+    return out
+
+
+def single_leg_trace_summary(records):
+    """Summarize observed Paper admission stages separately for each index."""
+    out = {}
+    for ix in ('NF', 'BNF'):
+        rs = [r for r in records if r.get('index') == ix]
+        renders = [r for r in rs if r.get('kind') == 'RENDER']
+        visible = [r for r in renders if r.get('trade_visible') is True]
+        exposed = [r for r in visible if r.get('action_exposed') is True]
+        taps = [r for r in rs if r.get('kind') == 'TAP']
+        refused = [r for r in rs if r.get('kind') == 'REFUSED']
+        submitted = {r.get('request_id') for r in rs if r.get('kind') in ('SUBMITTED', 'N_SUBMIT') and r.get('request_id')}
+        quoted = {r.get('request_id') for r in rs if r.get('kind') == 'N_QUOTE_STARTED' and r.get('request_id')}
+        outcome_events = [r for r in rs if r.get('kind') in ('OUTCOME', 'N_OUTCOME', 'RECOVERY_OUTCOME')
+                          and r.get('request_id')]
+        outcomes = {}
+        for r in outcome_events:
+            rid = r['request_id']
+            o = outcomes.setdefault(rid, {})
+            status = r.get('status')
+            if status in TERMINAL_OUTCOMES:
+                o['status'] = status
+                if r.get('reason'):
+                    o['reason'] = r['reason']
+            if r.get('quote_requested') is True or rid in quoted:
+                o['quote_requested'] = True
+            elif 'quote_requested' not in o and r.get('quote_requested') is False:
+                o['quote_requested'] = False
+            if r.get('recovered') or r.get('kind') == 'RECOVERY_OUTCOME':
+                o['recovered'] = True
+        recoveries = sorted({r.get('request_id') for r in rs if r.get('kind') == 'RECOVERY_STARTED' and r.get('request_id')})
+        requests = submitted.union(quoted, recoveries, outcomes)
+        unresolved = sorted(rid for rid in requests if not outcomes.get(rid, {}).get('status'))
+        terminal = [o for o in outcomes.values() if o.get('status')]
+        resolved_taps = sum(r.get('kind') in ('REFUSED', 'SUBMITTED') or
+                            (r.get('kind') == 'OUTCOME' and r.get('stage') == 'NATIVE_IMMEDIATE') for r in rs)
+        unconfirmed_taps = max(0, len(taps) - resolved_taps)
+        if any(o['status'] in ('ADMITTED', 'DUPLICATE_IGNORED') for o in terminal):
+            cls = 'ADMITTED'
+        elif unresolved or unconfirmed_taps:
+            cls = 'OUTCOME_UNCONFIRMED'
+        elif any(o['status'] == 'CANCELLED' or str(o.get('reason') or '').startswith('CANCELLED') for o in terminal):
+            cls = 'CANCELLED'
+        elif any(o.get('quote_requested') is True for o in terminal):
+            cls = 'TAP_REFUSED_AFTER_QUOTE'
+        elif terminal and all(o.get('quote_requested') is False for o in terminal):
+            cls = 'TAP_REFUSED_BEFORE_QUOTE'
+        elif terminal:
+            cls = 'TAP_REFUSED_QUOTE_UNKNOWN'
+        elif refused:
+            cls = 'TAP_REFUSED_BEFORE_REQUEST'
+        elif exposed:
+            cls = 'ACTION_RENDERED_NO_TAP'
+        elif not visible:
+            cls = 'NOT_OBSERVED'
+        elif all(r.get('row_state') in ('NO_DIRECTIONAL_PROPOSAL', 'BLOCKED') and not r.get('pending_request_id')
+                 for r in visible):
+            cls = 'NO_ELIGIBLE_PROPOSAL'
+        else:
+            cls = 'ACTION_NOT_EXPOSED'
+        last = (visible or renders or [{}])[-1]
+        out[ix] = {'classification': cls, 'renders': len(renders), 'visible_renders': len(visible),
+                   'visible_renders_with_action': len(exposed), 'taps': len(taps), 'refused_before_request': len(refused),
+                   'requests': len(requests), 'quote_requests_started': len(quoted), 'unconfirmed_taps': unconfirmed_taps,
+                   'outcomes': {k: outcomes[k] for k in sorted(outcomes)}, 'unresolved_request_ids': unresolved,
+                   'recovered_request_ids': recoveries,
+                   'primary_row_state': last.get('row_state'),
+                   'primary_reasons': last.get('reasons') or ([last['reason']] if last.get('reason') else []),
+                   'primary_index_action': last.get('index_action'),
+                   'primary_from_visible_render': bool(visible),
+                   'caveat': None if visible else 'NO_VISIBLE_TRADE_RENDER_RECORDED: what was on screen is unknown'}
+    return out
+
+
+def _single_leg_trace(files_dir, session):
+    """None when the trace directory does not exist (a build that never wrote a trace exports exactly as before);
+    otherwise (status, part)."""
+    base = os.path.join(files_dir, TRACE_DIR)
+    if not os.path.isdir(base):
+        return None
+    st, doc = _json_part(_contained(base, session + '.json'), TRACE_READ_CAP)
+    if st != 'PRESENT' or not isinstance(doc, dict):
+        reason = {'MISSING': 'NO_TRACE_FOR_SESSION', 'OVER_CAP': 'TRACE_FILE_OVER_READ_CAP'}.get(st, 'TRACE_UNREADABLE')
+        return ('UNREADABLE' if st == 'OVER_CAP' else st), {'status': st, 'reason': reason, 'records': [],
+                                                            'summary': single_leg_trace_summary([])}
+    recs = [c for c in (_trace_clean(r) for r in (doc.get('records') or [])) if c is not None]
+    part = {k: doc.get(k) for k in TRACE_DOC_FIELDS if k in doc}
+    part['records'] = recs
+    part['records_dropped_by_export_filter'] = len(doc.get('records') or []) - len(recs)
+    part['summary'] = single_leg_trace_summary(recs)
+    part['note'] = ('trade_visible is true only for a render while the Trade tab was active and the page visible; '
+                    'a hidden/background render cannot establish what was on screen')
+    return ('TRUNCATED' if doc.get('truncated') else 'PRESENT'), part
 
 
 def admission_join(authority, single_leg):
@@ -372,5 +511,40 @@ def build(files_dir, session_date, closed_trades_json=None, meta=None, versions=
                 raw = cand
             else:
                 entries.pop('c1_capture', None)
+                raw = assemble()
+    # Single-leg Trade trace (Codex reply 20 Nov 2026), attached only AFTER the released parts are final and never at
+    # their expense: full -> without RENDER records -> summary only -> a bounded OMITTED_FOR_CAP stub.  Present ONLY
+    # when its directory exists, so a build that never wrote a trace exports exactly what it exported before.
+    tr = _single_leg_trace(files_dir, sess)
+    if tr is not None:
+        tst, tpart = tr
+        base_parts, base_entries = dict(parts), dict(entries)
+        recs = tpart.get('records') or []
+        no_render = [r for r in recs if r.get('kind') != 'RENDER']
+        stages = [(tst, tpart, None),
+                  ('TRUNCATED', dict(tpart, records=no_render, renders_omitted_for_cap=len(recs) - len(no_render)),
+                   {'trace_level': 'no_render', 'reduced_for_cap': True}),
+                  ('TRUNCATED', {k: v for k, v in tpart.items() if k != 'records'} | {'records_omitted_for_cap': len(recs)},
+                   {'trace_level': 'summary', 'reduced_for_cap': True})]
+        attached = False
+        for est, obj, extra in stages:
+            parts['single_leg_trace'] = obj
+            entries['single_leg_trace'] = _part_entry(est, obj, dict(extra or {}, truncated_on_device=bool(tpart.get('truncated')),
+                                                                      dropped_renders=tpart.get('dropped_renders', 0),
+                                                                      dropped_other=tpart.get('dropped_other', 0),
+                                                                      page_queue_dropped=tpart.get('page_queue_dropped', 0)))
+            cand = assemble()
+            if len(cand) <= MAX_BUNDLE_BYTES:
+                raw, attached = cand, True
+                break
+        if not attached:
+            parts.clear(); parts.update(base_parts)
+            entries.clear(); entries.update(base_entries)
+            entries['single_leg_trace'] = _part_entry('OMITTED_FOR_CAP', None)
+            cand = assemble()
+            if len(cand) <= MAX_BUNDLE_BYTES:
+                raw = cand
+            else:
+                entries.pop('single_leg_trace', None)
                 raw = assemble()
     return {'manifest': man, 'parts': parts}, raw

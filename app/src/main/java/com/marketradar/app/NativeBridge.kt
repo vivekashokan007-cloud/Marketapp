@@ -1918,7 +1918,33 @@ class NativeBridge(private val context: Context) {
                             IndexAuthorityContext.singleLegDir(context.filesDir).absolutePath, id).toString()
                     }
                 } catch (e: Exception) { null }
-            })
+            },
+            trace = { j -> singleLegTrace.append(j.toString()) })
+    }
+
+    // Codex reply 20 Nov 2026: bounded, allow-listed single-leg Trade trace (files/single_leg_trace_v1/<date>.json),
+    // exported by session_evidence_v1 as the optional part `single_leg_trace`.  The page appends configuration,
+    // rendered-row, tap, refusal and restart-recovery records; the coordinator appends submit / quote-started /
+    // outcome records.  Never stores capital amounts, credentials, account details or quote bodies.
+    private val singleLegTrace by lazy { SingleLegTradeTraceStore(context.filesDir) }
+
+    @JavascriptInterface
+    fun singleLegTraceAppend(recordJson: String): String = try {
+        val j = JSONObject(recordJson.take(4096))
+        if (j.optString("kind") == "CONFIG") {
+            val paperMode = EvAcceptance.executionMode(prefs) == "paper"
+            // configuration is stamped from native truth: build, effective single-leg Paper setting, selector,
+            // execution mode and a capital-SET boolean (never the amount)
+            j.put("app", "${BuildConfig.VERSION_NAME}/${BuildConfig.VERSION_CODE}")
+                .put("enabled", paperMode && prefs.getBoolean(IndexAuthorityContext.PREF_SINGLE_LEG_PAPER, false))
+                .put("index_selector", IndexAuthorityContext.normalizeSelector(prefs.getString(IndexAuthorityContext.PREF_SELECTOR, null)))
+                .put("paper_mode", paperMode)
+                .put("capital_set", prefs.contains("capital"))
+                .put("source", "page+native")
+        }
+        singleLegTrace.append(j.toString())
+    } catch (t: Throwable) {
+        "{\"ok\":false,\"status\":\"TRACE_ERROR\"}"
     }
 
     // Codex review 17 Nov 2026 (A1): the tap carries the decision id and instrument key the page DISPLAYED; the

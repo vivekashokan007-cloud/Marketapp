@@ -808,6 +808,10 @@ class MainActivity : AppCompatActivity() {
                     singleLegAdmit: function(i) { return AndroidBridge.singleLegAdmit(String(i || '')); },
                     singleLegAdmitDisplayed: function(i, d, k) { return AndroidBridge.singleLegAdmitDisplayed(String(i || ''), String(d || ''), String(k || '')); },
                     singleLegAdmitStatus: function(r) { return AndroidBridge.singleLegAdmitStatus(String(r || '')); },
+                    singleLegTraceAppend: function(j) {
+                        if (typeof AndroidBridge.singleLegTraceAppend !== 'function') return JSON.stringify({ ok: false, status: 'NATIVE_METHOD_ABSENT' });
+                        return AndroidBridge.singleLegTraceAppend(String(j || ''));
+                    },
                     setSingleLegCapital: function(v) { return AndroidBridge.setSingleLegCapital(Number(v)); },
                     getSingleLegCapital: function() { return AndroidBridge.getSingleLegCapital(); },
                     singleLegRead: function() { return AndroidBridge.singleLegRead(); },
@@ -902,6 +906,8 @@ class MainActivity : AppCompatActivity() {
                 };
                 NativeBridge.init();
                 console.log('[BRIDGE] Native bridge injected');
+                // 20 Nov 2026: tell the page the bridge is ready (single-leg pending-request recovery waits for it)
+                try { if (typeof window.dispatchEvent === 'function' && typeof Event === 'function') window.dispatchEvent(new Event('mr-native-bridge-ready')); } catch (e) {}
             })();
         """.trimIndent()
         webView.evaluateJavascript(js, null)

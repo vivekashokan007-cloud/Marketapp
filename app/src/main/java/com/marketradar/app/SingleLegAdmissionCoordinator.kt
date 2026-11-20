@@ -38,6 +38,9 @@ class SingleLegAdmissionCoordinator(
     private val sleeper: (Long) -> Unit = { Thread.sleep(it) },
     private val reconcileExecutor: Executor = Executors.newCachedThreadPool(),
     private val maxBackoffMs: Long = 5_000L,
+    // Codex reply 20 Nov 2026: compact device trace (SingleLegTradeTraceStore.append).  Default no-op; a trace
+    // failure never changes an admission outcome.
+    private val trace: (JSONObject) -> Unit = {},
 ) {
     data class State(
         val resultJson: String?, val index: String, val decisionId: String?, val instrumentKey: String?,
@@ -85,6 +88,17 @@ class SingleLegAdmissionCoordinator(
     // in-flight requests are never evicted; only completed outcomes are pruned (oldest first) beyond 50
     private val statuses = LinkedHashMap<String, String>()
     private val completed = LinkedHashMap<String, Boolean>()
+    // request ids whose exact-contract quote GET was started (20 Nov trace: refused before vs after the quote)
+    private val quoteStarted = HashSet<String>()
+    private val indexOf = HashMap<String, String>()
+
+    private fun emit(kind: String, id: String?, f: (JSONObject) -> Unit = {}) {
+        try {
+            val j = JSONObject().put("kind", kind).put("source", "native").put("t_ms", clocks.wallMs())
+            if (id != null) { j.put("request_id", id); synchronized(statuses) { indexOf[id] }?.let { j.put("index", it) } }
+            f(j); trace(j)
+        } catch (t: Throwable) { /* trace is evidence only */ }
+    }
 
     private fun put(id: String, json: JSONObject) = synchronized(statuses) {
         statuses[id] = json.put("request_id", id).toString()
@@ -104,6 +118,9 @@ class SingleLegAdmissionCoordinator(
         val ix = index.trim().uppercase()
         val shown = Displayed(displayedDecisionId?.trim()?.takeIf { it.isNotEmpty() },
                               displayedInstrumentKey?.trim()?.takeIf { it.isNotEmpty() })
+        synchronized(statuses) { indexOf[requestId] = ix }
+        emit("N_SUBMIT", requestId) { it.put("decision_id", shown.decisionId ?: JSONObject.NULL)
+            .put("instrument_key", shown.instrumentKey ?: JSONObject.NULL) }
         if (shown.decisionId == null || shown.instrumentKey == null) {
             val j = rej("DISPLAYED_IDENTITY_REQUIRED").put("index", ix).put("requires_new_tap", true)
             done(requestId, j)
@@ -122,7 +139,12 @@ class SingleLegAdmissionCoordinator(
     fun status(requestId: String): String {
         synchronized(statuses) { statuses[requestId] }?.let { return it }
         val c = cancel(requestId)?.let { try { JSONObject(it) } catch (e: Exception) { null } }
-        if (c != null && c.optBoolean("found")) return c.put("completed", true).put("reconciled", true).toString()
+        if (c != null && c.optBoolean("found")) {
+            emit("N_OUTCOME", requestId) { t -> t.put("status", c.optString("status")).put("reason", c.opt("reason") ?: JSONObject.NULL)
+                .put("reconciled", true).put("recovered", true)
+                c.optString("index").uppercase().takeIf { it == "NF" || it == "BNF" }?.let { t.put("index", it) } }
+            return c.put("completed", true).put("reconciled", true).toString()
+        }
         return JSONObject().put("status", "PENDING").put("phase", "OUTCOME_UNCONFIRMED").put("request_id", requestId).toString()
     }
 
@@ -147,7 +169,13 @@ class SingleLegAdmissionCoordinator(
             val tr = transport()
             if (s0.gatesOpen() && tr != null) {
                 put(id, JSONObject().put("status", "PENDING").put("phase", "FETCHING").put("index", ix))
-                q = ManagedReadAdapters.fetchQuotes(s0.quoteNeeded.take(1), tr, clocks)
+                val keys = s0.quoteNeeded.take(1)
+                val tracedTransport = ManagedReadAdapters.Transport { method, url, body ->
+                    synchronized(statuses) { quoteStarted.add(id) }
+                    emit("N_QUOTE_STARTED", id) { it.put("instrument_key", keys.first()) }
+                    tr.call(method, url, body)
+                }
+                q = ManagedReadAdapters.fetchQuotes(keys, tracedTransport, clocks)
                 m = ManagedReadAdapters.fetchShortMargin(s0.action ?: "", s0.instrumentKey, s0.lotSize, tr, clocks)
             }
             val s1 = readState(ix)                      // re-read AFTER the fetch
@@ -191,6 +219,13 @@ class SingleLegAdmissionCoordinator(
     private fun rej(why: String) = JSONObject().put("status", "REJECTED").put("reason", why)
 
     private fun done(id: String, j: JSONObject) {
-        put(id, j.put("completed", true))
+        val quoted = synchronized(statuses) { quoteStarted.remove(id) }
+        put(id, j.put("completed", true).put("quote_requested", quoted))
+        synchronized(statuses) { indexOf.remove(id) }?.let { ix ->
+            emit("N_OUTCOME", id) { t -> t.put("index", ix).put("status", j.optString("status"))
+                .put("reason", j.opt("reason") ?: JSONObject.NULL).put("quote_requested", quoted)
+                .put("requires_new_tap", j.optBoolean("requires_new_tap", false))
+                j.optJSONArray("reasons")?.let { t.put("reasons", it) } }
+        }
     }
 }
