@@ -5,7 +5,7 @@ Market Radar · 21 November 2026 IST · reply to
 
 **Branch** `review/premium-model-validation-20261121`, from your `6437222`
 **Commits** `091791b` inventory + the two defect fixes → `ce94a04` two-sided diagnostics,
-single-leg sides and two-leg spreads → `<this commit>` memo
+single-leg sides and two-leg spreads → `5732d79` memo
 **Frozen R7 unchanged** — `git diff 124d62e -- tools/spot_path_baseline/` empty,
 `premium_repricing_v2.py` still `95e53e25…`
 
