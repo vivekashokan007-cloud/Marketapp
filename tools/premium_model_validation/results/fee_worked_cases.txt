@@ -1,0 +1,125 @@
+====================================================================================================
+WORKED FEE CASES   nse_equity_index_options_rates_20261116_v2
+====================================================================================================
+verified through 2026-11-16 -- a later trade date is REFUSED, never estimated
+tree c73b28cd7358  MODIFIED: research/replay/fee_models.py
+convention: an outright long. Entry buys at `buy_px`; exit sells at `sell_px`.
+            entry = {sell_px: 0, buy_px: paid}; exit = {exit_sell_px: got,
+            exit_buy_px: 0}; legs = 1, so brokerage is 2 orders.
+
+--- a real 16 Nov NIFTY row: buy 139.15, sell 141.50, lot 65
+    window nse_idx_opt_20260401  (2026-04-01 to 2026-11-16)
+    buy  turnover     9048.00 =   139.20 x 65
+    sell turnover     9194.25 =   141.45 x 65
+    component             INR   how
+    brokerage         40.0000   Rs 20 per executed order x 2 orders
+    exchange           6.4815   0.0355299% x (9048.00 + 9194.25) turnover, each side
+    ipft               0.0000   0.0000001% x (9048.00 + 9194.25) turnover, each side
+    stt               13.7914   0.1500% x 9194.25  (SALE only, seller pays)
+    stamp              0.2714   0.0030% x 9048.00  (BUY only, buyer pays)
+    sebi               0.0182   0.0001% x 18242.25 turnover
+    gst                8.3667   18% x (brokerage + exchange + ipft)
+    TOTAL             68.9292
+    gross P&L          146.2500   (141.45 - 139.20) x 65
+    net P&L             77.3208   gross - fees
+    components sum to the total: 68.9291935315 == 68.9291935315
+
+--- a real 16 Nov BANKNIFTY row: buy 420.00, sell 405.00, lot 35
+    window nse_idx_opt_20260401  (2026-04-01 to 2026-11-16)
+    buy  turnover    14701.75 =   420.05 x 35
+    sell turnover    14173.25 =   404.95 x 35
+    component             INR   how
+    brokerage         40.0000   Rs 20 per executed order x 2 orders
+    exchange          10.2593   0.0355299% x (14701.75 + 14173.25) turnover, each side
+    ipft               0.0000   0.0000001% x (14701.75 + 14173.25) turnover, each side
+    stt               21.2599   0.1500% x 14173.25  (SALE only, seller pays)
+    stamp              0.4411   0.0030% x 14701.75  (BUY only, buyer pays)
+    sebi               0.0289   0.0001% x 28875.00 turnover
+    gst                9.0467   18% x (brokerage + exchange + ipft)
+    TOTAL             81.0358
+    gross P&L         -528.5000   (404.95 - 420.05) x 35
+    net P&L           -609.5358   gross - fees
+    components sum to the total: 81.0357617500 == 81.0357617500
+
+--- a losing round trip, to show STT is charged on the SALE regardless of profit
+    window nse_idx_opt_20260401  (2026-04-01 to 2026-11-16)
+    buy  turnover    13000.00 =   200.00 x 65
+    sell turnover     6500.00 =   100.00 x 65
+    component             INR   how
+    brokerage         40.0000   Rs 20 per executed order x 2 orders
+    exchange           6.9283   0.0355299% x (13000.00 + 6500.00) turnover, each side
+    ipft               0.0000   0.0000001% x (13000.00 + 6500.00) turnover, each side
+    stt                9.7500   0.1500% x 6500.00  (SALE only, seller pays)
+    stamp              0.3900   0.0030% x 13000.00  (BUY only, buyer pays)
+    sebi               0.0195   0.0001% x 19500.00 turnover
+    gst                8.4471   18% x (brokerage + exchange + ipft)
+    TOTAL             65.5350
+    gross P&L        -6500.0000   (100.00 - 200.00) x 65
+    net P&L          -6565.5350   gross - fees
+    components sum to the total: 65.5349530000 == 65.5349530000
+
+--- a one-rupee premium, where the Rs 20 per-order brokerage dominates
+    window nse_idx_opt_20260401  (2026-04-01 to 2026-11-16)
+    buy  turnover       65.00 =     1.00 x 65
+    sell turnover       65.00 =     1.00 x 65
+    component             INR   how
+    brokerage         40.0000   Rs 20 per executed order x 2 orders
+    exchange           0.0462   0.0355299% x (65.00 + 65.00) turnover, each side
+    ipft               0.0000   0.0000001% x (65.00 + 65.00) turnover, each side
+    stt                0.0975   0.1500% x 65.00  (SALE only, seller pays)
+    stamp              0.0020   0.0030% x 65.00  (BUY only, buyer pays)
+    sebi               0.0001   0.0001% x 130.00 turnover
+    gst                7.2083   18% x (brokerage + exchange + ipft)
+    TOTAL             47.3541
+    gross P&L            0.0000   (1.00 - 1.00) x 65
+    net P&L            -47.3541   gross - fees
+    components sum to the total: 47.3540830200 == 47.3540830200
+
+--- the day the window opens, 1 April 2026 (STT 0.15% applies)
+    window nse_idx_opt_20260401  (2026-04-01 to 2026-11-16)
+    buy  turnover     6500.00 =   100.00 x 65
+    sell turnover     6500.00 =   100.00 x 65
+    component             INR   how
+    brokerage         40.0000   Rs 20 per executed order x 2 orders
+    exchange           4.6189   0.0355299% x (6500.00 + 6500.00) turnover, each side
+    ipft               0.0000   0.0000001% x (6500.00 + 6500.00) turnover, each side
+    stt                9.7500   0.1500% x 6500.00  (SALE only, seller pays)
+    stamp              0.1950   0.0030% x 6500.00  (BUY only, buyer pays)
+    sebi               0.0130   0.0001% x 13000.00 turnover
+    gst                8.0314   18% x (brokerage + exchange + ipft)
+    TOTAL             62.6083
+    gross P&L            0.0000   (100.00 - 100.00) x 65
+    net P&L            -62.6083   gross - fees
+    components sum to the total: 62.6083020000 == 62.6083020000
+
+--- the day before it opens, 31 March 2026 (the PREVIOUS window, STT 0.10%)
+    window nse_idx_opt_20260301  (2026-03-01 to 2026-03-31)
+    buy  turnover     6500.00 =   100.00 x 65
+    sell turnover     6500.00 =   100.00 x 65
+    component             INR   how
+    brokerage         40.0000   Rs 20 per executed order x 2 orders
+    exchange           4.6189   0.0355299% x (6500.00 + 6500.00) turnover, each side
+    ipft               0.0000   0.0000001% x (6500.00 + 6500.00) turnover, each side
+    stt                6.5000   0.1000% x 6500.00  (SALE only, seller pays)
+    stamp              0.1950   0.0030% x 6500.00  (BUY only, buyer pays)
+    sebi               0.0130   0.0001% x 13000.00 turnover
+    gst                8.0314   18% x (brokerage + exchange + ipft)
+    TOTAL             59.3583
+    gross P&L            0.0000   (100.00 - 100.00) x 65
+    net P&L            -59.3583   gross - fees
+    components sum to the total: 59.3583020000 == 59.3583020000
+
+--- dates the table must REFUSE rather than estimate ---
+    2026-11-17  refused: UnknownHistoricalRate
+    2026-12-01  refused: UnknownHistoricalRate
+    2027-01-05  refused: UnknownHistoricalRate
+
+--- a zero or missing lot must refuse, never default ---
+    lot=0  refused: UnknownHistoricalRate
+    lot=None  refused: UnknownHistoricalRate
+
+====================================================================================================
+Every line above is printed by the model, so a figure in the review document
+cannot drift from the code. The sources for each rate are in
+FEE_EXTENSION_REVIEW_20261121.md, with what remains unproven stated there.
+====================================================================================================
