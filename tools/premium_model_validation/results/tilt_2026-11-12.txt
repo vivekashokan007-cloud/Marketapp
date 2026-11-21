@@ -1,0 +1,173 @@
+========================================================================================================
+PREMIUM CENTRE-TILT VALIDATION   premium_centre_tilt_validation_v1
+========================================================================================================
+predeclaration PREDECLARATION_20261121.md   primary lambda 0.50 at 60 min vs FLAT, on median MAE and CRPS
+session 2026-11-12   export 5f399accefabd0dd   history f6f29ed8fd6e1290  rows 855  prior sessions 11
+frozen R7 contract 2.6   range runner premium_neutral_range_comparison_v2_planned_coverage   schedule premium_range_planned_schedule_v3_authoritative_rules
+receipt_proxy: every instant is the app acquisition receipt; the exchange quote event clock is UNVERIFIED in these exports
+
+--- BNF   15 min   diagnostic ---
+    planned 396   scored in plan 305   usable 77.0%   common rows 305
+    excluded: no_exit_quote_within_tolerance=18
+    variant         medMAE   meanMAE      bias      CRPS    cov80     <p10     >p90   width80
+    FLAT            21.600    29.492    +2.861    29.492     0.7%    51.8%    47.5%     0.000
+    E0_TILT_0       21.600    29.492    +2.861    23.009    78.4%    12.1%     9.5%   105.812
+    E0_TILT_0p25    22.389    30.746    +2.861    23.409    77.4%    12.8%     9.8%   105.812
+    E0_TILT_0p5     27.642    32.312    +2.861    24.133    77.4%    11.8%    10.8%   105.812
+    E0_TILT_0p75    29.221    34.159    +2.861    25.076    76.7%    12.5%    10.8%   105.812
+    E0_TILT_1       32.498    36.339    +2.861    26.258    73.4%    13.8%    12.8%   105.812
+    IV_ONLY         21.600    29.492    +2.861    21.862    70.2%    17.7%    12.1%    75.765
+    HIST            21.600    29.492    +2.861    23.007    78.4%    12.1%     9.5%   105.843
+    decomposition  tilt cost +3.249 CRPS   shape value -6.484 CRPS   total vs FLAT -3.235
+    paired lambda=0.50 vs FLAT on MAE   mean +2.820  median +3.010  better on 109 of 305 rows
+    paired lambda=0.50 vs FLAT on CRPS  mean -5.359  median -3.075  better on 178 of 305 rows
+
+--- BNF   30 min   diagnostic ---
+    planned 378   scored in plan 287   usable 75.9%   common rows 287
+    excluded: no_exit_quote_within_tolerance=36
+    variant         medMAE   meanMAE      bias      CRPS    cov80     <p10     >p90   width80
+    FLAT            33.375    39.625    +5.307    39.625     0.0%    52.3%    47.7%     0.000
+    E0_TILT_0       33.375    39.625    +5.307    31.527    79.1%    12.9%     8.0%   156.485
+    E0_TILT_0p25    33.714    39.247    +5.234    30.807    81.2%    12.5%     6.3%   156.485
+    E0_TILT_0p5     33.502    39.862    +5.162    30.516    84.3%    10.5%     5.2%   156.485
+    E0_TILT_0p75    34.921    41.225    +5.090    30.695    83.6%    10.5%     5.9%   156.485
+    E0_TILT_1       39.595    43.098    +5.017    31.184    82.2%    11.1%     6.6%   156.485
+    IV_ONLY         33.375    39.625    +5.307    27.823    71.1%    17.4%    11.5%   107.254
+    HIST            33.375    39.625    +5.307    31.511    79.1%    12.9%     8.0%   156.567
+    decomposition  tilt cost -0.343 CRPS   shape value -8.098 CRPS   total vs FLAT -8.441
+    paired lambda=0.50 vs FLAT on MAE   mean +0.237  median +1.337  better on 136 of 287 rows
+    paired lambda=0.50 vs FLAT on CRPS  mean -9.109  median -8.012  better on 211 of 287 rows
+
+--- BNF   60 min   PRIMARY ---
+    planned 342   scored in plan 251   usable 73.4%   common rows 251
+    excluded: no_exit_quote_within_tolerance=72
+    variant         medMAE   meanMAE      bias      CRPS    cov80     <p10     >p90   width80
+    FLAT            32.450    47.911    +8.883    47.911     0.0%    57.4%    42.6%     0.000
+    E0_TILT_0       32.450    47.911    +8.883    38.042    87.3%     8.0%     4.8%   213.245
+    E0_TILT_0p25    33.168    46.881    +8.712    37.376    89.2%     6.0%     4.8%   213.245
+    E0_TILT_0p5     34.212    48.281    +8.541    37.664    86.9%     7.2%     6.0%   213.245
+    E0_TILT_0p75    38.013    50.294    +8.370    38.324    86.9%     7.2%     6.0%   213.245
+    E0_TILT_1       42.605    52.982    +8.199    39.489    86.9%     7.2%     6.0%   213.245
+    IV_ONLY         32.450    47.911    +8.883    34.456    78.5%    14.3%     7.2%   151.907
+    HIST            32.450    47.911    +8.883    38.046    87.6%     7.6%     4.8%   213.405
+    decomposition  tilt cost +1.447 CRPS   shape value -9.869 CRPS   total vs FLAT -8.422
+    paired lambda=0.50 vs FLAT on MAE   mean +0.370  median -0.844  better on 129 of 251 rows
+    paired lambda=0.50 vs FLAT on CRPS  mean -10.247  median -9.422  better on 164 of 251 rows
+    by call_put   (descriptive; not a verdict)
+      bucket                     n  FLAT med  TILT med FLAT CRPS TILT CRPS    cov80
+      CE                       126    36.062    35.539    48.834    37.528    85.7%
+      PE                       125    30.225    32.378    46.980    37.800    88.0%
+    by moneyness   (descriptive; not a verdict)
+      bucket                     n  FLAT med  TILT med FLAT CRPS TILT CRPS    cov80
+      atm_within_0.25pct       182    29.200    29.572    40.260    33.948    90.7%
+      near_0.25_to_0.75pct      69    63.050    61.506    68.093    47.465    76.8%
+    by time_of_day   (descriptive; not a verdict)
+      bucket                     n  FLAT med  TILT med FLAT CRPS TILT CRPS    cov80
+      midday_1100_1300         131    48.900    54.092    59.641    42.920    74.8%
+      morning_to_1100          120    24.200    24.786    35.106    31.926   100.0%
+    by days_to_expiry   (descriptive; not a verdict)
+      bucket                     n  FLAT med  TILT med FLAT CRPS TILT CRPS    cov80
+      dte_over_7d              251    32.450    34.212    47.911    37.664    86.9%
+
+--- BNF   120 min   diagnostic ---
+    planned 270   scored in plan 179   usable 66.3%   common rows 179
+    excluded: no_exit_quote_within_tolerance=144
+    variant         medMAE   meanMAE      bias      CRPS    cov80     <p10     >p90   width80
+    FLAT            48.375    53.135   +16.653    53.135     0.0%    56.4%    43.6%     0.000
+    E0_TILT_0       48.375    53.135   +16.653    46.876    92.7%     7.3%     0.0%   299.529
+    E0_TILT_0p25    40.780    49.418   +16.189    44.993    95.5%     4.5%     0.0%   299.529
+    E0_TILT_0p5     35.157    47.122   +15.726    44.163    96.1%     3.9%     0.0%   299.529
+    E0_TILT_0p75    37.431    47.304   +15.262    44.164    93.3%     5.0%     1.7%   299.529
+    E0_TILT_1       42.141    49.801   +14.798    45.082    93.3%     3.4%     3.4%   299.529
+    IV_ONLY         48.375    53.135   +16.653    36.890    92.2%     7.8%     0.0%   216.087
+    HIST            48.375    53.135   +16.653    46.736    92.7%     7.3%     0.0%   299.776
+    decomposition  tilt cost -1.794 CRPS   shape value -6.259 CRPS   total vs FLAT -8.053
+    paired lambda=0.50 vs FLAT on MAE   mean -6.013  median -8.768  better on 116 of 179 rows
+    paired lambda=0.50 vs FLAT on CRPS  mean -8.972  median -8.283  better on 112 of 179 rows
+
+--- NF   15 min   diagnostic ---
+    planned 396   scored in plan 300   usable 75.8%   common rows 300
+    excluded: no_exit_quote_within_tolerance=18
+    variant         medMAE   meanMAE      bias      CRPS    cov80     <p10     >p90   width80
+    FLAT             9.500    11.521    +1.277    11.521     0.3%    53.0%    46.7%     0.000
+    E0_TILT_0        9.500    11.521    +1.277     9.283    72.3%    17.3%    10.3%    41.348
+    E0_TILT_0p25     9.237    11.186    +1.302     9.003    76.7%    13.7%     9.7%    41.348
+    E0_TILT_0p5      8.850    11.317    +1.327     8.952    75.0%    15.0%    10.0%    41.348
+    E0_TILT_0p75     8.662    11.837    +1.351     9.058    74.3%    14.7%    11.0%    41.348
+    E0_TILT_1        9.387    12.386    +1.376     9.294    75.7%    13.3%    11.0%    41.348
+    IV_ONLY          9.500    11.521    +1.277     8.219    64.7%    20.0%    15.3%    28.309
+    HIST             9.500    11.521    +1.277     9.279    71.3%    17.7%    11.0%    41.417
+    decomposition  tilt cost +0.011 CRPS   shape value -2.238 CRPS   total vs FLAT -2.226
+    paired lambda=0.50 vs FLAT on MAE   mean -0.204  median +0.305  better on 139 of 300 rows
+    paired lambda=0.50 vs FLAT on CRPS  mean -2.569  median -2.462  better on 212 of 300 rows
+
+--- NF   30 min   diagnostic ---
+    planned 378   scored in plan 282   usable 74.6%   common rows 282
+    excluded: no_exit_quote_within_tolerance=36
+    variant         medMAE   meanMAE      bias      CRPS    cov80     <p10     >p90   width80
+    FLAT            14.213    15.711    +2.360    15.711     0.0%    54.3%    45.7%     0.000
+    E0_TILT_0       14.213    15.711    +2.360    13.103    75.5%    13.8%    10.6%    61.667
+    E0_TILT_0p25    12.811    14.720    +2.313    12.567    77.7%    12.8%     9.6%    61.667
+    E0_TILT_0p5     12.722    14.153    +2.266    12.179    79.4%    12.8%     7.8%    61.667
+    E0_TILT_0p75    12.367    14.084    +2.219    11.920    80.1%    12.8%     7.1%    61.667
+    E0_TILT_1       12.718    14.338    +2.172    11.793    81.6%    11.3%     7.1%    61.667
+    IV_ONLY         14.213    15.711    +2.360    11.034    67.4%    20.2%    12.4%    40.107
+    HIST            14.213    15.711    +2.360    13.098    76.2%    12.8%    11.0%    61.766
+    decomposition  tilt cost -1.310 CRPS   shape value -2.608 CRPS   total vs FLAT -3.918
+    paired lambda=0.50 vs FLAT on MAE   mean -1.558  median -1.634  better on 186 of 282 rows
+    paired lambda=0.50 vs FLAT on CRPS  mean -3.532  median -3.898  better on 187 of 282 rows
+
+--- NF   60 min   PRIMARY ---
+    planned 342   scored in plan 246   usable 71.9%   common rows 246
+    excluded: no_exit_quote_within_tolerance=72
+    variant         medMAE   meanMAE      bias      CRPS    cov80     <p10     >p90   width80
+    FLAT            25.262    24.351    +4.448    24.351     0.0%    55.7%    44.3%     0.000
+    E0_TILT_0       25.262    24.351    +4.448    18.106    80.9%    12.2%     6.9%    92.699
+    E0_TILT_0p25    24.436    24.142    +4.338    17.822    84.1%     9.8%     6.1%    92.699
+    E0_TILT_0p5     23.963    24.115    +4.228    17.651    84.6%     9.8%     5.7%    92.699
+    E0_TILT_0p75    24.008    24.216    +4.119    17.554    86.6%     7.3%     6.1%    92.699
+    E0_TILT_1       24.094    24.413    +4.009    17.567    86.6%     7.3%     6.1%    92.699
+    IV_ONLY         25.262    24.351    +4.448    16.840    54.9%    26.8%    18.3%    56.926
+    HIST            25.262    24.351    +4.448    18.096    81.7%    11.8%     6.5%    92.789
+    decomposition  tilt cost -0.539 CRPS   shape value -6.245 CRPS   total vs FLAT -6.785
+    paired lambda=0.50 vs FLAT on MAE   mean -0.236  median -0.343  better on 139 of 246 rows
+    paired lambda=0.50 vs FLAT on CRPS  mean -6.700  median -8.848  better on 192 of 246 rows
+    by call_put   (descriptive; not a verdict)
+      bucket                     n  FLAT med  TILT med FLAT CRPS TILT CRPS    cov80
+      CE                       123    28.075    24.866    25.518    18.609    82.9%
+      PE                       123    21.650    23.562    23.184    16.694    86.2%
+    by moneyness   (descriptive; not a verdict)
+      bucket                     n  FLAT med  TILT med FLAT CRPS TILT CRPS    cov80
+      atm_within_0.25pct       150    28.263    26.727    25.724    17.770    85.3%
+      near_0.25_to_0.75pct      96    20.250    21.739    22.207    17.466    83.3%
+    by time_of_day   (descriptive; not a verdict)
+      bucket                     n  FLAT med  TILT med FLAT CRPS TILT CRPS    cov80
+      midday_1100_1300         126    23.262    22.675    23.268    15.589    95.2%
+      morning_to_1100          120    26.138    24.419    25.489    19.816    73.3%
+    by days_to_expiry   (descriptive; not a verdict)
+      bucket                     n  FLAT med  TILT med FLAT CRPS TILT CRPS    cov80
+      dte_3_to_7d              246    25.262    23.963    24.351    17.651    84.6%
+
+--- NF   120 min   diagnostic ---
+    planned 270   scored in plan 174   usable 64.4%   common rows 174
+    excluded: no_exit_quote_within_tolerance=144
+    variant         medMAE   meanMAE      bias      CRPS    cov80     <p10     >p90   width80
+    FLAT            45.225    45.542    +8.616    45.542     0.0%    53.4%    46.6%     0.000
+    E0_TILT_0       45.225    45.542    +8.616    30.920    75.9%    15.5%     8.6%   134.258
+    E0_TILT_0p25    46.347    45.557    +8.386    30.737    75.9%    15.5%     8.6%   134.258
+    E0_TILT_0p5     46.774    45.631    +8.156    30.658    80.5%    13.8%     5.7%   134.258
+    E0_TILT_0p75    46.776    45.901    +7.926    30.697    79.9%    14.9%     5.2%   134.258
+    E0_TILT_1       46.009    46.415    +7.696    30.837    79.9%    14.4%     5.7%   134.258
+    IV_ONLY         45.225    45.542    +8.616    31.857    41.4%    37.4%    21.3%    81.339
+    HIST            45.225    45.542    +8.616    30.914    75.9%    15.5%     8.6%   134.273
+    decomposition  tilt cost -0.082 CRPS   shape value -14.622 CRPS   total vs FLAT -14.705
+    paired lambda=0.50 vs FLAT on MAE   mean +0.089  median +1.910  better on 75 of 174 rows
+    paired lambda=0.50 vs FLAT on CRPS  mean -14.884  median -17.208  better on 148 of 174 rows
+
+========================================================================================================
+FLAT is entry-midpoint persistence: the thing to beat. E0_TILT_1 is the frozen
+E0_FWD, asserted bit-for-bit by --self-check. A lambda=0 variant has the SAME
+median MAE as FLAT by construction, declared in advance, not a finding. No
+p-value is quoted: rows in one session share a few underlying paths.
+========================================================================================================
+wrote tools/premium_model_validation/results/tilt_comparison_2026-11-12.json
