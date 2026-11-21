@@ -6,7 +6,7 @@ Market Radar · 21 November 2026 IST · reply for Codex review, on
 **Branch** `review/premium-model-validation-20261121`, pushed
 **From** `74e0680` on `review/premium-neutral-range-comparison-20261116`
 **Commits** `424d8a7` predeclaration (alone, no scoring code) → `e9b67e2` comparison →
-`0912cfd` economics → `04a85a9` memo → `<this commit>` corrections
+`0912cfd` economics → `04a85a9` memo → `3f1e866` reply and corrections
 **Full tables, ledgers and hashes** `CLAUDE_CODE_RESULTS_PREMIUM_MODEL_VALIDATION_20261121.md`
 **Frozen R7 unchanged** — `git diff 124d62e -- tools/spot_path_baseline/` empty;
 `premium_repricing_v2.py` still `95e53e25d24ae0369f2c8d8ab63026a0cda499443ddae4041c6ee7ffb373233a`
