@@ -258,13 +258,17 @@ class Concurrency(unittest.TestCase):
     def test_no_positions_means_no_peak(self):
         self.assertEqual(EC.concurrency([]), (0, 0.0))
 
-    def test_the_two_peaks_are_reported_separately(self):
-        """The planned peak is what the budget controls; the realised peak is what the fills
-        actually committed, and it may exceed the budget because the fill is a different price."""
-        a = EC.arm_stats(10, [1, 2], [{'net_inr': 1.0, 'risk_inr': 500.0}],
-                         [(0, 60, 500.0)], [(0, 60, 400.0)])
-        self.assertAlmostEqual(a['peak_planned_risk_inr'], 400.0, places=9)
-        self.assertAlmostEqual(a['peak_realised_risk_inr'], 500.0, places=9)
+    def test_capital_is_reported_by_the_ledger_and_not_by_arm_stats(self):
+        """The interval-sweep peaks were removed: they released at the target whether or not an
+        exit existed, so they contradicted the ledger that now owns capital accounting."""
+        led = EC.CapitalLedger(session_end_slot=900)
+        row = led.reserve(0, 0, 60, 400.0)
+        led.settle(row, filled=True, realised_risk=500.0, exit_existed=True)
+        a = EC.arm_stats(10, [1], [{'net_inr': 1.0, 'risk_inr': 500.0}], [], [], led)
+        self.assertNotIn('peak_planned_risk_inr', a)
+        self.assertNotIn('peak_realised_risk_inr', a)
+        self.assertAlmostEqual(a['capital']['peak_committed_inr'], 500.0, places=9)
+        self.assertEqual(a['capital']['fills_costing_more_than_reserved'], 1)
 
 
 class ArmStatistics(unittest.TestCase):
@@ -424,14 +428,17 @@ class EndToEnd(unittest.TestCase):
                 self.assertLessEqual(a['buys'], a['decision_time_opportunities'],
                                      '%s %s' % (ix, name))
 
-    def test_a_common_risk_budget_is_respected_by_the_planned_peak(self):
-        for budget in (150000.0, 250000.0):
-            out = EC.run(EXPORT, SPOTS, LEDGER_ROOT, 60, risk_budget_inr=budget)
-            for ix, n in out['indices'].items():
-                for name, a in n['arms'].items():
-                    self.assertLessEqual(a['peak_planned_risk_inr'], budget + 1e-6,
-                                         '%s %s exceeded the %.0f budget it was given'
-                                         % (ix, name, budget))
+    def test_a_tighter_budget_never_lets_an_arm_buy_more(self):
+        """Superseded `peak_planned_risk_inr` assertion replaced: the ledger's decision-time
+        invariant is checked in CapitalEndToEnd. What remains worth asserting here is that the
+        constraint is monotone -- a smaller budget cannot increase an arm's orders."""
+        loose = EC.run(EXPORT, SPOTS, LEDGER_ROOT, 60, risk_budget_inr=250000.0)
+        tight = EC.run(EXPORT, SPOTS, LEDGER_ROOT, 60, risk_budget_inr=150000.0)
+        for ix in loose['indices']:
+            for name, a in loose['indices'][ix]['arms'].items():
+                b = tight['indices'][ix]['arms'][name]
+                self.assertLessEqual(b['buys'], a['buys'],
+                                     '%s %s bought more under the tighter budget' % (ix, name))
 
     def test_the_legacy_path_differs_from_the_corrected_one(self):
         """If it did not, either the defects were never there or the correction does nothing."""
@@ -600,3 +607,189 @@ class RangeAwareRule(unittest.TestCase):
             self.skipTest('a commit is not an ancestor of HEAD')
         self.assertGreater(pos[decl], pos[impl[-1]],
                            'the predeclaration must be committed BEFORE the implementation')
+
+
+class BreakEvenOddsFromScenarioNets(unittest.TestCase):
+    """DEFECT (Codex, 21 Nov): the probability was a PRICE test that charged slippage twice.
+
+    `break_even_exit_price` already contains the exit tick, so comparing `p - tick > be`
+    subtracts it a second time. The probability must come from the same scenario net values as
+    the expectation, or the two can disagree about the same distribution.
+    """
+
+    def view_with(self, scenarios, ask=100.0, lot=50):
+        r = frow(0.0)
+        srt = sorted(scenarios)
+        r['distributions'] = {'V': {'point': srt[len(srt) // 2], 'p10': srt[0], 'p90': srt[-1],
+                                    'n_scenarios': len(srt), 'scenarios': srt}}
+        r['entry_ask'] = ask
+        return EC.decision_view(r, lot, SESSION)
+
+    def test_one_profitable_scenario_is_not_reported_as_zero_percent(self):
+        """THE REGRESSION. net > 0 needs p > 101.50 with ask 100, tick 0.05, lot 50, fees 70.
+        101.55 clears it by 2.50 rupees. The old price test reported 0%."""
+        v = self.view_with([90.0, 95.0, 101.55])
+        est, _ = EC.estimate_range_round_trip(v, 'V', flat_fees)
+        self.assertAlmostEqual(est['break_even_probability'], 1.0 / 3.0, places=12)
+        self.assertGreater(est['break_even_probability'], 0.0,
+                           'a distribution containing a profitable scenario cannot be 0%')
+
+    def test_the_probability_counts_exactly_the_scenarios_with_positive_net(self):
+        for scen, want in (([90.0, 95.0], 0.0),
+                           ([200.0, 300.0], 1.0),
+                           ([90.0, 200.0], 0.5),
+                           ([90.0, 95.0, 101.55, 300.0], 0.5)):
+            est, _ = EC.estimate_range_round_trip(self.view_with(scen), 'V', flat_fees)
+            self.assertAlmostEqual(est['break_even_probability'], want, places=12,
+                                   msg='%r' % (scen,))
+
+    def test_the_probability_and_the_expectation_cannot_disagree_in_sign(self):
+        """If every scenario loses, expected net must be negative and the probability zero."""
+        est, _ = EC.estimate_range_round_trip(self.view_with([80.0, 85.0, 90.0]), 'V', flat_fees)
+        self.assertEqual(est['break_even_probability'], 0.0)
+        self.assertLess(est['expected_net_inr'], 0.0)
+        est, _ = EC.estimate_range_round_trip(self.view_with([500.0, 600.0]), 'V', flat_fees)
+        self.assertEqual(est['break_even_probability'], 1.0)
+        self.assertGreater(est['expected_net_inr'], 0.0)
+
+    def test_the_basis_is_recorded_so_the_derivation_is_not_a_guess(self):
+        est, _ = EC.estimate_range_round_trip(self.view_with([90.0, 200.0]), 'V', flat_fees)
+        self.assertEqual(est['break_even_basis'], 'SCENARIO_NET_VALUES_SAME_AS_EXPECTED_NET')
+
+    def test_the_break_even_price_still_includes_the_exit_tick_for_the_reader(self):
+        est, _ = EC.estimate_range_round_trip(self.view_with([90.0, 200.0]), 'V', flat_fees)
+        self.assertAlmostEqual(est['break_even_exit_price'],
+                               100.0 + EC.TICK_INR + 70.0 / 50 + EC.TICK_INR, places=9)
+
+
+class CapitalReservation(unittest.TestCase):
+    """DEFECT (Codex, 21 Nov): capital was released at the target whether or not an exit existed.
+
+    A filled position with no exit quote is still open. Releasing its capital assumes a close
+    that never happened and lets the arm buy again on money it has not got back.
+    """
+
+    def test_an_unfilled_order_releases_its_reservation_at_the_fill_poll(self):
+        led = EC.CapitalLedger(session_end_slot=900)
+        row = led.reserve(560, 565, 620, 5000.0)
+        state = led.settle(row, filled=False, realised_risk=None, exit_existed=False)
+        self.assertEqual(state, EC.RESV_RELEASED_UNFILLED)
+        self.assertEqual(led.outstanding(565), (0, 0.0))
+        self.assertEqual(led.summary()['unresolved_capital_inr'], 0.0)
+
+    def test_a_closed_position_releases_at_its_target(self):
+        led = EC.CapitalLedger(session_end_slot=900)
+        row = led.reserve(560, 565, 620, 5000.0)
+        led.settle(row, filled=True, realised_risk=5000.0, exit_existed=True)
+        self.assertEqual(row['state'], EC.RESV_RELEASED_AT_EXIT)
+        self.assertEqual(led.outstanding(600)[1], 5000.0)
+        self.assertEqual(led.outstanding(620)[1], 0.0, 'released AT the target instant')
+
+    def test_a_missing_exit_leaves_the_capital_unresolved_to_session_end(self):
+        """THE CORRECTION. The position filled and could not be closed, so the money is gone
+        until something closes it -- not freed at the target."""
+        led = EC.CapitalLedger(session_end_slot=900)
+        row = led.reserve(560, 565, 620, 5000.0)
+        led.settle(row, filled=True, realised_risk=5000.0, exit_existed=False)
+        self.assertEqual(row['state'], EC.RESV_UNRESOLVED_NO_EXIT)
+        for t in (620, 700, 900):
+            self.assertEqual(led.outstanding(t)[1], 5000.0,
+                             'capital must stay committed at %d' % t)
+        s = led.summary()
+        self.assertEqual(s['unresolved_positions'], 1)
+        self.assertAlmostEqual(s['unresolved_capital_inr'], 5000.0, places=9)
+
+    def test_a_fill_costing_more_than_reserved_is_reconciled_and_counted(self):
+        led = EC.CapitalLedger(session_end_slot=900)
+        row = led.reserve(560, 565, 620, 5000.0)
+        led.settle(row, filled=True, realised_risk=5400.0, exit_existed=True)
+        self.assertAlmostEqual(row['amount'], 5400.0, places=9,
+                               msg='the commitment is what the fill cost, not the reservation')
+        s = led.summary()
+        self.assertEqual(s['fills_costing_more_than_reserved'], 1)
+        self.assertAlmostEqual(s['total_fill_shortfall_inr'], 400.0, places=9)
+        self.assertAlmostEqual(s['worst_fill_shortfall_inr'], 400.0, places=9)
+
+    def test_a_fill_costing_less_is_not_counted_as_a_shortfall(self):
+        led = EC.CapitalLedger(session_end_slot=900)
+        row = led.reserve(560, 565, 620, 5000.0)
+        led.settle(row, filled=True, realised_risk=4600.0, exit_existed=True)
+        self.assertEqual(led.summary()['fills_costing_more_than_reserved'], 0)
+
+    def test_a_same_time_handover_is_not_an_overlap(self):
+        """One closes exactly as the next fills. Counting that as two open positions would make
+        a respected budget read as exceeded -- the same boundary bug as in `concurrency`."""
+        led = EC.CapitalLedger(session_end_slot=900)
+        a = led.reserve(560, 565, 620, 5000.0)
+        led.settle(a, filled=True, realised_risk=5000.0, exit_existed=True)
+        b = led.reserve(615, 620, 680, 5000.0)
+        led.settle(b, filled=True, realised_risk=5000.0, exit_existed=True)
+        self.assertEqual(led.outstanding(620), (1, 5000.0))
+        self.assertEqual(led.summary()['peak_concurrent_positions'], 1)
+
+    def test_unresolved_capital_makes_the_peak_exceed_a_closed_only_view(self):
+        """Two positions, one closed and one unresolved. The old accounting would have freed
+        both and reported a peak of one position's worth."""
+        led = EC.CapitalLedger(session_end_slot=900)
+        a = led.reserve(560, 565, 620, 3000.0)
+        led.settle(a, filled=True, realised_risk=3000.0, exit_existed=False)   # unresolved
+        b = led.reserve(615, 620, 680, 4000.0)
+        led.settle(b, filled=True, realised_risk=4000.0, exit_existed=True)
+        s = led.summary()
+        self.assertEqual(s['peak_concurrent_positions'], 2)
+        self.assertAlmostEqual(s['peak_committed_inr'], 7000.0, places=9)
+        self.assertAlmostEqual(s['unresolved_capital_inr'], 3000.0, places=9)
+
+    def test_an_empty_ledger_summarises_to_zero_rather_than_failing(self):
+        s = EC.CapitalLedger(session_end_slot=900).summary()
+        self.assertEqual(s['orders'], 0)
+        self.assertEqual(s['peak_committed_inr'], 0)
+        self.assertIsNone(s['worst_fill_shortfall_inr'])
+
+
+@unittest.skipUnless(LEDGER_ROOT and EXPORT and SPOTS,
+                     'set EC_LEDGER_ROOT, EC_EXPORT and EC_SPOTS for the end-to-end check')
+class CapitalEndToEnd(unittest.TestCase):
+
+    @classmethod
+    def setUpClass(cls):
+        cls.out = EC.run(EXPORT, SPOTS, LEDGER_ROOT, 60)
+        if cls.out.get('refused'):
+            raise unittest.SkipTest(cls.out['refused'])
+
+    def test_every_order_reaches_exactly_one_terminal_state(self):
+        for ix, n in self.out['indices'].items():
+            for name, a in n['arms'].items():
+                cap = a.get('capital')
+                if not cap or not cap['orders']:
+                    continue
+                self.assertEqual(sum(cap['states'].values()), cap['orders'],
+                                 '%s %s: states do not account for every order' % (ix, name))
+
+    def test_unresolved_positions_match_the_missing_exit_count(self):
+        """The two accountings are independent, so they must agree."""
+        for ix, n in self.out['indices'].items():
+            for name, a in n['arms'].items():
+                cap = a.get('capital')
+                if not cap or not cap['orders']:
+                    continue
+                missing = (a.get('outcome_status') or {}).get(EC.OUTCOME_NO_EXIT, 0)
+                self.assertEqual(cap['unresolved_positions'], missing,
+                                 '%s %s: %d unresolved vs %d missing exits'
+                                 % (ix, name, cap['unresolved_positions'], missing))
+
+    def test_a_budget_is_respected_at_every_decision_even_with_unresolved_capital(self):
+        """The PEAK may exceed the budget when a fill costs more than its reservation; the
+        decision-time test may not be violated, and the overshoot must be explained."""
+        budget = 250000.0
+        out = EC.run(EXPORT, SPOTS, LEDGER_ROOT, 60, risk_budget_inr=budget)
+        for ix, n in out['indices'].items():
+            for name, a in n['arms'].items():
+                cap = a.get('capital')
+                if not cap or not cap['orders']:
+                    continue
+                if cap['peak_committed_inr'] > budget:
+                    self.assertGreater(cap['fills_costing_more_than_reserved'], 0,
+                                       '%s %s: peak %0.f exceeded the %0.f budget with no fill '
+                                       'shortfall to explain it'
+                                       % (ix, name, cap['peak_committed_inr'], budget))

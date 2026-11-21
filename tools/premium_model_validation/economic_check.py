@@ -252,12 +252,21 @@ def estimate_range_round_trip(view, variant, fees_fn):
             got, floored = 0.0, floored + 1
         nets.append((got - pay) * lot - fee_total)
     n = len(nets)
+    # THE BREAK-EVEN PRICE, stated for the reader. Note it already contains the exit tick, so a
+    # price test of `p - tick > be` would charge slippage TWICE.
     be = pay + (fee_total / lot) + TICK_INR
     losses = [x for x in nets if x < 0]
     srt = sorted(nets)
     return {'expected_net_inr': statistics.fmean(nets),
             'break_even_exit_price': be,
-            'break_even_probability': sum(1 for p in scen if p - TICK_INR > be) / n,
+            # DEFECT FIXED (Codex, 21 Nov): derived from the SAME scenario net values used for
+            # expected P&L, so the exit tick is charged once and the probability and the
+            # expectation cannot disagree. The previous price test subtracted a tick from the
+            # scenario AND included one in `be`, which reported a 0% break-even probability for a
+            # distribution with a profitable scenario in it -- pinned as a regression in
+            # tests/test_economic_check.py.
+            'break_even_probability': sum(1 for x in nets if x > 0) / n,
+            'break_even_basis': 'SCENARIO_NET_VALUES_SAME_AS_EXPECTED_NET',
             'expected_shortfall_inr': (statistics.fmean(losses) if losses else None),
             'net_p10_inr': srt[max(0, int(0.10 * (n - 1)))],
             'worst_scenario_net_inr': srt[0],
@@ -403,28 +412,128 @@ def concurrency(intervals):
     return peak_n, peak_cap
 
 
-def arm_stats(decided, buys, outcomes, intervals, planned_intervals=()):
+#: an order that found no quote at its fill poll. Declared order rule: the reservation is
+#: released at that poll, because nothing was bought.
+RESV_RELEASED_UNFILLED = 'RELEASED_UNFILLED'
+#: filled and closed at the target instant: capital released there.
+RESV_RELEASED_AT_EXIT = 'RELEASED_AT_EXIT'
+#: filled, and NO exit quote at the target instant. The position is still open and its capital
+#: is NOT released -- it stays committed for the rest of the session and is reported as
+#: unresolved. Releasing it at the target would silently assume a close that never happened.
+RESV_UNRESOLVED_NO_EXIT = 'UNRESOLVED_NO_EXIT'
+
+
+class CapitalLedger:
+    """Reserve at the decision, reconcile at the fill, release only on an actual close.
+
+    THE DEFECT THIS REPLACES (Codex, 21 Nov): capital was released at the target instant whether
+    or not an exit quote existed, so a position that could not be closed freed its budget anyway
+    and the arm went on to buy more. A missing exit must leave the position open and its capital
+    unresolved.
+
+    Three events, in this order, all on the decision-time clock:
+
+      reserve(decision)  -- the ESTIMATED risk, which is what the budget is tested against
+      fill(fill_slot)    -- either the order filled, and the commitment becomes the REALISED
+                            risk (which may exceed the reservation, and the difference is
+                            reconciled and reported), or it did not, and the reservation is
+                            released under the declared order rule
+      close(target)      -- released only if an exit quote existed at the target instant
+
+    `session_end` is the last slot in the session; unresolved capital is carried to it so the
+    peak reflects what was actually still committed.
+    """
+
+    def __init__(self, session_end_slot):
+        self.session_end = session_end_slot
+        self.rows = []                 # one per order
+        self.shortfalls = []           # realised commitment minus reservation, where positive
+
+    def outstanding(self, at_slot):
+        """Capital still committed at `at_slot`, on the same boundary `concurrency` uses.
+
+        A position released exactly at `at_slot` is NOT counted: the exit is taken at that
+        instant. An unresolved one is counted for the rest of the session.
+        """
+        total = 0.0
+        n = 0
+        for r in self.rows:
+            if r['start'] > at_slot:
+                continue
+            if r['end'] is not None and r['end'] <= at_slot:
+                continue
+            total += r['amount']
+            n += 1
+        return n, total
+
+    def reserve(self, decision_slot, fill_slot, target_slot, estimated_risk):
+        row = {'decision_slot': decision_slot, 'start': fill_slot, 'end': None,
+               'amount': estimated_risk, 'reserved': estimated_risk,
+               'realised': None, 'state': 'RESERVED', 'target_slot': target_slot}
+        self.rows.append(row)
+        return row
+
+    def settle(self, row, filled, realised_risk, exit_existed):
+        """Apply the fill and the close, in that order, and record the state reached."""
+        if not filled:
+            row['end'] = row['start']           # released at the fill poll; nothing was bought
+            row['state'] = RESV_RELEASED_UNFILLED
+            return row['state']
+        row['realised'] = realised_risk
+        if realised_risk is not None:
+            if realised_risk > row['reserved'] + 1e-9:
+                self.shortfalls.append(realised_risk - row['reserved'])
+            row['amount'] = realised_risk       # the commitment is what the fill actually cost
+        if exit_existed:
+            row['end'] = row['target_slot']
+            row['state'] = RESV_RELEASED_AT_EXIT
+        else:
+            row['end'] = None                   # carried to session end: NOT released
+            row['state'] = RESV_UNRESOLVED_NO_EXIT
+        return row['state']
+
+    def summary(self):
+        states = {}
+        for r in self.rows:
+            states[r['state']] = states.get(r['state'], 0) + 1
+        unresolved = [r for r in self.rows if r['state'] == RESV_UNRESOLVED_NO_EXIT]
+        # the peak is swept over every event instant, including the session end
+        marks = sorted({r['start'] for r in self.rows}
+                       | {r['end'] for r in self.rows if r['end'] is not None}
+                       | {self.session_end})
+        peak_n = peak_cap = 0
+        for m in marks:
+            n, cap = self.outstanding(m)
+            peak_n = max(peak_n, n)
+            peak_cap = max(peak_cap, cap)
+        return {'orders': len(self.rows),
+                'states': states,
+                'unresolved_positions': len(unresolved),
+                'unresolved_capital_inr': sum(r['amount'] for r in unresolved),
+                'peak_concurrent_positions': peak_n,
+                'peak_committed_inr': peak_cap,
+                'fills_costing_more_than_reserved': len(self.shortfalls),
+                'total_fill_shortfall_inr': sum(self.shortfalls),
+                'worst_fill_shortfall_inr': (max(self.shortfalls) if self.shortfalls else None)}
+
+
+def arm_stats(decided, buys, outcomes, intervals, planned_intervals=(), capital=None):
     """What an arm decided, what it managed to execute, and what it earned on what it executed.
 
-    TWO PEAKS, NOT ONE, for the same reason costs are estimated and then realised separately.
-    The PLANNED peak is built from the decision-time risk estimates, and it is what the common
-    budget constrains, so it can never exceed that budget. The REALISED peak is built from the
-    fills that actually happened, and it can and does exceed the budget -- the fill is a
-    different price from the decision quote, and only buys that produced a scored outcome
-    contribute. Reporting one number would have made a respected budget look violated.
+    CAPITAL IS THE LEDGER'S, NOT THIS FUNCTION'S. An earlier version reported a "planned" and a
+    "realised" peak from interval sweeps that released at the target instant regardless of
+    whether an exit quote existed. Both were superseded by `CapitalLedger`, which reserves at the
+    decision, reconciles at the fill and releases only on an actual close, and they were removed
+    rather than left to disagree with it -- a field nobody should read is worse than no field.
     """
     nets = [o['net_inr'] for o in outcomes]
     risks = [o['risk_inr'] for o in outcomes]
-    peak_n, peak_cap = concurrency(intervals)
-    plan_n, plan_cap = concurrency(planned_intervals)
     out = {'decision_time_opportunities': decided,
            'buys': len(buys), 'buy_rate': (len(buys) / decided) if decided else None,
            'scored_outcomes': len(outcomes),
-           'outcome_coverage': (len(outcomes) / len(buys)) if buys else None,
-           'peak_concurrent_positions_planned': plan_n,
-           'peak_planned_risk_inr': plan_cap,
-           'peak_concurrent_positions': peak_n,
-           'peak_realised_risk_inr': peak_cap}
+           'outcome_coverage': (len(outcomes) / len(buys)) if buys else None}
+    if capital is not None:
+        out['capital'] = capital.summary()
     if not nets:
         out.update({'total_net_inr': 0.0, 'mean_net_inr': None, 'median_net_inr': None,
                     'worst_net_inr': None, 'win_rate': None, 'total_risk_inr': 0.0,
@@ -511,14 +620,16 @@ def run(export_path, spots_path, ledger_root, horizon_min=60, margin=REQUIRED_MA
         lots = lot_map(ex, ix, led, horizon_min)
         opps, plan, cov = build_opportunities(ex, ix, hist, hist_dates, horizon_min,
                                               session, calendar, lots)
+        session_end_slot = max([o['target_slot'] for o in opps] or [0])
         node = {'planned_opportunities': plan['planned_opportunities'],
+                'session_end_slot': session_end_slot,
                 'decision_time_opportunities': len(opps),
                 'schedule_state': plan.get('state'),
                 'lots_resolved': sum(1 for o in opps if (o['view'] or {}).get('lot')),
                 'arms': {}, 'outcome_status': {}}
 
         # WAIT is a decision on every opportunity, and needs no outcome.
-        node['arms']['WAIT'] = arm_stats(len(opps), [], [], [], [])
+        node['arms']['WAIT'] = arm_stats(len(opps), [], [], [], [], CapitalLedger(session_end_slot))
         node['arms']['WAIT']['note'] = ('WAIT on every decision-time opportunity: exactly zero '
                                         'rupees, zero risk, no position. The thing to beat.')
 
@@ -534,9 +645,8 @@ def run(export_path, spots_path, ledger_root, horizon_min=60, margin=REQUIRED_MA
             # decision order, so it uses no future information. Without it, arms that trade more
             # often are compared as though capital were free: a 5-minute cadence and a 60-minute
             # hold leaves up to twelve positions per contract open at once.
-            open_positions = []       # [(target_slot, risk_inr)]
+            ledger = CapitalLedger(session_end_slot)
             planned_intervals = []    # built from the DECISION-time estimate, budget-controlled
-            committed = 0.0
             for o in sorted(opps, key=lambda z: (z['decision_slot'], z['ikey'])):
                 if legacy_noncausal and variant is not None and (
                         (o['_frow'] or {}).get('exit_bid') is None):
@@ -569,30 +679,34 @@ def run(export_path, spots_path, ledger_root, horizon_min=60, margin=REQUIRED_MA
                 if dec != 'BUY':
                     statuses[OUTCOME_WAIT] = statuses.get(OUTCOME_WAIT, 0) + 1
                     continue
-                # Release positions whose target instant has passed, then test the budget.
-                # Capital is committed from the FILL to the target, which is the same interval
-                # `concurrency` measures -- releasing from the decision slot instead let the
-                # reported peak exceed the budget it was supposed to respect.
-                still = [(t, rk) for t, rk in open_positions if t > o['fill_slot']]
-                committed = sum(rk for _t, rk in still)
-                open_positions = still
+                # Test the budget against what is STILL COMMITTED at this order's fill poll,
+                # read from the capital ledger. Capital tied up in a position that could not be
+                # closed is still committed, so it is still counted -- which is the defect this
+                # replaces: the old accounting released at the target whether or not an exit
+                # quote existed, freeing budget for a position that was never closed.
+                committed_n, committed = ledger.outstanding(o['fill_slot'])
                 want = (est or {}).get('estimated_risk_inr') or 0.0
                 if risk_budget_inr is not None and committed + want > risk_budget_inr:
                     reasons['SKIPPED_RISK_BUDGET'] = reasons.get('SKIPPED_RISK_BUDGET', 0) + 1
                     statuses[OUTCOME_SKIPPED_BUDGET] = statuses.get(
                         OUTCOME_SKIPPED_BUDGET, 0) + 1
                     continue
-                open_positions.append((o['target_slot'], want))
+                row = ledger.reserve(o['decision_slot'], o['fill_slot'], o['target_slot'], want)
                 planned_intervals.append((o['fill_slot'], o['target_slot'], want))
                 buys.append(o)
                 res, status = realise_round_trip(o['_frow'], o['_fill_row'],
                                                  (view or {}).get('lot'), session, fees_fn)
                 statuses[status] = statuses.get(status, 0) + 1
+                filled = status != OUTCOME_NOT_FILLED
+                ledger.settle(row, filled,
+                              (res or {}).get('risk_inr'),
+                              exit_existed=(res is not None))
                 if res is not None:
                     res['estimate_at_decision'] = est
+                    res['capital_state'] = row['state']
                     outcomes.append(res)
                     intervals.append((o['fill_slot'], o['target_slot'], res['risk_inr']))
-            a = arm_stats(len(opps), buys, outcomes, intervals, planned_intervals)
+            a = arm_stats(len(opps), buys, outcomes, intervals, planned_intervals, ledger)
             a['decision_reasons'] = reasons
             a['outcome_status'] = statuses
             node['arms'][arm_name] = a
@@ -671,9 +785,9 @@ def report(out):
         L.append('--- %s   %d min   planned %s   decision-time opportunities %d   lots resolved %d ---'
                  % (ix, out['horizon_min'], n['planned_opportunities'],
                     n['decision_time_opportunities'], n['lots_resolved']))
-        L.append('    %-26s %7s %7s %8s %8s %11s %10s %10s %7s %8s %11s %11s' %
+        L.append('    %-26s %7s %7s %8s %8s %11s %10s %10s %7s %9s %9s' %
                  ('arm', 'decided', 'buys', 'buy%', 'scored', 'total INR', 'mean INR',
-                  'worst INR', 'win%', 'peak pos', 'plan risk', 'real risk'))
+                  'worst INR', 'win%', 'net p10', 'bar met'))
         order = (['WAIT', 'BUY_ALL_DIAGNOSTIC']
                  + ['FORECAST_RULE_%s' % v for v in out['rule_variants']]
                  + ['RANGE_EV_%s' % v for v in out.get('range_ev_variants') or ()])
@@ -683,13 +797,29 @@ def report(out):
                 continue
             num = lambda x, f: (f % x) if x is not None else '-'            # noqa: E731
             pct = lambda x: ('%.0f%%' % (100 * x)) if x is not None else '-'  # noqa: E731
-            L.append('    %-26s %7d %7d %8s %8d %11s %10s %10s %7s %8d %11s %11s' %
+            L.append('    %-26s %7d %7d %8s %8d %11s %10s %10s %7s %9s %9s' %
                      (name, a['decision_time_opportunities'], a['buys'], pct(a['buy_rate']),
                       a['scored_outcomes'], num(a['total_net_inr'], '%+.0f'),
                       num(a['mean_net_inr'], '%+.1f'), num(a['worst_net_inr'], '%+.0f'),
-                      pct(a['win_rate']), a['peak_concurrent_positions_planned'],
-                      num(a['peak_planned_risk_inr'], '%.0f'),
-                      num(a['peak_realised_risk_inr'], '%.0f')))
+                      pct(a['win_rate']), num(a.get('net_p10_inr'), '%.0f'),
+                      ('yes' if a.get('meets_declared_downside_bar') else
+                       ('no' if a.get('meets_declared_downside_bar') is False else '-'))))
+        # the capital ledger, per arm: what was reserved, released, and left unresolved
+        L.append('    %-26s %7s %9s %11s %11s %9s %11s %9s' %
+                 ('arm', 'orders', 'unfilled', 'closed', 'UNRESOLVED', 'unres pos',
+                  'peak cmtd', 'fill>resv'))
+        for name in order:
+            a = n['arms'].get(name)
+            cap = (a or {}).get('capital')
+            if not cap or not cap['orders']:
+                continue
+            st = cap['states']
+            L.append('    %-26s %7d %9d %11d %11.0f %9d %11.0f %9d' %
+                     (name, cap['orders'], st.get(RESV_RELEASED_UNFILLED, 0),
+                      st.get(RESV_RELEASED_AT_EXIT, 0), cap['unresolved_capital_inr'],
+                      cap['unresolved_positions'], cap['peak_committed_inr'],
+                      cap['fills_costing_more_than_reserved']))
+
         # missingness, per arm, so an unexecuted BUY is never read as a WAIT
         for name in order:
             a = n['arms'].get(name)
@@ -702,6 +832,12 @@ def report(out):
                 '%s=%d' % kv for kv in sorted(notwait.items()))))
     L.append('')
     L.append('=' * 112)
+    L.append('CAPITAL: reserved at the decision, reconciled at the fill, released only on an')
+    L.append('actual close. A filled position with no exit quote at its target stays OPEN and its')
+    L.append('capital UNRESOLVED to session end -- it is never freed on an assumed close. The')
+    L.append('budget is tested at each decision against what is still committed, so the PEAK can')
+    L.append('exceed it when a fill costs more than its reservation; that count is reported.')
+    L.append('')
     L.append('WAIT is a DECISION on every opportunity, not an absence of one: zero rupees, zero')
     L.append('risk. An unfilled BUY, a missing exit and an unscorable P&L are reported as their')
     L.append('own outcome statuses and are never counted as WAIT. Arms are compared on the same')
