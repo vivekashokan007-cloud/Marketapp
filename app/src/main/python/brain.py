@@ -28172,7 +28172,7 @@ def single_leg_expiry_fallback_resolve(index, session_date, listing_json, cutoff
 
 
 def single_leg_expiry_fallback_apply(sl_dir, result_json, ctx_json, evidence_json, cutoff_ms=None,
-                                     open_trades_json='[]', deadline_ms=None):
+                                     open_trades_json='[]', deadline_ms=None, attempt_json=None):
     """Native acquisition step 3 (before publication): re-plan each index that asked for evidence with the
     UNCHANGED index_single_leg_v1.plan_entry on the acquired later-expiry chain / metadata / snapshots, judged
     at the selection cutoff (this call's clock when cutoff_ms is None).  Returns replacement plans, the
@@ -28181,7 +28181,13 @@ def single_leg_expiry_fallback_apply(sl_dir, result_json, ctx_json, evidence_jso
     R2: `deadline_ms` (device epoch ms) bounds this call: once passed, nothing is retained and an
     APPLY_DEADLINE_EXCEEDED error is returned, so the native caller publishes explicit WAITs (no late publish).
     planning_capital_source: ctx.capitalSource (native: CONFIGURED / APP_DEFAULT) when ctx.capital is supplied,
-    ANALYSIS_DEFAULT when brain._CONST['CAPITAL'] is used; admission still requires configured capital."""
+    ANALYSIS_DEFAULT when brain._CONST['CAPITAL'] is used; admission still requires configured capital.
+    R3 (Codex R2 reply s3): `attempt_json` = {'attempt_id', 'generation'} (native ExpiryFallbackPublication) binds
+    every retained outcome to the attempt; its publication state starts UNCONFIRMED and only native's
+    single_leg_expiry_fallback_reconcile can make it PUBLISHED.  The deadline is checked before EACH index's
+    retention write and after the last one; once it has passed no further write happens, the outcomes already
+    written for this attempt become NOT_RETURNED_DEADLINE (computed verdict kept for diagnostics, never published)
+    and APPLY_DEADLINE_EXCEEDED is returned."""
     import time as _time
     import decision_why_v1 as _dw
     import expiry_fallback_v1 as _efb
@@ -28242,13 +28248,54 @@ def single_leg_expiry_fallback_apply(sl_dir, result_json, ctx_json, evidence_jso
                              'instrument_key': p.get('instrument_key'),
                              'receipt_ms': p['entry_snapshot'].get('receipt_ms'), 'snapshot': p['entry_snapshot']})
             pending.append((ix, base.get('session_date'), recs, outcome, (evn[ix] or {}).get('stats'), spot))
-        if late():                       # no retention write and no plans once the deadline has passed
-            return json.dumps({'error': 'APPLY_DEADLINE_EXCEEDED', 'cutoff_ms': cutoff})
+        att = json.loads(attempt_json) if attempt_json else {}
+        att = att if isinstance(att, dict) else {}
+        aid = str(att.get('attempt_id') or ('py-%d-%s' % (cutoff, _os.urandom(4).hex())))[:64]
+        gen = att.get('generation') if isinstance(att.get('generation'), int) else None
+        pubreq = {'attempt_id': aid, 'generation': gen, 'computed_ms': int(_time.time() * 1000), 'deadline_ms': dl,
+                  'bound_by': 'native' if att.get('attempt_id') else 'python_fallback_id'}
+        written = []
+
+        def _expired():
+            if written:                  # computed + retained, but never returned: never a published proposal
+                _efb.reconcile(d, aid, gen, _efb.PUB_NOT_RETURNED, int(_time.time() * 1000), source='python')
+            return json.dumps({'error': 'APPLY_DEADLINE_EXCEEDED', 'cutoff_ms': cutoff,
+                               'attempt': {'attempt_id': aid, 'generation': gen, 'retained_indices': written}})
         for ix, sess_d, recs, outcome, stats, spot in pending:
-            out['retention'][ix] = _efb.retain(d, sess_d, ix, recs, outcome, stats, spot)
+            if late():                   # no further retention write and no plans once the deadline has passed
+                return _expired()
+            out['retention'][ix] = _efb.retain(d, sess_d, ix, recs, outcome, stats, spot, publication=pubreq)
+            written.append(ix)
+            pst = out['retention'][ix].get('publication_state')
+            if pst not in (None, _efb.PUB_UNCONFIRMED):
+                # native already decided this attempt (TIMED_OUT / CANCELLED) or a newer generation exists
+                # (SUPERSEDED): the late write keeps that state and no plan is returned
+                return json.dumps({'error': 'ATTEMPT_ALREADY_DECIDED:' + str(pst), 'cutoff_ms': cutoff,
+                                   'attempt': {'attempt_id': aid, 'generation': gen, 'retained_indices': written}})
+        if late():
+            return _expired()
+        out['attempt'] = {'attempt_id': aid, 'generation': gen, 'publication_state': _efb.PUB_UNCONFIRMED}
+        for ix in out['single_leg_by_index']:
+            fbp = out['single_leg_by_index'][ix].get('expiry_fallback')
+            if isinstance(fbp, dict):
+                fbp['attempt'] = {'attempt_id': aid, 'generation': gen}
         return json.dumps(out)
     except Exception as exc:
         return json.dumps({'error': 'EXPIRY_FALLBACK_APPLY_ERROR:' + type(exc).__name__})
+
+
+def single_leg_expiry_fallback_reconcile(sl_dir, attempt_id, generation, state, now_ms=None):
+    """R3 (Codex R2 reply s3): native's publication decision for one apply attempt (PUBLISHED / TIMED_OUT /
+    CANCELLED).  A terminal state never changes; see expiry_fallback_v1.reconcile."""
+    import time as _time
+    import expiry_fallback_v1 as _efb
+    import single_leg_store_v1 as _sls
+    try:
+        g = int(generation) if generation is not None else None
+        return json.dumps(_efb.reconcile(_sls.check_dir(sl_dir), str(attempt_id or ''), g, str(state or ''),
+                                         int(now_ms) if now_ms is not None else int(_time.time() * 1000)))
+    except Exception as exc:
+        return json.dumps({'accepted': False, 'error': 'EXPIRY_FALLBACK_RECONCILE_ERROR:' + type(exc).__name__})
 
 
 def single_leg_expiry_fallback_summary(sl_dir):

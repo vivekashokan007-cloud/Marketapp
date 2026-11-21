@@ -187,7 +187,10 @@ def _single_leg(files_dir, session):
 
 # ── Codex reply 20 Nov 2026: optional single-leg Trade trace (mr.single_leg_trace.v1) ──────────────────────────
 TRACE_DIR = 'single_leg_trace_v1'
-EXPIRY_FALLBACK_READ_CAP = 1536 * 1024     # device retention cap is 1 MiB (expiry_fallback_v1.MAX_RETAINED_BYTES)
+# R3 (Codex R2 reply, bounded storage): the device writer cap is expiry_fallback_v1.MAX_RETAINED_BYTES (2.5 MiB);
+# this read cap must exceed it with margin so a legitimately written file is never OVER_CAP for the exporter
+# (asserted by tests/test_expiry_fallback_r3.CapsCoordinated).  Both must change together.
+EXPIRY_FALLBACK_READ_CAP = 3 * 1024 * 1024
 TRACE_READ_CAP = 512 * 1024
 TRACE_KINDS = ('CONFIG', 'RENDER', 'TAP', 'REFUSED', 'SUBMITTED', 'OUTCOME', 'RECOVERY_STARTED', 'RECOVERY_BRIDGE_WAIT',
                'RECOVERY_OUTCOME', 'N_SUBMIT', 'N_QUOTE_STARTED', 'N_OUTCOME')
@@ -554,7 +557,8 @@ def build(files_dir, session_date, closed_trades_json=None, meta=None, versions=
                 raw = assemble()
     # Expiry-day Paper-BUY fallback evidence (expiry_fallback_v1, Codex R1 reply s2), attached LAST so it can never
     # displace a released part, C1 or the single-leg trace: full -> without chain records -> outcomes only ->
-    # counts only -> a bounded OMITTED_FOR_CAP stub.  Present ONLY when single_leg_v1/expiry_fallback_v1/ exists.
+    # counts only -> a bounded OMITTED_FOR_CAP stub.  R3 (Codex R2 reply s2): at every level the exported coverage
+    # is recomputed from the records actually delivered (delivered_*); the device value is source_* only.  Present ONLY when single_leg_v1/expiry_fallback_v1/ exists.
     # Absent / unreadable / oversized files give an explicit status and never touch any other part.
     try:
         import expiry_fallback_v1 as _efb
@@ -566,7 +570,8 @@ def build(files_dir, session_date, closed_trades_json=None, meta=None, versions=
         base_parts, base_entries = dict(parts), dict(entries)
         if fst != 'PRESENT' or not isinstance(fpart, dict):
             entries['expiry_fallback'] = _part_entry('UNREADABLE' if fst == 'OVER_CAP' else fst, None,
-                                                     {'reason': fst, 'file_bytes': (fpart or {}).get('file_bytes')})
+                                                     {'reason': fst, 'file_bytes': (fpart or {}).get('file_bytes'),
+                                                      'delivered_outcomes': 0, 'delivered_replayable': 0})
             cand = assemble()
             if len(cand) <= MAX_BUNDLE_BYTES:
                 raw = cand
@@ -574,9 +579,6 @@ def build(files_dir, session_date, closed_trades_json=None, meta=None, versions=
                 entries.pop('expiry_fallback', None)
                 raw = assemble()
         else:
-            def _ix_map(fn):
-                return dict(fpart, indices={ix: fn(d) for ix, d in fpart['indices'].items()})
-
             def _drop_report(obj):
                 rep = {}
                 for ix, d in (obj.get('indices') or {}).items():
@@ -590,17 +592,18 @@ def build(files_dir, session_date, closed_trades_json=None, meta=None, versions=
                                'outcomes_exported': len(d.get('outcomes') or []),
                                'device_drops': full.get('drops') or {},
                                'window_exclusions': full.get('window_exclusions') or {},
-                               'coverage_session': full.get('coverage_session')}
+                               # R3 (Codex R2 reply s2): device metric and delivered metric, never one name
+                               'source_coverage_session': full.get('coverage_session'),
+                               'delivered_coverage_session': d.get('delivered_coverage_session')}
                 return rep
-            stages = [('PRESENT', fpart, None),
-                      ('TRUNCATED', _ix_map(lambda d: dict(d, records=[r for r in d['records'] if r.get('kind') != 'chain'])),
-                       {'fallback_level': 'no_chain', 'reduced_for_cap': True}),
-                      ('TRUNCATED', _ix_map(lambda d: dict(d, records=[])),
-                       {'fallback_level': 'outcomes_only', 'reduced_for_cap': True}),
-                      ('TRUNCATED', _ix_map(lambda d: {k: v for k, v in d.items() if k not in ('records', 'outcomes')}),
-                       {'fallback_level': 'counts_only', 'reduced_for_cap': True})]
+            # R3: every level is a deep-copied view whose coverage is recomputed from the records it delivers
+            # (built lazily, one level at a time, so at most one reduced copy exists)
+            stages = [('PRESENT', 'full', None)] + [
+                ('TRUNCATED', lvl, {'fallback_level': lvl, 'reduced_for_cap': True})
+                for lvl in ('no_chain', 'outcomes_only', 'counts_only')]
             attached = False
-            for est, obj, extra in stages:
+            for est, lvl, extra in stages:
+                obj = _efb.export_view(fpart, lvl)
                 parts['expiry_fallback'] = obj
                 entries['expiry_fallback'] = _part_entry(est, obj, dict(extra or {}, drops=_drop_report(obj)))
                 cand = assemble()
@@ -610,7 +613,10 @@ def build(files_dir, session_date, closed_trades_json=None, meta=None, versions=
             if not attached:
                 parts.clear(); parts.update(base_parts)
                 entries.clear(); entries.update(base_entries)
-                entries['expiry_fallback'] = _part_entry('OMITTED_FOR_CAP', None)
+                entries['expiry_fallback'] = _part_entry('OMITTED_FOR_CAP', None, {
+                    'delivered_outcomes': 0, 'delivered_replayable': 0,
+                    'source_counts': {ix: {'records': len(d.get('records') or []), 'outcomes': len(d.get('outcomes') or [])}
+                                      for ix, d in sorted(fpart['indices'].items())}})
                 cand = assemble()
                 if len(cand) <= MAX_BUNDLE_BYTES:
                     raw = cand

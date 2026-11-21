@@ -359,9 +359,14 @@ class S3LabelsAndCodes(unittest.TestCase):
             kt = f.read()
         native = set(re.findall(r'markWait\(resultObj,\s*"([A-Z_]+)"\)', kt))
         native |= set(re.findall(r'"(APPLY_DEADLINE_EXCEEDED)"', kt))
+        # R3: the apply/publication decision moved to ExpiryFallbackPublication.applyAndPublish
+        with open(os.path.join(REPO, 'app/src/main/java/com/marketradar/app/ExpiryFallbackPublication.kt')) as f:
+            pk = f.read()
+        for line in re.findall(r'markWait\(result,[^\n]*', pk):
+            native |= set(re.findall(r'"([A-Z_]+)"', line))
         self.assertGreaterEqual(len(emitted), 30)
         self.assertEqual(native, {'NOT_ACQUIRED', 'NO_TOKEN', 'APPLY_TIMEOUT', 'APPLY_ERROR',
-                                  'APPLY_DEADLINE_EXCEEDED', 'REFRESH_NOT_ACQUIRED'})
+                                  'APPLY_DEADLINE_EXCEEDED', 'REFRESH_NOT_ACQUIRED', 'APPLY_SUPERSEDED'})
         self.assertEqual((emitted | native) - set(efb.WAIT_CODES) - {'NOT_APPLICABLE'}, set())
         self.assertEqual(len(efb.WAIT_CODES), len(set(efb.WAIT_CODES)))
 
@@ -532,7 +537,9 @@ class S2ExportPart(Base):
         part = b['parts']['expiry_fallback']
         self.assertEqual(sorted(part['indices']), ['BNF', 'NF'])
         for ix in ('NF', 'BNF'):
-            self.assertEqual(part['indices'][ix]['coverage_session'], {'REPLAYABLE': 4, 'INCOMPLETE': 0})
+            # R3 (Codex R2 reply s2): the device metric and the delivered metric carry distinct names
+            self.assertEqual(part['indices'][ix]['source_coverage_session'], {'REPLAYABLE': 4, 'INCOMPLETE': 0})
+            self.assertEqual(part['indices'][ix]['delivered_coverage_session'], {'REPLAYABLE': 4, 'INCOMPLETE': 0})
             self.assertIn('window_exclusions', e['drops'][ix])
         self.assertEqual(part['labels']['why_exp'], 'ORIGINAL_TRADING_EXPIRY')
         self.assertNotIn(b'"capital":', raw)

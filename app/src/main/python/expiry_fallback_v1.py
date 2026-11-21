@@ -1,4 +1,4 @@
-"""expiry_fallback_v1: expiry-day Paper-BUY fallback evidence path (REVIEW DRAFT r2, Paper only).
+"""expiry_fallback_v1: expiry-day Paper-BUY fallback evidence path (REVIEW DRAFT r3, Paper only).
 
 Scope (and nothing else):
   * acts ONLY on an index's own expiry day (ctx trading expiry == session date) and ONLY when the existing
@@ -40,11 +40,22 @@ Retention (R2, Codex R1 reply s1): records are deduplicated on (kind, index, exp
 contracts response re-read from cache (same original receipt) is MERGED (row union) instead of discarded; a
 response first received later is a separate record and never supports an earlier cutoff.  Every outcome carries
 its evidence dependencies and a replay_coverage verdict recomputed after every trim.
+R3 (Codex R2 reply 21 Nov 2026):
+  s1 a retained chain keeps the full chain's per-leg verdict (leg_check) and ONE refusal-witness leg, so the shared
+     reader + the UNCHANGED check_chain reach a refusal caused by a leg outside the strike window; coverage_of
+     also requires the reader to pick, at the outcome's cutoff, exactly the records the live verdict read (an
+     absent read stays absent), else INCOMPLETE;
+  s2 export_view: every export level is a deep copy whose coverage is recomputed from the records it delivers
+     (delivered_*), the device value kept only as source_*;
+  s3 every retained outcome is bound to a native apply attempt (attempt_id, generation) with a publication state
+     (PUB_*); reconcile() records native's decision once; a decided attempt never changes;
+  caps 2.5 MiB / 400 records per index, export read cap 3 MiB (session_evidence_v1), coordinated and tested.
 """
 from __future__ import annotations
 
 import json
 import os
+import threading
 from datetime import date, datetime, timedelta
 
 import ev_v12_calendar as _cal
@@ -85,7 +96,28 @@ WAIT_CODES = (
     'ACQUISITION_DEADLINE_EXHAUSTED', 'APPLY_DEADLINE_EXCEEDED',
     # native (MarketWatchService / ExpiryFallbackAcquirer.markWait): no acquisition / no late publication
     'REFRESH_NOT_ACQUIRED', 'NO_TOKEN', 'APPLY_TIMEOUT', 'APPLY_ERROR', 'NOT_ACQUIRED',
+    # R3 (Codex R2 reply s3): native refused a returned attempt because a newer attempt superseded it
+    'APPLY_SUPERSEDED',
 )
+# ---- R3 publication reconciliation (Codex R2 reply s3) -------------------------------------------------------
+# Each native apply is one ATTEMPT (attempt_id, generation: native persisted monotonic counter).  A retained outcome
+# keeps the planner's COMPUTED verdict and clocks for diagnostics, and separately its publication state:
+#   UNCONFIRMED           retained and returned to native; no native acknowledgement (yet / ever: e.g. restart)
+#   PUBLISHED             native accepted it inside its deadline as the current attempt and published it
+#   TIMED_OUT             native timed out (PyTimeout) or found the native apply deadline passed before accepting
+#   CANCELLED             native cancelled it (superseded by a newer attempt, or an apply error)
+#   NOT_RETURNED_DEADLINE Python passed deadline_ms after this retention write and returned no plans
+#   SUPERSEDED            retained after a newer generation was already recorded for the index (old work)
+# Only UNCONFIRMED can change, exactly once; a terminal state never changes (a late acknowledgement is counted and
+# refused), so late completion never promotes a timed-out / cancelled attempt and old work never overwrites newer.
+PUB_UNCONFIRMED, PUB_PUBLISHED, PUB_TIMED_OUT, PUB_CANCELLED = 'UNCONFIRMED', 'PUBLISHED', 'TIMED_OUT', 'CANCELLED'
+PUB_NOT_RETURNED, PUB_SUPERSEDED = 'NOT_RETURNED_DEADLINE', 'SUPERSEDED'
+PUB_STATES = (PUB_UNCONFIRMED, PUB_PUBLISHED, PUB_TIMED_OUT, PUB_CANCELLED, PUB_NOT_RETURNED, PUB_SUPERSEDED)
+PUB_NATIVE_STATES = (PUB_PUBLISHED, PUB_TIMED_OUT, PUB_CANCELLED)
+MAX_ATTEMPTS_RECORDED = 64
+# one interpreter, many native threads (apply worker, reconcile queue): every read-modify-write of the retention
+# file holds this lock, so a late apply and a reconcile can never interleave their writes.
+_LOCK = threading.RLock()
 EXPIRY_CLOSE = (15, 30)
 BUY_ACTIONS = ('BUY_CE', 'BUY_PE')
 # gates that do not depend on the expiry or the chain: when the base plan already names one, no acquisition.
@@ -101,9 +133,12 @@ RETAIN_STRIKES_EACH_SIDE = 6          # parity_strike reads SCALE_STRIKE_WINDOW 
 # planner and check_chain read (index_authority_v1._leg_bid_ask: bid/ask; plan_entry: instrument_key;
 # check_chain: contract_expiry/underlying_key).  R1 kept every leg field and 8 strikes each side.
 RETAIN_LEG_FIELDS = ('bid', 'ask', 'instrument_key', 'contract_expiry', 'underlying_key')
-MAX_RECORDS_PER_INDEX = 200
+LEG_CHECK_SCOPE = 'ALL_LISTED_LEGS_BEFORE_TRIM'      # R3: chain.leg_check is computed on the full received chain
+# R3 (Codex R2 reply, bounded storage choice): the measured 2.5 MiB shared cap / 400 records per index.  The export
+# read cap (session_evidence_v1.EXPIRY_FALLBACK_READ_CAP, 3 MiB) is coordinated with it and tested.
+MAX_RECORDS_PER_INDEX = 400
 MAX_OUTCOMES_PER_INDEX = 200
-MAX_RETAINED_BYTES = 1024 * 1024
+MAX_RETAINED_BYTES = 2560 * 1024
 RETENTION_SESSIONS = 3
 
 
@@ -321,6 +356,26 @@ def check_chain(index, expiry, rec, cutoff_ms):
     return c, None
 
 
+def first_leg_offence(index, expiry, chain):
+    """(reason, strike_key, side) of the FIRST leg check_chain's per-leg loop refuses, in the same iteration order
+    and with the same rule (check_chain is unchanged and stays the live validation); (None, None, None) when every
+    leg passes.  Used only to keep a bounded refusal witness in retention and to check it on read."""
+    for s, sides in ((chain or {}).get('strikes') or {}).items():
+        for side, leg in (sides or {}).items():
+            if not isinstance(leg, dict):
+                continue
+            ce = leg.get('contract_expiry')
+            if ce not in (None, '') and str(ce)[:10] != expiry:
+                return 'FALLBACK_CHAIN_LEG_EXPIRY_MISMATCH', s, side
+            uk = leg.get('underlying_key')
+            if uk not in (None, '') and uk != _me.UNDERLYING_KEYS.get(index):
+                return 'FALLBACK_CHAIN_LEG_INDEX_MISMATCH', s, side
+    return None, None, None
+
+
+LEG_REFUSALS = ('FALLBACK_CHAIN_LEG_EXPIRY_MISMATCH', 'FALLBACK_CHAIN_LEG_INDEX_MISMATCH')
+
+
 def check_contracts(index, expiry, rec, cutoff_ms, session_date):
     if not isinstance(rec, dict):
         return None, 'FALLBACK_CONTRACTS_UNAVAILABLE'
@@ -438,8 +493,9 @@ def plan_fallback(index, decision, base_plan, spot, *, session_date, trade_expir
     if cutoff_dt is None:
         return wait_plan(base, prov, 'SELECTION_CUTOFF_UNAVAILABLE')
     lrec = reader.listing(index, cutoff_ms)
-    if isinstance(lrec, dict):
-        deps['listing_receipt_ms'] = lrec.get('receipt_ms')
+    # R3: every read is recorded, an ABSENT read as None, so coverage_of can check that the shared reader picks
+    # exactly the same record (or none) from a retained / exported file
+    deps['listing_receipt_ms'] = lrec.get('receipt_ms') if isinstance(lrec, dict) else None
     res = resolve_expiry(index, session_date, lrec, cutoff_ms, calendar)
     prov['resolution'] = res
     if res['expiry'] is None:
@@ -449,8 +505,7 @@ def plan_fallback(index, decision, base_plan, spot, *, session_date, trade_expir
     if not exit_before_expiry(session_date, fx):
         return wait_plan(base, prov, 'EXIT_NOT_BEFORE_CONTRACT_EXPIRY')
     crec = reader.chain(index, fx, cutoff_ms)
-    if isinstance(crec, dict):
-        deps['chain_receipt_ms'] = crec.get('receipt_ms')
+    deps['chain_receipt_ms'] = crec.get('receipt_ms') if isinstance(crec, dict) else None
     chain, why = check_chain(index, fx, crec, cutoff_ms)
     if why:
         return wait_plan(base, prov, why)
@@ -458,8 +513,7 @@ def plan_fallback(index, decision, base_plan, spot, *, session_date, trade_expir
                             'age_at_cutoff_s': round((cutoff_ms - crec['receipt_ms']) / 1000.0, 3),
                             'exchange_event': 'UNAVAILABLE'}
     mrec = reader.contracts(index, fx, cutoff_ms)
-    if isinstance(mrec, dict):
-        deps['contracts_receipt_ms'] = mrec.get('receipt_ms')
+    deps['contracts_receipt_ms'] = mrec.get('receipt_ms') if isinstance(mrec, dict) else None
     rows, why = check_contracts(index, fx, mrec, cutoff_ms, session_date)
     if why:
         return wait_plan(base, prov, why)
@@ -481,6 +535,8 @@ def plan_fallback(index, decision, base_plan, spot, *, session_date, trade_expir
                 snap_rej.append(r)
             if s is not None and (key not in snaps or s['receipt_ms'] > snaps[key]['receipt_ms']):
                 snaps[key] = s
+    if key:
+        deps['snapshot_receipt_ms'] = None
     if snaps:
         ev['snapshots'] = snaps
         deps['snapshot_receipt_ms'] = snaps[key].get('receipt_ms')
@@ -558,13 +614,28 @@ def _strike_num(s):
 
 
 def bound_record(rec, spot):
-    """Retention copy: chains keep a strike window around spot and only RETAIN_LEG_FIELDS per leg."""
+    """Retention copy: chains keep a strike window around spot and only RETAIN_LEG_FIELDS per leg.
+
+    R3 (Codex R2 reply s1): check_chain refuses on ANY listed leg, so the window alone can discard the evidence of
+    a refusal.  The full chain's per-leg verdict is recorded (chain.leg_check, computed BEFORE trimming) and the
+    first offending leg (the one check_chain stops at) is kept as a bounded refusal witness at its ORIGINAL
+    position, so the shared reader + unchanged check_chain reach the same refusal from the retained copy.  Applied
+    to a record that is already bounded (restart) it is idempotent: the witness and leg_check are carried over."""
     r = dict(rec)
     if r.get('kind') == 'chain' and isinstance(r.get('chain'), dict):
         keep = _window_keys(r['chain'], spot)
         c = {k: v for k, v in r['chain'].items() if k not in ('strikes', 'allStrikes')}
         strikes = {}
         exp, uk = str(r.get('expiry') or '')[:10], _me.UNDERLYING_KEYS.get(r.get('index'))
+        prior = (r['chain'].get('leg_check') or {}) if isinstance(r['chain'].get('leg_check'), dict) else {}
+        if prior.get('scope') == LEG_CHECK_SCOPE:
+            lc = dict(prior)                    # already bounded: the verdict was computed on the full chain
+        else:
+            why, ws, wside = first_leg_offence(r.get('index'), exp, r['chain'])
+            lc = {'scope': LEG_CHECK_SCOPE, 'verdict': why,
+                  'witness': {'strike': ws, 'side': wside} if why else None,
+                  'legs_checked': sum(len(v) for v in (r['chain'].get('strikes') or {}).values() if isinstance(v, dict))}
+        wit = lc.get('witness') or {}
 
         def _leg(leg):
             out = {f: leg[f] for f in RETAIN_LEG_FIELDS if f in leg}
@@ -576,12 +647,20 @@ def bound_record(rec, spot):
                 out.pop('underlying_key', None)
             return out
         for s, sides in (r['chain'].get('strikes') or {}).items():
-            if _strike_num(s) in keep and isinstance(sides, dict):
+            if not isinstance(sides, dict):
+                continue
+            if _strike_num(s) in keep:
                 strikes[s] = {side: (_leg(leg) if isinstance(leg, dict) else leg) for side, leg in sides.items()}
+            elif wit and s == wit.get('strike') and isinstance(sides.get(wit.get('side')), dict):
+                strikes[s] = {wit['side']: _leg(sides[wit['side']])}       # refusal witness only (one leg)
         c['strikes'] = strikes
+        c['leg_check'] = lc
+        prior_w = (r['chain'].get('retained_window') or {}) if prior.get('scope') == LEG_CHECK_SCOPE else {}
         c['retained_window'] = {'each_side': RETAIN_STRIKES_EACH_SIDE, 'kept': len(strikes),
-                                'listed': len((r['chain'].get('strikes') or {})), 'leg_fields': list(RETAIN_LEG_FIELDS),
-                                'leg_identity': 'OMITTED_WHEN_EQUAL_TO_REQUEST'}
+                                'listed': int(prior_w.get('listed') or len((r['chain'].get('strikes') or {}))),
+                                'leg_fields': list(RETAIN_LEG_FIELDS),
+                                'leg_identity': 'OMITTED_WHEN_EQUAL_TO_REQUEST',
+                                'refusal_witness': bool(wit)}
         r['chain'] = c
         r['_keep'] = sorted(keep)
     return r
@@ -644,6 +723,26 @@ def _dep_keys(index, outcome):
     return ks
 
 
+def _chain_witness_gaps(index, outcome, rec):
+    """R3 (Codex R2 reply s1): the retained chain must reach the FULL chain's per-leg verdict.  leg_check (computed
+    before trimming) must be present; the retained legs must give the same first offence (the witness); a refused
+    outcome's reason must be that offence.  Anything else is INCOMPLETE, never silently eligible."""
+    c = (rec or {}).get('chain') or {}
+    lc = c.get('leg_check') if isinstance(c.get('leg_check'), dict) else None
+    if not lc or lc.get('scope') != LEG_CHECK_SCOPE:
+        return ['CHAIN_LEG_CHECK_UNRECORDED']
+    got, _s, _side = first_leg_offence(index, str(rec.get('expiry') or '')[:10], c)
+    gaps = []
+    if got != lc.get('verdict'):
+        gaps.append('CHAIN_REFUSAL_WITNESS_MISSING' if lc.get('verdict') else 'CHAIN_LEG_VERDICT_DIVERGES')
+    reason = (outcome or {}).get('reason')
+    if reason in LEG_REFUSALS and lc.get('verdict') != reason:
+        gaps.append('CHAIN_REFUSAL_NOT_REPRODUCED')
+    if reason not in LEG_REFUSALS and lc.get('verdict') and (outcome or {}).get('status') == STATUS_APPLIED:
+        gaps.append('CHAIN_LEG_VERDICT_CONTRADICTS_OUTCOME')
+    return gaps
+
+
 def coverage_of(index, outcome, by_key):
     """REPLAYABLE when every dependency record is retained (with the selected strike in the chain window and the
     instrument's metadata row in the contracts record); else INCOMPLETE with named reasons."""
@@ -654,6 +753,8 @@ def coverage_of(index, outcome, by_key):
         if r is None:
             missing.append(k[0].upper() + '_RECORD_DROPPED')
             continue
+        if k[0] == 'chain':
+            missing += _chain_witness_gaps(index, outcome, r)
         if k[0] == 'chain' and d.get('strike') is not None:
             if d['strike'] not in {_strike_num(s) for s in ((r.get('chain') or {}).get('strikes') or {})}:
                 missing.append('CHAIN_STRIKE_NOT_RETAINED')
@@ -662,7 +763,38 @@ def coverage_of(index, outcome, by_key):
                 missing.append('CONTRACT_ROW_NOT_RETAINED')
     if not d:
         missing.append('NO_DEPENDENCIES_RECORDED')
+    missing += _reader_pick_gaps(index, outcome, by_key)
     return {'status': 'INCOMPLETE' if missing else 'REPLAYABLE', 'reasons': sorted(set(missing))}
+
+
+def _reader_pick_gaps(index, outcome, by_key):
+    """R3: the shared EvidenceReader, given only these records, must pick at the outcome's cutoff exactly the
+    record each read used live (same receipt), or none where none was available live.  A different pick (an
+    absent read now answered from another poll's record, or a nearer record) means the replay need not reach the
+    live verdict -> INCOMPLETE (READER_PICK_DIFFERS:<kind>).  Only reads the verdict recorded are checked."""
+    d = (outcome or {}).get('deps') or {}
+    cut, fx = (outcome or {}).get('cutoff_ms'), (outcome or {}).get('fallback_expiry')
+    if not isinstance(cut, (int, float)):
+        return ['CUTOFF_UNRECORDED'] if d else []
+    rd = EvidenceReader(list(by_key.values()))
+    gaps = []
+    checks = (('listing', 'listing_receipt_ms', lambda: rd.listing(index, cut)),
+              ('chain', 'chain_receipt_ms', lambda: rd.chain(index, fx, cut)),
+              ('contracts', 'contracts_receipt_ms', lambda: rd.contracts(index, fx, cut)),
+              ('snapshot', 'snapshot_receipt_ms', lambda: rd._pick('snapshot', index, cut, expiry=fx,
+                                                                    key=d.get('instrument_key'))))
+    for kind, dk, pick in checks:
+        if dk not in d or (kind != 'listing' and fx is None):
+            continue
+        if kind == 'snapshot' and not d.get('instrument_key'):
+            continue
+        if d[dk] is not None and not any(k[0] == kind and k[4] == d[dk] and k in by_key for k in _dep_keys(index, outcome)):
+            continue                     # the used record itself is gone: already <KIND>_RECORD_DROPPED
+        r = pick()
+        got = r.get('receipt_ms') if isinstance(r, dict) else None
+        if got != d[dk]:
+            gaps.append('READER_PICK_DIFFERS:' + kind)
+    return gaps
 
 
 def _referenced(index, ix_doc):
@@ -738,17 +870,67 @@ def _recompute(index, ix_doc):
     return cov
 
 
-def retain(sl_dir, session_date, index, records, outcome, stats, spot=None):
+def _pub_doc(doc):
+    pub = doc.setdefault('publication', {})
+    pub.setdefault('attempts', {})
+    pub.setdefault('max_generation', {})
+    pub.setdefault('late_acks_refused', 0)
+    return pub
+
+
+def _bound_attempts(pub):
+    if len(pub['attempts']) > MAX_ATTEMPTS_RECORDED:
+        order = sorted(pub['attempts'].items(), key=lambda kv: (kv[1].get('generation') or -1, kv[0]))
+        for k, _v in order[:len(order) - MAX_ATTEMPTS_RECORDED]:
+            del pub['attempts'][k]
+
+
+def _publication_for(doc, index, publication):
+    """State of a NEW retained outcome of attempt `publication` for `index` (see PUB_* above)."""
+    p = dict(publication or {})
+    pub = _pub_doc(doc)
+    aid, gen = p.get('attempt_id'), p.get('generation')
+    prior = pub['attempts'].get(aid) if aid else None
+    newest = pub['max_generation'].get(index)
+    if prior and prior.get('state') in PUB_STATES and prior.get('state') != PUB_UNCONFIRMED:
+        st = prior['state']                         # native already decided (e.g. TIMED_OUT before this late write)
+    elif isinstance(gen, (int, float)) and isinstance(newest, (int, float)) and gen < newest:
+        st = PUB_SUPERSEDED
+    else:
+        st = p.get('state') or PUB_UNCONFIRMED
+    p['state'] = st
+    if aid:
+        a = pub['attempts'].setdefault(aid, {'generation': gen, 'state': st, 'indices': []})
+        if index not in a['indices']:
+            a['indices'].append(index)
+        a['retained'] = True
+        if isinstance(gen, (int, float)) and (newest is None or gen > newest):
+            pub['max_generation'][index] = gen
+        _bound_attempts(pub)
+    return p
+
+
+def retain(sl_dir, session_date, index, records, outcome, stats, spot=None, publication=None):
     """Append bounded records + one outcome row for `index`; enforce sessions / records / outcomes / total bytes.
 
     R2 (Codex R1 reply s1): identity = (kind, index, expiry, instrument_key, receipt_ms); a re-read of the same
     contracts response is merged (row union), never discarded; every outcome's replay_coverage is recomputed after
     the trim; drops are counted per index / session / reason in ix_doc['drops'].
-    Returns {'retained_bytes', 'index_bytes', 'coverage'}."""
+    R3 (Codex R2 reply s3): `publication` = {'attempt_id', 'generation', 'computed_ms', 'deadline_ms'} binds the
+    outcome to its native attempt; outcome['publication']['state'] says whether it was actually published (see PUB_*).
+    Held under _LOCK (serialised with reconcile).
+    Returns {'retained_bytes', 'index_bytes', 'coverage', 'publication_state'}."""
+    with _LOCK:
+        return _retain_locked(sl_dir, session_date, index, records, outcome, stats, spot, publication)
+
+
+def _retain_locked(sl_dir, session_date, index, records, outcome, stats, spot, publication):
     doc = read_retained(sl_dir) or {'schema': EVIDENCE_SCHEMA, 'indices': {}}
+    doc.setdefault('indices', {})
     sess = str(session_date)[:10]
     ixd = doc['indices'].setdefault(index, {'records': [], 'outcomes': [], 'stats': {}})
     ixd.setdefault('drops', {})
+    pubrow = _publication_for(doc, index, publication) if publication is not None else None
     keep = None
     bounded = []
     for r in records:
@@ -771,7 +953,10 @@ def retain(sl_dir, session_date, index, records, outcome, stats, spot=None):
             continue
         pos[k] = len(ixd['records'])
         ixd['records'].append(b)
-    ixd['outcomes'].append(dict(outcome or {}, session=sess))
+    orow = dict(outcome or {}, session=sess)
+    if pubrow is not None:
+        orow['publication'] = pubrow
+    ixd['outcomes'].append(orow)
     st = ixd['stats'].setdefault(sess, {'requests': {}, 'response_bytes': {}, 'polls': 0})
     st['polls'] += 1
     for k, v in ((stats or {}).get('requests') or {}).items():
@@ -808,17 +993,100 @@ def retain(sl_dir, session_date, index, records, outcome, stats, spot=None):
     while len(raw.encode('utf-8')) > MAX_RETAINED_BYTES:
         ix, biggest = max(doc['indices'].items(), key=lambda kv: len(json.dumps(kv[1]['records'])))
         if not _drop_one(ix, biggest, biggest['drops'], 'BYTE_CAP'):
-            break
+            # R3: no record left anywhere -> drop the oldest outcome (counted) so the written file never exceeds
+            # the cap the exporter's read cap is coordinated with
+            cand = [(ix2, d2) for ix2, d2 in doc['indices'].items() if d2.get('outcomes')]
+            if not cand:
+                break
+            ix, biggest = min(cand, key=lambda kv: (kv[1]['outcomes'][0].get('cutoff_ms') or 0, kv[0]))
+            o = biggest['outcomes'].pop(0)
+            e = biggest['drops'].setdefault(o.get('session') or '?', {})
+            e['BYTE_CAP:outcome'] = e.get('BYTE_CAP:outcome', 0) + 1
         _recompute(ix, biggest)
         raw = json.dumps(doc, separators=(',', ':'), sort_keys=True)
+    _write_doc(sl_dir, raw)
+    ix_bytes = len(json.dumps(doc['indices'].get(index, {}), separators=(',', ':'), sort_keys=True).encode('utf-8'))
+    return {'retained_bytes': len(raw.encode('utf-8')), 'index_bytes': ix_bytes,
+            'coverage': dict((doc['indices'].get(index) or {}).get('coverage') or {}),
+            'publication_state': (pubrow or {}).get('state')}
+
+
+def _write_doc(sl_dir, raw):
     os.makedirs(os.path.dirname(_retain_path(sl_dir)), exist_ok=True)
     tmp = _retain_path(sl_dir) + '.tmp'
     with open(tmp, 'w', encoding='utf-8') as f:
         f.write(raw)
     os.replace(tmp, _retain_path(sl_dir))
-    ix_bytes = len(json.dumps(doc['indices'].get(index, {}), separators=(',', ':'), sort_keys=True).encode('utf-8'))
-    return {'retained_bytes': len(raw.encode('utf-8')), 'index_bytes': ix_bytes,
-            'coverage': dict((doc['indices'].get(index) or {}).get('coverage') or {})}
+
+
+def reconcile(sl_dir, attempt_id, generation, state, now_ms=None, source='native'):
+    """R3 (Codex R2 reply s3): record native's publication decision for one attempt (all its indices).
+
+    Allowed: UNCONFIRMED (or not yet retained) -> PUBLISHED / TIMED_OUT / CANCELLED (native) or
+    NOT_RETURNED_DEADLINE (Python, source='python').  PUBLISHED additionally needs the attempt to be retained and to
+    be the newest generation of every index it covers.  A terminal state never changes: the call is refused and
+    counted (late_acks_refused).  An attempt native times out BEFORE the late Python write is recorded first, so
+    the late write inherits the terminal state (never UNCONFIRMED, never PUBLISHED).
+    Returns {'accepted': bool, 'state': final state, 'reason'?}."""
+    allowed = PUB_NATIVE_STATES if source == 'native' else (PUB_NOT_RETURNED,)
+    if state not in allowed or not attempt_id:
+        return {'accepted': False, 'state': None, 'reason': 'INVALID_TRANSITION_REQUEST'}
+    with _LOCK:
+        doc = read_retained(sl_dir)
+        if doc is None:
+            if os.path.exists(_retain_path(sl_dir)):
+                return {'accepted': False, 'state': None, 'reason': 'RETENTION_UNREADABLE'}
+            doc = {'schema': EVIDENCE_SCHEMA, 'indices': {}}
+        pub = _pub_doc(doc)
+        a = pub['attempts'].get(attempt_id)
+        res = {'accepted': False}
+        if a is None:
+            if state == PUB_PUBLISHED:
+                res.update(state=None, reason='ATTEMPT_NOT_RETAINED')        # nothing retained can be published
+            else:
+                pub['attempts'][attempt_id] = {'generation': generation, 'state': state, 'indices': [],
+                                               'retained': False, 'decided_ms': now_ms, 'decided_by': source}
+                res.update(accepted=True, state=state)
+        elif a.get('state') != PUB_UNCONFIRMED:
+            if state != a.get('state'):        # a repeat of the same decision is idempotent, not a late ack
+                pub['late_acks_refused'] = int(pub.get('late_acks_refused') or 0) + 1
+                a['refused'] = (a.get('refused') or []) + [state]
+                del a['refused'][:-4]
+            res.update(state=a.get('state'), reason='ALREADY_' + str(a.get('state')))
+        elif state == PUB_PUBLISHED and any(isinstance(pub['max_generation'].get(ix), (int, float))
+                                            and isinstance(a.get('generation'), (int, float))
+                                            and a['generation'] < pub['max_generation'][ix]
+                                            for ix in a.get('indices') or []):
+            pub['late_acks_refused'] = int(pub.get('late_acks_refused') or 0) + 1
+            a['state'] = PUB_SUPERSEDED
+            res.update(state=PUB_SUPERSEDED, reason='NEWER_GENERATION_RETAINED')
+        else:
+            a.update(state=state, decided_ms=now_ms, decided_by=source)
+            res.update(accepted=True, state=state)
+        if a is not None:
+            for ix in a.get('indices') or []:
+                for o in (doc['indices'].get(ix) or {}).get('outcomes') or []:
+                    po = o.get('publication') or {}
+                    if po.get('attempt_id') == attempt_id:
+                        po['state'] = a['state']
+                        po['decided_ms'] = a.get('decided_ms')
+                        o['publication'] = po
+        _bound_attempts(pub)
+        _write_doc(sl_dir, json.dumps(doc, separators=(',', ':'), sort_keys=True))
+        return res
+
+
+def publication_counts(ix_doc):
+    """Per publication state: outcomes, and how many of them carry an eligible COMPUTED planner verdict.  Only
+    PUBLISHED rows were ever shown; every other state is a computed diagnostic, never a published proposal."""
+    out = {}
+    for o in (ix_doc or {}).get('outcomes') or []:
+        st = (o.get('publication') or {}).get('state') or 'UNBOUND_PRE_R3'
+        e = out.setdefault(st, {'outcomes': 0, 'computed_eligible': 0})
+        e['outcomes'] += 1
+        if o.get('planner_status') in ('ADMISSIBLE', 'ELIGIBLE_PENDING_SNAPSHOT') and o.get('status') == STATUS_APPLIED:
+            e['computed_eligible'] += 1
+    return out
 
 
 def outcome_record(decision_id, plan, cutoff_ms, spot, decision):
@@ -846,9 +1114,13 @@ def summary(sl_dir):
         out[ix] = {'stats': d.get('stats'), 'records': len(d.get('records') or []),
                    'outcomes': len(d.get('outcomes') or []), 'coverage': d.get('coverage'),
                    'drops': d.get('drops'), 'window_exclusions': d.get('window_exclusions'),
+                   'publication': publication_counts(d),
                    'retained_bytes': len(json.dumps(d, separators=(',', ':'), sort_keys=True).encode('utf-8'))}
     if doc.get('dropped_sessions'):
         out['_dropped_sessions'] = doc['dropped_sessions']
+    if doc.get('publication'):
+        out['_publication'] = {'late_acks_refused': doc['publication'].get('late_acks_refused', 0),
+                               'attempts': len(doc['publication'].get('attempts') or {})}
     return out
 
 
@@ -882,8 +1154,71 @@ def export_part(sl_dir, session, read_cap):
             'coverage_session': {s: sum(1 for o in d.get('outcomes') or [] if o.get('session') == session
                                         and (o.get('replay_coverage') or {}).get('status') == s)
                                  for s in ('REPLAYABLE', 'INCOMPLETE')},
+            'publication_counts': publication_counts({'outcomes': [o for o in d.get('outcomes') or []
+                                                                   if o.get('session') == session]}),
             'stats': (d.get('stats') or {}).get(session),
             'drops': (d.get('drops') or {}).get(session) or {},
             'window_exclusions': (d.get('window_exclusions') or {}).get(session) or {}}
     part['dropped_sessions'] = doc.get('dropped_sessions') or {}
     return 'PRESENT', part
+
+
+EXPORT_LEVELS = ('full', 'no_chain', 'outcomes_only', 'counts_only')
+COVERAGE_BASIS = {'delivered': 'recomputed by coverage_of from the records IN THIS EXPORT (no phone-only records)',
+                  'source': 'device-retained coverage at write time (phone file); NOT a statement about this export'}
+
+
+def export_view(part, level):
+    """R3 (Codex R2 reply s2): a reduced COPY of export_part's part at `level` (full / no_chain / outcomes_only /
+    counts_only).  The source part is never mutated (deep copy).  Every exported outcome carries
+    delivered_replay_coverage = coverage_of(index, outcome, records delivered at this level) and the device value
+    only as source_replay_coverage; each index carries delivered_coverage_session (from delivered records) and
+    source_coverage_session (device).  counts_only delivers no outcome, so nothing is delivered as replayable:
+    delivered_coverage_session = {REPLAYABLE: 0, INCOMPLETE: 0, NOT_DELIVERED: n} next to the source counts."""
+    if level not in EXPORT_LEVELS:
+        raise ValueError(level)
+    src = json.loads(json.dumps(part))
+    out = {k: v for k, v in src.items() if k != 'indices'}
+    out['export_level'] = level
+    out['coverage_basis'] = dict(COVERAGE_BASIS)
+    out['indices'] = {}
+    for ix, d in sorted((src.get('indices') or {}).items()):
+        recs = list(d.get('records') or [])
+        if level == 'no_chain':
+            recs = [r for r in recs if r.get('kind') != 'chain']
+        elif level in ('outcomes_only', 'counts_only'):
+            recs = []
+        by_key = {_rkey(r): r for r in recs}
+        outs = []
+        for o in d.get('outcomes') or []:
+            o = dict(o)
+            o['source_replay_coverage'] = o.pop('replay_coverage', None)
+            o['delivered_replay_coverage'] = coverage_of(ix, o, by_key)
+            outs.append(o)
+        nd = {k: v for k, v in d.items() if k not in ('records', 'outcomes', 'coverage_session', 'publication_counts')}
+        nd['source_coverage_session'] = d.get('coverage_session')
+        nd['source_publication_counts'] = d.get('publication_counts')
+        nd['source_counts'] = {'records': len(d.get('records') or []), 'outcomes': len(d.get('outcomes') or []),
+                               'chain_records': sum(1 for r in d.get('records') or [] if r.get('kind') == 'chain')}
+        if level == 'counts_only':
+            nd['delivered_counts'] = {'records': 0, 'outcomes': 0, 'chain_records': 0}
+            nd['delivered_coverage_session'] = {'REPLAYABLE': 0, 'INCOMPLETE': 0, 'NOT_DELIVERED': len(outs)}
+        else:
+            nd['records'] = recs
+            nd['outcomes'] = outs
+            nd['delivered_counts'] = {'records': len(recs), 'outcomes': len(outs),
+                                      'chain_records': sum(1 for r in recs if r.get('kind') == 'chain')}
+            nd['delivered_coverage_session'] = {
+                st: sum(1 for o in outs if o['delivered_replay_coverage']['status'] == st)
+                for st in ('REPLAYABLE', 'INCOMPLETE')}
+        out['indices'][ix] = nd
+    return out
+
+
+def delivered_coverage_from_export(part):
+    """Consumer check: recompute every exported outcome's coverage from the exported records only (both indices)."""
+    res = {}
+    for ix, d in ((part or {}).get('indices') or {}).items():
+        by_key = {_rkey(r): r for r in d.get('records') or []}
+        res[ix] = [coverage_of(ix, o, by_key) for o in d.get('outcomes') or []]
+    return res

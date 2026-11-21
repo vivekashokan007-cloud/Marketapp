@@ -32,6 +32,17 @@ class MarketWatchService : Service() {
     private var wakeLock: PowerManager.WakeLock? = null
     private var sessionWakeLock: PowerManager.WakeLock? = null
     private lateinit var prefs: SharedPreferences
+    // R3: one publication fence for the expiry-fallback apply (generation persisted in prefs; survives restart)
+    private val expiryFallbackPublication by lazy {
+        ExpiryFallbackPublication(object : ExpiryFallbackPublication.GenerationStore {
+            override fun load(): Long = prefs.getLong(EXPIRY_FALLBACK_GENERATION_PREF, 0L)
+            override fun save(value: Long) { prefs.edit().putLong(EXPIRY_FALLBACK_GENERATION_PREF, value).commit() }
+        })
+    }
+    // R3: publication decisions are sent to Python in order on one background thread, never blocking a poll
+    private val expiryFallbackReconcileQueue = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
+        Thread(r, "expiry-fallback-reconcile").apply { isDaemon = true }
+    }
     private val client = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(15, TimeUnit.SECONDS)
@@ -193,6 +204,8 @@ class MarketWatchService : Service() {
         private const val PY_EXPIRY_FALLBACK_TIMEOUT_KEY = "poll.expiry_fallback"
         private const val PY_EXPIRY_FALLBACK_RESOLVE_KEY = "poll.expiry_fallback_resolve"
         private const val PY_EXPIRY_FALLBACK_RESOLVE_TIMEOUT_MS = 2_000L
+        // R3 (Codex R2 reply s3): persisted attempt generation for expiry-fallback publication reconciliation
+        private const val EXPIRY_FALLBACK_GENERATION_PREF = "expiry_fallback_publication_generation_v1"
         private const val PY_SNAPSHOT_TIMEOUT_KEY = "poll.snapshot"
         private const val PY_PAPER_MENU_TIMEOUT_KEY = "poll.paper_menu_capture"
         // Evidence batch 1 (Item B): once-per-session Paper decision-menu capture state.
@@ -2282,21 +2295,41 @@ class MarketWatchService : Service() {
             }
             // planning capital source (Codex R1 reply s3.5); admission separately requires configured capital
             minCtx.put("capitalSource", if (prefs.contains("capital")) "CONFIGURED" else "APP_DEFAULT")
-            // Python refuses to retain or return plans after this instant (no late publication after a timeout)
+            // Python refuses to retain or return plans after this instant (no late publication after a timeout).
+            // R3 (Codex R2 reply s3): the apply is one attempt (id + persisted generation); native accepts and
+            // publishes it only inside the deadline and only while it is the current attempt; every decision
+            // (PUBLISHED / TIMED_OUT / CANCELLED) is reconciled into the retained outcome; a late completion is never
+            // applied and never promotes a decided attempt.
             val applyDeadline = System.currentTimeMillis() + ExpiryFallbackAcquirer.APPLY_TIMEOUT_MS
-            val patchStr = PyTimeout.callWithTimeout(PY_EXPIRY_FALLBACK_TIMEOUT_KEY, ExpiryFallbackAcquirer.APPLY_TIMEOUT_MS) {
-                brain.callAttr("single_leg_expiry_fallback_apply", slDir.absolutePath, resultObj.toString(),
-                    minCtx.toString(), ev.toString(), null, openTradesJson, applyDeadline).toString()
-            } ?: run {
-                ExpiryFallbackAcquirer.markWait(resultObj, "APPLY_TIMEOUT")
-                LogBuffer.add('W', TAG, "EXPIRY_FALLBACK_FAIL: reason=PY_TIMEOUT")
+            val resultStr = resultObj.toString()          // serialised before the worker starts (no shared mutation)
+            val decision = ExpiryFallbackPublication.applyAndPublish(resultObj, expiryFallbackPublication,
+                PY_EXPIRY_FALLBACK_TIMEOUT_KEY, ExpiryFallbackAcquirer.APPLY_TIMEOUT_MS, applyDeadline,
+                { System.currentTimeMillis() },
+                { attempt ->
+                    brain.callAttr("single_leg_expiry_fallback_apply", slDir.absolutePath, resultStr,
+                        minCtx.toString(), ev.toString(), null, openTradesJson, applyDeadline,
+                        attempt.toString()).toString()
+                },
+                { attempt, state ->
+                    if (state == ExpiryFallbackPublication.State.PUBLISHED || state == ExpiryFallbackPublication.State.TIMED_OUT ||
+                        state == ExpiryFallbackPublication.State.CANCELLED) {
+                        val now = System.currentTimeMillis()
+                        expiryFallbackReconcileQueue.execute {
+                            try {
+                                brain.callAttr("single_leg_expiry_fallback_reconcile", slDir.absolutePath, attempt.id,
+                                    attempt.generation, state.name, now)
+                            } catch (e: Exception) {
+                                LogBuffer.add('W', TAG, "EXPIRY_FALLBACK_RECONCILE_FAIL: ${e.javaClass.simpleName}")
+                            }
+                        }
+                    }
+                })
+            if (decision.state != ExpiryFallbackPublication.State.PUBLISHED) {
+                LogBuffer.add('W', TAG, "EXPIRY_FALLBACK_FAIL: reason=${decision.state} gen=${decision.attempt.generation}")
                 return
             }
-            val patch = JSONObject(patchStr)
-            val n = ExpiryFallbackAcquirer.applyPatch(resultObj, patch)
-            if (patch.has("error")) ExpiryFallbackAcquirer.markWait(resultObj,
-                if (patch.optString("error") == "APPLY_DEADLINE_EXCEEDED") "APPLY_DEADLINE_EXCEEDED" else "APPLY_ERROR")
-            else ExpiryFallbackAcquirer.markWait(resultObj, "NOT_ACQUIRED")   // a skipped index never stays pending
+            val patch = decision.patch ?: JSONObject()
+            val n = patch.optJSONObject("single_leg_by_index")?.length() ?: 0
             LogBuffer.add('I', TAG, "EXPIRY_FALLBACK: applied=$n ${ExpiryFallbackAcquirer.logLine(ev, patch)}")
         } catch (e: Exception) {
             ExpiryFallbackAcquirer.markWait(resultObj, "APPLY_ERROR")
