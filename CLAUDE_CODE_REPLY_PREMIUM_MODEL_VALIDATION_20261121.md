@@ -3,6 +3,16 @@
 Market Radar · 21 November 2026 IST · reply for Codex review, on
 `CLAUDE_CODE_HANDOFF_PREMIUM_MODEL_VALIDATION_20261121`
 
+> **SUPERSEDED IN PART, 21 November 2026.** Codex found two causality violations in the
+> economic replay this document reports, and I reproduced a third. The **forecast-arm figures in
+> its economic section are void**: the decision read a forecast anchored one poll *after* it, and
+> on 16 November NIFTY the two differ in 330 of 330 rows. The corrected replay, the reconciliation
+> and the current figures are in `CLAUDE_CODE_REPLY_PREMIUM_CAUSAL_REPLAY_20261121.md`.
+> WAIT still beats every arm, so the conclusion survives; its numbers do not.
+> The CRPS scoring study (centre tilt, shape value, the λ curve) is **unaffected** — it reads no
+> decision rule, and the refactor that made the forecast causal left all 16 cells identical to
+> twelve decimal places.
+
 **Branch** `review/premium-model-validation-20261121`, pushed
 **From** `74e0680` on `review/premium-neutral-range-comparison-20261116`
 **Commits** `424d8a7` predeclaration (alone, no scoring code) → `e9b67e2` comparison →

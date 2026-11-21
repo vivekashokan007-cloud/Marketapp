@@ -25,7 +25,12 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 REPO = os.path.dirname(os.path.dirname(ROOT))
 RESULTS = os.path.join(ROOT, 'results')
-MEMO = os.path.join(REPO, 'CLAUDE_CODE_RESULTS_PREMIUM_MODEL_VALIDATION_20261121.md')
+# the CURRENT memo. The 21 November results memo is superseded in part -- its economic
+# forecast-arm figures were produced by the non-causal replay -- so the hashes that must
+# match the files are the ones the current memo states.
+MEMO = os.path.join(REPO, 'CLAUDE_CODE_REPLY_PREMIUM_CAUSAL_REPLAY_20261121.md')
+SUPERSEDED_MEMO = os.path.join(
+    REPO, 'CLAUDE_CODE_RESULTS_PREMIUM_MODEL_VALIDATION_20261121.md')
 README = os.path.join(ROOT, 'README.md')
 
 PRIMARY_HORIZON = 60
@@ -107,9 +112,19 @@ class ReportedCounts(unittest.TestCase):
         self.assertEqual(len(prim), 4, 'four primary cells expected, got %d' % len(prim))
         self.assertEqual(sum(1 for x in prim if x > 0), 3, '%r' % sorted(prim))
 
+    def test_the_superseded_memo_is_marked_as_such(self):
+        """Its economic forecast-arm figures were produced by the non-causal replay. A reader who
+        opens it must be told before reading them, not after."""
+        if not os.path.exists(SUPERSEDED_MEMO):
+            self.skipTest('the superseded memo is not present')
+        text = text_of(SUPERSEDED_MEMO)
+        self.assertIn('SUPERSEDED IN PART', text)
+        self.assertIn('CLAUDE_CODE_REPLY_PREMIUM_CAUSAL_REPLAY_20261121.md', text,
+                      'the banner must point at the memo that replaces it')
+
     def test_no_document_still_states_the_withdrawn_count(self):
         """"11 of 16" may appear only inside the sentence that withdraws it."""
-        for path in (MEMO, README):
+        for path in (MEMO, SUPERSEDED_MEMO, README):
             if not os.path.exists(path):
                 continue
             for line in text_of(path).split('\n'):

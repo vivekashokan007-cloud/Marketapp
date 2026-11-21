@@ -15,8 +15,12 @@ is empty.
 | --- | --- |
 | `PREDECLARATION_20261121.md` | the comparison, fixed before any variant was scored. Committed **alone** in `424d8a7` with no scoring code; a test checks that ordering from git history rather than asserting it in prose |
 | `tilt_compare.py` | the runner: `E0_TILT(λ)` through the frozen model, the CRPS decomposition into a tilt cost and a shape value, the λ sensitivity curve, and the declared breakdowns |
-| `economic_check.py` | three arms in rupees — WAIT, buy-every-feasible-contract, and the forecast rule — on the same feasible rows. It **refuses to run** without the reviewed Stage D ledger rather than reimplement a fee table |
-| `tests/` | 46 checks across two modules, no network |
+| `economic_check.py` | the **causal** replay: WAIT, a buy-all diagnostic, the median forecast rule and the predeclared `RANGE_EV` rule, all on the same decision-time population. Costs are estimated at the decision and realised after the exit, and the two never meet. It **refuses to run** without the reviewed Stage D ledger rather than reimplement a fee table |
+| `fee_worked_cases.py` | the fee arithmetic printed **by** the governed model, so a figure in a review document cannot drift from the code |
+| `PREDECLARATION_RANGE_AWARE_RULE_20261121.md` | the one range-aware rule, committed before its implementation |
+| `FEE_EXTENSION_REVIEW_20261121.md` | the unapplied fee extension, with dated sources and worked cases, returned for its own review |
+| `OVERNIGHT_CAPTURE_CHECKLIST_20261121.md` | why no overnight pair can be formed from the current capture window, proven rather than inferred |
+| `tests/` | 96 checks across three modules, no network |
 | `results/` | the printed runs and machine-readable scores for 12 and 16 November |
 
 ## The answer, in three lines
@@ -29,10 +33,25 @@ is empty.
    monotonically with λ in 3 of the 4 primary cells. The predeclared challenger λ = 0.5 loses the
    median-MAE half of its primary comparison in **3 of 4** cells, so the predeclared outcome is
    **split**, not an improvement.
-3. **Neither earns money here.** WAIT beats every arm on both sessions and both indices. Buying
-   every feasible contract loses ₹209–430 a trade after costs, and filtering by the forecast
-   helps on 12 November and hurts on 16 November — it does not generalise, and in no cell does it
-   turn a profit.
+3. **Neither earns money here.** WAIT beats every arm on both sessions and both indices —
+   including the predeclared range-aware `RANGE_EV` rule, which loses in all four cells and fails
+   its own declared downside bar in all four. Buying every feasible contract loses ₹197–430 a
+   trade after costs.
+
+> **The economic figures were corrected on 21 November.** Codex found two causality violations in
+> the first replay and a third followed: the decision read a forecast anchored one poll *after* it
+> (differing in 330 of 330 rows), priced costs with the *realised* exit fee (flipping 29 of 330
+> decisions), and was offered only opportunities that later filled and exited (dropping 84 of
+> 414). The replay is now causal by construction — `decision_view` is a whitelist a rule cannot
+> see past — and `--legacy-noncausal` reproduces the superseded path so the reconciliation is a
+> run and not a memory. **WAIT still wins, so the conclusion survived; the forecast-arm numbers
+> did not and are withdrawn.** See `CLAUDE_CODE_REPLY_PREMIUM_CAUSAL_REPLAY_20261121.md`.
+
+4. **The sharpest open question is the right tail, not the centre.** `RANGE_EV`'s entire buying
+   signal is that recentring fixes the *median* on the entry midpoint while a right-skewed price
+   distribution puts its *mean* ~₹1.7 higher — in 390 of 390 rows — which alone clears the ~₹1.3
+   round-trip cost. The trades do not deliver it. Whether that tail is calibrated is now the
+   specific thing to test, and CRPS at 80% coverage cannot answer it.
 
 ## The exact invocations
 
