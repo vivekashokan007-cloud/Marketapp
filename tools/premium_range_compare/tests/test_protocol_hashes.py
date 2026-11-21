@@ -32,6 +32,8 @@ GOVERNED = {
         os.path.join(TOOL, 'planned_schedule.py'),
     'tools/premium_range_compare/stopping_rule.py':
         os.path.join(TOOL, 'stopping_rule.py'),
+    'tools/premium_range_compare/frozen_successor.py':
+        os.path.join(TOOL, 'frozen_successor.py'),
     'tools/spot_path_baseline/premium_repricing_v2.py':
         os.path.join(ROOT, 'tools', 'spot_path_baseline', 'premium_repricing_v2.py'),
 }
@@ -71,7 +73,7 @@ class ProtocolHashes(unittest.TestCase):
             man = json.load(fh)
         claimed = protocol_rows()
         gov = man['governed_sources']
-        # the manifest keys the two local modules by basename and the frozen one by path
+        # the manifest keys the local modules by basename and the frozen R7 one by path
         for path, claim in sorted(claimed.items()):
             key = path if path in gov else os.path.basename(path)
             self.assertIn(key, gov, path)

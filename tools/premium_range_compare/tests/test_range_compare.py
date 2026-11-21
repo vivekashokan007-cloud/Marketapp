@@ -36,6 +36,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(HERE), '..', 'spot_path_baseline
 import premium_repricing_v2 as R7          # noqa: E402
 import range_compare as RC                 # noqa: E402
 import planned_schedule as PS              # noqa: E402
+import frozen_successor as FS              # noqa: E402
 import stopping_rule as SR                 # noqa: E402
 
 IST = R7.IST
@@ -865,10 +866,32 @@ class AgainstTheFrozenReplay(unittest.TestCase):
         self.provenance = self.exp.get('source', 'unlabelled')
         return self.exp[field]
 
+    def needs_direct_frozen_chain(self):
+        """Skip, reporting the chain, when the FROZEN replay cannot read this export.
+
+        DIRECT VERSUS PARITY, REPORTED. `R7.score_index` calls `spot_timeline`, which subscripts
+        `parts.authority_doc` unguarded; where that is null the frozen reader raises and there is
+        no frozen output to compare against, so the parity assertion is UNAVAILABLE rather than
+        passing or failing. The guarded successor cannot stand in here: a parity test whose
+        reference is the successor would be comparing the runner against itself.
+
+        A skip is not a pass. It records that the direct frozen comparison could not be made on
+        this input, and which chain the runner used instead.
+        """
+        ok, why = FS.authority_doc_state(self.ex)
+        if not ok:
+            self.skipTest(
+                'the DIRECT frozen chain is unavailable on this export (%s): '
+                'premium_repricing_v2.spot_timeline L382 / reverse_input L853 dereference it '
+                'unguarded. The runner used %s (%s); the frozen module is unmodified and the '
+                'parity reference therefore does not exist for this input.'
+                % (why, FS.CHAIN_SUCCESSOR, FS.FROZEN_SUCCESSOR_VERSION))
+
     # ── structural: these hold for ANY real export ──
 
     def test_admission_matches_the_frozen_replay(self):
         """Same rows, same entry and exit acquisitions, same exclusion counts, any session."""
+        self.needs_direct_frozen_chain()
         for ix in self.needs_data():
             _s, r7rows, r7cov, _l = R7.score_index(self.ex, ix, self.r7_hist, self.hd,
                                                    self.session)
@@ -885,6 +908,7 @@ class AgainstTheFrozenReplay(unittest.TestCase):
 
     def test_the_reference_variant_reproduces_the_frozen_primary_score(self):
         """Whatever the session, the reference must equal the frozen replay's own number."""
+        self.needs_direct_frozen_chain()
         for ix in self.needs_data():
             _s, r7rows, _c, _l = R7.score_index(self.ex, ix, self.r7_hist, self.hd,
                                                 self.session)
