@@ -1,0 +1,298 @@
+{
+ "economic_check_version": "premium_forecast_economic_check_v1",
+ "forecast": {
+  "history": {
+   "collapsed_identical_duplicates": 0,
+   "conflicting_slot_examples": [],
+   "dates": 11,
+   "excluded_conflicting_slots": 0,
+   "floor_collisions": 0,
+   "path": "spots_20261021_20261104.jsonl",
+   "retained_slots": 855,
+   "rows": 855,
+   "rows_off_five_minute_grid": 41,
+   "rows_with_explicit_slot": 0,
+   "sha256": "f6f29ed8fd6e1290f3d0f59e9be2cdd36f236b945409aebb2a73edffd499d186",
+   "slot_field_names_seen": [],
+   "slot_key_collisions_overwritten": 0,
+   "slot_policy": "exact",
+   "slots_from_inferred_clock": 855,
+   "slots_from_verified_schedule": 0
+  },
+  "indices": {
+   "BNF": {
+    "planned": 342,
+    "rows": 414
+   },
+   "NF": {
+    "planned": 342,
+    "rows": 414
+   }
+  },
+  "session": "2026-11-16"
+ },
+ "horizon_min": 60,
+ "indices": {
+  "BNF": {
+   "arms": {
+    "BUY_ALL_FEASIBLE": {
+     "mean_net_inr": -209.42902194933438,
+     "mean_observed_downside_inr": -1681.4786924202624,
+     "median_net_inr": -198.32874957699624,
+     "opportunity_rate": 1.0,
+     "return_on_risk": -0.012292194482471284,
+     "total_net_inr": -69111.57724328029,
+     "total_risk_budget_inr": 5622395.361693444,
+     "trades": 330,
+     "win_rate": 0.4727272727272727,
+     "worst_net_inr": -4947.0756120609985
+    },
+    "FORECAST_RULE_E0_TILT_0": {
+     "decision_reasons": {
+      "predicted": 330
+     },
+     "mean_net_inr": null,
+     "mean_observed_downside_inr": null,
+     "median_net_inr": null,
+     "opportunity_rate": 0.0,
+     "return_on_risk": null,
+     "total_net_inr": 0.0,
+     "total_risk_budget_inr": 0.0,
+     "trades": 0,
+     "win_rate": null,
+     "worst_net_inr": null
+    },
+    "FORECAST_RULE_E0_TILT_0p5": {
+     "decision_reasons": {
+      "buy": 112,
+      "predicted": 218
+     },
+     "mean_net_inr": -299.2308526394,
+     "mean_observed_downside_inr": -1935.4221905329362,
+     "median_net_inr": -828.674635431998,
+     "opportunity_rate": 0.3393939393939394,
+     "return_on_risk": -0.01732416292585877,
+     "total_net_inr": -33513.85549561281,
+     "total_risk_budget_inr": 1934515.141599634,
+     "trades": 112,
+     "win_rate": 0.4017857142857143,
+     "worst_net_inr": -3074.9760346479975
+    },
+    "FORECAST_RULE_E0_TILT_1": {
+     "decision_reasons": {
+      "buy": 135,
+      "predicted": 195
+     },
+     "mean_net_inr": -323.10426934046484,
+     "mean_observed_downside_inr": -1940.326151109132,
+     "median_net_inr": -733.498873158998,
+     "opportunity_rate": 0.4090909090909091,
+     "return_on_risk": -0.018682192066368977,
+     "total_net_inr": -43619.07636096276,
+     "total_risk_budget_inr": 2334794.3435119847,
+     "trades": 135,
+     "win_rate": 0.4148148148148148,
+     "worst_net_inr": -4947.0756120609985
+    },
+    "FORECAST_RULE_HIST": {
+     "decision_reasons": {
+      "predicted": 330
+     },
+     "mean_net_inr": null,
+     "mean_observed_downside_inr": null,
+     "median_net_inr": null,
+     "opportunity_rate": 0.0,
+     "return_on_risk": null,
+     "total_net_inr": 0.0,
+     "total_risk_budget_inr": 0.0,
+     "trades": 0,
+     "win_rate": null,
+     "worst_net_inr": null
+    },
+    "FORECAST_RULE_IV_ONLY": {
+     "decision_reasons": {
+      "predicted": 330
+     },
+     "mean_net_inr": null,
+     "mean_observed_downside_inr": null,
+     "median_net_inr": null,
+     "opportunity_rate": 0.0,
+     "return_on_risk": null,
+     "total_net_inr": 0.0,
+     "total_risk_budget_inr": 0.0,
+     "trades": 0,
+     "win_rate": null,
+     "worst_net_inr": null
+    },
+    "WAIT": {
+     "mean_net_inr": null,
+     "mean_observed_downside_inr": null,
+     "median_net_inr": null,
+     "note": "exactly zero rupees on every opportunity, by definition. Not a trade count of zero for want of data.",
+     "opportunity_rate": 0.0,
+     "return_on_risk": null,
+     "total_net_inr": 0.0,
+     "total_risk_budget_inr": 0.0,
+     "trades": 0,
+     "win_rate": null,
+     "worst_net_inr": null
+    }
+   },
+   "feasible_buy_rows": 330,
+   "forecast_join": {
+    "matched": 330,
+    "unmatched": 0
+   },
+   "unscorable_by_reason": {
+    "entry_quote_missing": 6,
+    "exit_quote_missing": 6,
+    "fill_poll_absent": 6,
+    "hold_window_not_covered": 78,
+    "lot_authority_unresolved": 6
+   }
+  },
+  "NF": {
+   "arms": {
+    "BUY_ALL_FEASIBLE": {
+     "mean_net_inr": -322.0034098714468,
+     "mean_observed_downside_inr": -1262.0349890682908,
+     "median_net_inr": -366.72813684999926,
+     "opportunity_rate": 1.0,
+     "return_on_risk": -0.05015847410026969,
+     "total_net_inr": -106261.12525757735,
+     "total_risk_budget_inr": 2118507.9323815797,
+     "trades": 330,
+     "win_rate": 0.41818181818181815,
+     "worst_net_inr": -5104.980459563
+    },
+    "FORECAST_RULE_E0_TILT_0": {
+     "decision_reasons": {
+      "predicted": 330
+     },
+     "mean_net_inr": null,
+     "mean_observed_downside_inr": null,
+     "median_net_inr": null,
+     "opportunity_rate": 0.0,
+     "return_on_risk": null,
+     "total_net_inr": 0.0,
+     "total_risk_budget_inr": 0.0,
+     "trades": 0,
+     "win_rate": null,
+     "worst_net_inr": null
+    },
+    "FORECAST_RULE_E0_TILT_0p5": {
+     "decision_reasons": {
+      "buy": 104,
+      "predicted": 226
+     },
+     "mean_net_inr": -1283.782358415625,
+     "mean_observed_downside_inr": -1920.806756300125,
+     "median_net_inr": -1173.0255562904997,
+     "opportunity_rate": 0.3151515151515151,
+     "return_on_risk": -0.17909200000210734,
+     "total_net_inr": -133513.365275225,
+     "total_risk_budget_inr": 745501.5593865386,
+     "trades": 104,
+     "win_rate": 0.125,
+     "worst_net_inr": -4713.595308796001
+    },
+    "FORECAST_RULE_E0_TILT_1": {
+     "decision_reasons": {
+      "buy": 124,
+      "predicted": 206
+     },
+     "mean_net_inr": -980.2373707052701,
+     "mean_observed_downside_inr": -1722.2734412203265,
+     "median_net_inr": -1050.548842665,
+     "opportunity_rate": 0.37575757575757573,
+     "return_on_risk": -0.1403544639527899,
+     "total_net_inr": -121549.43396745349,
+     "total_risk_budget_inr": 866017.5853639987,
+     "trades": 124,
+     "win_rate": 0.20967741935483872,
+     "worst_net_inr": -4713.595308796001
+    },
+    "FORECAST_RULE_HIST": {
+     "decision_reasons": {
+      "predicted": 330
+     },
+     "mean_net_inr": null,
+     "mean_observed_downside_inr": null,
+     "median_net_inr": null,
+     "opportunity_rate": 0.0,
+     "return_on_risk": null,
+     "total_net_inr": 0.0,
+     "total_risk_budget_inr": 0.0,
+     "trades": 0,
+     "win_rate": null,
+     "worst_net_inr": null
+    },
+    "FORECAST_RULE_IV_ONLY": {
+     "decision_reasons": {
+      "predicted": 330
+     },
+     "mean_net_inr": null,
+     "mean_observed_downside_inr": null,
+     "median_net_inr": null,
+     "opportunity_rate": 0.0,
+     "return_on_risk": null,
+     "total_net_inr": 0.0,
+     "total_risk_budget_inr": 0.0,
+     "trades": 0,
+     "win_rate": null,
+     "worst_net_inr": null
+    },
+    "WAIT": {
+     "mean_net_inr": null,
+     "mean_observed_downside_inr": null,
+     "median_net_inr": null,
+     "note": "exactly zero rupees on every opportunity, by definition. Not a trade count of zero for want of data.",
+     "opportunity_rate": 0.0,
+     "return_on_risk": null,
+     "total_net_inr": 0.0,
+     "total_risk_budget_inr": 0.0,
+     "trades": 0,
+     "win_rate": null,
+     "worst_net_inr": null
+    }
+   },
+   "feasible_buy_rows": 330,
+   "forecast_join": {
+    "matched": 330,
+    "unmatched": 0
+   },
+   "unscorable_by_reason": {
+    "entry_quote_missing": 6,
+    "exit_quote_missing": 6,
+    "fill_poll_absent": 6,
+    "hold_window_not_covered": 78,
+    "lot_authority_unresolved": 6
+   }
+  }
+ },
+ "label": "PROXY_SIMULATED_FILL -- no order was placed",
+ "ledger": {
+  "module": "/tmp/claude-0/-home-user-Marketapp/268ce485-daff-5c24-9478-cd84813bcb59/scratchpad/wt-followon/tools/premium_followon/cost_ledger.py",
+  "rates_table_version": "nse_equity_index_options_rates_20261116_v2",
+  "rates_verified_through": "2026-11-16",
+  "tree": {
+   "modified": [
+    "research/replay/fee_models.py"
+   ],
+   "note": "the ledger tree is MODIFIED relative to its commit; these figures are not reproducible from the committed tree alone",
+   "revision": "c73b28cd7358ac7e0307af48f8effe40ee430492",
+   "root": "/tmp/claude-0/-home-user-Marketapp/268ce485-daff-5c24-9478-cd84813bcb59/scratchpad/wt-followon"
+  },
+  "version": "premium_followon_stage_d_cost_ledger_v3_bound_authority_and_decision_clock"
+ },
+ "quote_clock": "receipt_proxy: every instant is the app acquisition receipt; the exchange quote event clock is UNVERIFIED in these exports",
+ "required_margin_inr": 0.0,
+ "rule_variants": [
+  "E0_TILT_0",
+  "E0_TILT_0p5",
+  "E0_TILT_1",
+  "IV_ONLY",
+  "HIST"
+ ],
+ "session": "2026-11-16"
+}

@@ -1,0 +1,40 @@
+========================================================================================================
+PREMIUM FORECAST ECONOMIC CHECK   premium_forecast_economic_check_v1
+========================================================================================================
+ledger premium_followon_stage_d_cost_ledger_v3_bound_authority_and_decision_clock
+fees  nse_equity_index_options_rates_20261116_v2, verified through 2026-11-16 -- a later trade date fails closed
+tree  c73b28cd7358  MODIFIED: research/replay/fee_models.py
+      the ledger tree is MODIFIED relative to its commit; these figures are not reproducible from the committed tree alone
+arms  WAIT (zero) | BUY_ALL_FEASIBLE (matched baseline) | FORECAST_RULE (under test)
+rule  buy iff (forecast median - one tick - ask paid) x lot - fees > 0.00 INR
+label PROXY_SIMULATED_FILL -- no order was placed
+receipt_proxy: every instant is the app acquisition receipt; the exchange quote event clock is UNVERIFIED in these exports
+
+--- BNF   60 min   feasible BUY rows 330   forecast joined 330 / unmatched 0 ---
+    refused: entry_quote_missing=6, exit_quote_missing=6, fill_poll_absent=6, hold_window_not_covered=78, lot_authority_unresolved=6
+    arm                           trades   take%   total INR   mean INR  worst INR     win% mean downside
+    WAIT                               0      0%          +0          -          -        -            -
+    BUY_ALL_FEASIBLE                 330    100%      -69112     -209.4      -4947      47%        -1681
+    FORECAST_RULE_E0_TILT_0            0      0%          +0          -          -        -            -
+    FORECAST_RULE_E0_TILT_0p5        112     34%      -33514     -299.2      -3075      40%        -1935
+    FORECAST_RULE_E0_TILT_1          135     41%      -43619     -323.1      -4947      41%        -1940
+    FORECAST_RULE_IV_ONLY              0      0%          +0          -          -        -            -
+    FORECAST_RULE_HIST                 0      0%          +0          -          -        -            -
+
+--- NF   60 min   feasible BUY rows 330   forecast joined 330 / unmatched 0 ---
+    refused: entry_quote_missing=6, exit_quote_missing=6, fill_poll_absent=6, hold_window_not_covered=78, lot_authority_unresolved=6
+    arm                           trades   take%   total INR   mean INR  worst INR     win% mean downside
+    WAIT                               0      0%          +0          -          -        -            -
+    BUY_ALL_FEASIBLE                 330    100%     -106261     -322.0      -5105      42%        -1262
+    FORECAST_RULE_E0_TILT_0            0      0%          +0          -          -        -            -
+    FORECAST_RULE_E0_TILT_0p5        104     32%     -133513    -1283.8      -4714      12%        -1921
+    FORECAST_RULE_E0_TILT_1          124     38%     -121549     -980.2      -4714      21%        -1722
+    FORECAST_RULE_IV_ONLY              0      0%          +0          -          -        -            -
+    FORECAST_RULE_HIST                 0      0%          +0          -          -        -            -
+
+========================================================================================================
+WAIT earns exactly zero and risks exactly zero. An arm only beats it by earning
+more than zero AFTER costs. Every figure is a simulated fill on receipt-clock
+quotes, with the ledger quantity-unit and quote-freshness items still open.
+========================================================================================================
+wrote tools/premium_model_validation/results/economic_check_2026-11-16.json
