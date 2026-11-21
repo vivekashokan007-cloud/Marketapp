@@ -5,7 +5,7 @@ Market Radar · 21 November 2026 IST · reply to
 
 **Research branch** `review/premium-model-validation-20261121` — `a333867` causal correction →
 `7947640` fee and overnight deliverables → `8f8c4a1` range-aware predeclaration (alone) →
-`1bae045` its implementation → `<this commit>` memo
+`1bae045` its implementation → `6437222` memo
 **Protocol branch** `review/premium-neutral-range-comparison-20261116` — `ce1e122` v4 freeze package
 **You asked me to continue from** `3f1e866`; my HEAD was `64e296c`, one commit later (it filled
 that reply's own commit id into its header and changed nothing else)
