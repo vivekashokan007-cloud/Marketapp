@@ -1,0 +1,12 @@
+{
+  "approval_reference": "21 November 2026 15:00 IST, owner instruction relayed in the Market Radar project chat: \"Yes, push the candidate branches and queue the fallback candidate build once local checks pass\". This commit queues the existing signed artifact-only candidate workflow. The GitHub candidate-apk environment requires owner approval.",
+  "approved_by": "Vivek Ashokan P (Market Radar owner)",
+  "artifact_only": true,
+  "cert_sha256": "fb6042a2eb61045368e8d7b95db6f6d49b04d4b8da2e51b865ca77803a44b478",
+  "codex_final_check_reference": "Codex accepted R4 8752fd5e on 21 November 2026 IST (CODEX_ACCEPT_R4_20261121.md): artifacts byte-verified, incremental patch applied, 72 focused Python tests passed. Python, JVM, paired and staging results on the b533 packaging revision are Grok-reported. Full Android and Python CI remain workflow gates before signing.",
+  "native_sha": "9b1c20d611327261180e99205fe05dbf33fbbb18",
+  "pwa_sha": "2187cb877b74116a7c01a6d76f433d356e4c7dad",
+  "schema": "marketradar.candidate_build_authorization.v1",
+  "version_code": "533",
+  "version_name": "2.6.102"
+}
