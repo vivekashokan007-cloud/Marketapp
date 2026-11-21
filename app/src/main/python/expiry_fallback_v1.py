@@ -1,4 +1,4 @@
-"""expiry_fallback_v1: expiry-day Paper-BUY fallback evidence path (REVIEW DRAFT r1, Paper only).
+"""expiry_fallback_v1: expiry-day Paper-BUY fallback evidence path (REVIEW DRAFT r2, Paper only).
 
 Scope (and nothing else):
   * acts ONLY on an index's own expiry day (ctx trading expiry == session date) and ONLY when the existing
@@ -22,12 +22,24 @@ Evidence clocks (kept separate, never merged):
 Selection cutoff = the instant the fallback plan is computed (live: read after acquisition; replay: the
 recorded decision instant).  Evidence received after it is LATER evidence and never supports that verdict.
 
-ASSUMPTION (UNVALIDATED, needs Codex/Vivek sign-off): CHAIN_MAX_AGE_S = 60 s between chain receipt and cutoff.
-The chain only selects the strike (K0) and names the instrument; prices come only from broker snapshots.
+DEVELOPMENT ASSUMPTION (provisional, Codex R1 reply s3.3; not phone-validated): CHAIN_MAX_AGE_S = 60 s between
+chain receipt and cutoff.  The chain only selects the strike (K0) and names the instrument; prices come only from
+broker snapshots.
 
-BNF monthly rule (calendar_rule, flagged): last Tuesday of the month; if that day is not an NSE session, the
-previous session.  Matches the PHONE-OBSERVED BNF trading expiry 2026-11-23 (Tue 24 Nov 2026 is a holiday).
-Years outside ev_v12_calendar.COVERED_YEARS -> WAIT (BNF_MONTHLY_CALENDAR_UNAVAILABLE).
+BNF monthly rule (official source, Codex R1 reply s3.4):
+  * NSE circular NSE/FAOP/68747 (Circular Ref. 111/2025, 25 Jun 2025): "BANKNIFTY monthly & quarterly contracts ...
+    Last Tuesday of expiry month"; "Newly generated contracts with expiry falling on/after September 01, 2025 shall
+    be introduced with revised expiry day (i.e. Tuesday)".  NSE contract specifications page: "If the Tuesday is a
+    trading holiday, then the expiry day is the previous trading day."
+  * dated holiday coverage: NSE/FAOP/71777 (Circular Ref. 212/2025, 12 Dec 2025) "Trading holidays for the calendar
+    year 2026" == ev_v12_calendar.NSE_HOLIDAYS_2026 (15 dates).  Only COVERED_YEARS are covered.
+  * a calendar date that is listed is NOT enough: the dated listing must also mark that expiry's rows
+    `weekly == false` (Upstox option-contract field "Indicates if the option is weekly").  Uncovered dates, sessions
+    before the effective date, a missing/mixed/true weekly flag -> WAIT with a named stable code.
+Retention (R2, Codex R1 reply s1): records are deduplicated on (kind, index, expiry, instrument_key, receipt_ms); a
+contracts response re-read from cache (same original receipt) is MERGED (row union) instead of discarded; a
+response first received later is a separate record and never supports an earlier cutoff.  Every outcome carries
+its evidence dependencies and a replay_coverage verdict recomputed after every trim.
 """
 from __future__ import annotations
 
@@ -45,8 +57,35 @@ FALLBACK_ID = 'expiry_day_paper_buy_fallback_v1'
 EVIDENCE_SCHEMA = 'mr.expiry_fallback_evidence.v1'
 CTX_KEY = 'expiryFallbackEvidence'
 CHAIN_MAX_AGE_S = 60
-CHAIN_MAX_AGE_STATUS = 'ASSUMPTION_UNVALIDATED'
+CHAIN_MAX_AGE_STATUS = 'DEVELOPMENT_ASSUMPTION_UNVALIDATED'
 BNF_MONTHLY_RULE = 'last_tuesday_prev_session_if_holiday_v1'
+BNF_MONTHLY_SOURCE = {'rule_circular': 'NSE/FAOP/68747 (Circular Ref. 111/2025, 2025-06-25)',
+                      'rule_effective_expiries_from': '2025-09-01',
+                      'holiday_rule': 'NSE equity derivatives contract specifications: previous trading day',
+                      'holiday_circular': 'NSE/FAOP/71777 (Circular Ref. 212/2025, 2025-12-12)',
+                      'monthly_identity': 'listing rows weekly == false (Upstox /v2/option/contract field `weekly`)'}
+BNF_RULE_EFFECTIVE = date(2025, 9, 1)
+WHY_EXP_MEANING = 'ORIGINAL_TRADING_EXPIRY'
+# Stable WAIT codes (Codex R1 reply s3.7): every EXPIRY_FALLBACK_WAIT:<code> this module or the native path emits.
+WAIT_CODES = (
+    'NOT_APPLICABLE', 'SELECTION_CUTOFF_UNAVAILABLE', 'EXPIRY_INDEPENDENT_GATE', 'SINGLE_LEG_PAPER_DISABLED',
+    'NOT_PAPER_MODE', 'INDEX_NOT_SELECTED',
+    'LISTING_UNAVAILABLE', 'LISTING_INDEX_MISMATCH', 'LISTING_CLOCK_UNAVAILABLE', 'LISTING_RECEIVED_AFTER_CUTOFF',
+    'LISTING_NOT_THIS_SESSION', 'NO_LATER_LISTED_EXPIRY', 'INDEX_UNSUPPORTED',
+    'BNF_MONTHLY_CALENDAR_UNAVAILABLE', 'BNF_MONTHLY_RULE_NOT_EFFECTIVE', 'BNF_MONTHLY_NOT_LISTED',
+    'BNF_MONTHLY_IDENTITY_UNVERIFIED', 'BNF_MONTHLY_LISTED_AS_WEEKLY',
+    'EXIT_NOT_BEFORE_CONTRACT_EXPIRY',
+    'FALLBACK_CHAIN_UNAVAILABLE', 'FALLBACK_CHAIN_INDEX_MISMATCH', 'FALLBACK_CHAIN_EXPIRY_MISMATCH',
+    'FALLBACK_CHAIN_UNDERLYING_MISMATCH', 'FALLBACK_CHAIN_CLOCK_INVALID', 'FALLBACK_CHAIN_RECEIVED_AFTER_CUTOFF',
+    'FALLBACK_CHAIN_STALE_AT_CUTOFF', 'FALLBACK_CHAIN_LEG_EXPIRY_MISMATCH', 'FALLBACK_CHAIN_LEG_INDEX_MISMATCH',
+    'FALLBACK_CONTRACTS_UNAVAILABLE', 'FALLBACK_CONTRACTS_IDENTITY_MISMATCH',
+    'FALLBACK_CONTRACTS_RECEIVED_AFTER_CUTOFF', 'FALLBACK_CONTRACTS_NOT_THIS_SESSION',
+    'FALLBACK_CONTRACTS_NONE_FOR_EXPIRY',
+    'CAPITAL_STATE_UNRECORDED', 'FALLBACK_IDENTITY_MISMATCH',
+    'ACQUISITION_DEADLINE_EXHAUSTED', 'APPLY_DEADLINE_EXCEEDED',
+    # native (MarketWatchService / ExpiryFallbackAcquirer.markWait): no acquisition / no late publication
+    'REFRESH_NOT_ACQUIRED', 'NO_TOKEN', 'APPLY_TIMEOUT', 'APPLY_ERROR', 'NOT_ACQUIRED',
+)
 EXPIRY_CLOSE = (15, 30)
 BUY_ACTIONS = ('BUY_CE', 'BUY_PE')
 # gates that do not depend on the expiry or the chain: when the base plan already names one, no acquisition.
@@ -57,8 +96,13 @@ STATUS_APPLIED = 'APPLIED'
 STATUS_WAIT = 'WAIT'
 RETAIN_DIR = 'expiry_fallback_v1'
 RETAIN_DOC = 'evidence.json'
-RETAIN_STRIKES_EACH_SIDE = 8          # parity_strike reads 5 each side of spot; 8 keeps the replay window
-MAX_RECORDS_PER_INDEX = 64
+RETAIN_STRIKES_EACH_SIDE = 6          # parity_strike reads SCALE_STRIKE_WINDOW (5) each side of spot; 6 keeps it
+# R2 measured bounded change (budget/acquisition_budget_r2.py): retained chain legs keep only the fields the BUY
+# planner and check_chain read (index_authority_v1._leg_bid_ask: bid/ask; plan_entry: instrument_key;
+# check_chain: contract_expiry/underlying_key).  R1 kept every leg field and 8 strikes each side.
+RETAIN_LEG_FIELDS = ('bid', 'ask', 'instrument_key', 'contract_expiry', 'underlying_key')
+MAX_RECORDS_PER_INDEX = 200
+MAX_OUTCOMES_PER_INDEX = 200
 MAX_RETAINED_BYTES = 1024 * 1024
 RETENTION_SESSIONS = 3
 
@@ -148,6 +192,10 @@ def resolve_expiry(index, session_date, listing, cutoff_ms, calendar=None):
         out.update(expiry=later[0].isoformat(), rule='NF_NEXT_DISTINCT_LISTED_EXPIRY')
         return out
     if index == 'BNF':
+        out['source'] = BNF_MONTHLY_SOURCE
+        if sd < BNF_RULE_EFFECTIVE:
+            out['reason'] = 'BNF_MONTHLY_RULE_NOT_EFFECTIVE'
+            return out
         try:
             m = next_bnf_monthly_after(sd, calendar)
         except _cal.CalendarUnavailable:
@@ -161,6 +209,14 @@ def resolve_expiry(index, session_date, listing, cutoff_ms, calendar=None):
             out['reason'] = 'BNF_MONTHLY_NOT_LISTED'
             return out
         out['skipped'] = [e.isoformat() for e in later if e < m]      # listed but not monthly: never selected
+        flag = (listing.get('weekly') or {}).get(m.isoformat()) if isinstance(listing.get('weekly'), dict) else None
+        out['listing_weekly_flag'] = flag
+        if flag is True:
+            out['reason'] = 'BNF_MONTHLY_LISTED_AS_WEEKLY'
+            return out
+        if flag is not False:                         # absent / MIXED / not a boolean: monthly identity unverified
+            out['reason'] = 'BNF_MONTHLY_IDENTITY_UNVERIFIED'
+            return out
         out.update(expiry=m.isoformat(), rule='BNF_MONTHLY_' + BNF_MONTHLY_RULE)
         return out
     out['reason'] = 'INDEX_UNSUPPORTED'
@@ -299,7 +355,10 @@ def provenance(index, decision, trade_expiry, session_date, action):
             'trade_expiry': str(trade_expiry)[:10], 'decision_id': d.get('decision_id'),
             'decision_poll_ts': d.get('decision_poll_ts'), 'analysis_ts': d.get('analysis_ts'),
             'chain_max_age_s': CHAIN_MAX_AGE_S, 'chain_max_age_status': CHAIN_MAX_AGE_STATUS,
-            'exchange_event_clock': 'UNAVAILABLE_NOT_USED'}
+            'exchange_event_clock': 'UNAVAILABLE_NOT_USED',
+            # trade_expiry is the ORIGINAL trading expiry (== why.exp); the contract expiry is fallback_expiry /
+            # contract.expiry and is never written into trade_expiry or why.exp.
+            'trade_expiry_meaning': WHY_EXP_MEANING}
 
 
 def wait_plan(base_plan, prov, reason, extra=None):
@@ -350,22 +409,38 @@ def exit_before_expiry(session_date, expiry, time_exit=_sl.TIME_EXIT):
 
 def plan_fallback(index, decision, base_plan, spot, *, session_date, trade_expiry, cutoff_ms, reader,
                   open_trades=None, single_leg_positions=None, history=None, history_supplied=True,
-                  capital=None, max_risk_pct=None, store_snapshots=None, calendar=None, lot_resolver=None):
+                  capital=None, max_risk_pct=None, store_snapshots=None, calendar=None, lot_resolver=None,
+                  capital_source=None, acquisition=None):
     """The fallback verdict at `cutoff_ms` from `reader` evidence only.  Returns the plan (planner verbatim, or
-    the base plan + a named EXPIRY_FALLBACK_WAIT reason)."""
+    the base plan + a named EXPIRY_FALLBACK_WAIT reason).  provenance['deps'] names, in epoch ms, every retained
+    record the verdict read (listing / contracts / chain receipts, snapshot key + receipt) so a retained replay can
+    be checked for completeness (replay_coverage).  `acquisition` is the native per-index acquisition status
+    (DEADLINE_EXHAUSTED / FAILED -> explicit WAIT).  `capital_source` is exposed as planning_capital_source."""
     ok, action = applicable(session_date, trade_expiry, decision)
     fb0 = (base_plan or {}).get('expiry_fallback') or {}
     prov = provenance(index, decision, trade_expiry, session_date, action)
     prov.update(base_reasons=list(fb0.get('base_reasons', (base_plan or {}).get('reasons') or [])),
                 base_status=fb0.get('base_status', (base_plan or {}).get('status')),
                 selection_cutoff=_iso(cutoff_ms))
+    deps = {}
+    prov['deps'] = deps
+    prov['planning_capital_source'] = capital_source or ('UNSTATED' if capital is not None else 'NONE')
+    prov['admission_capital'] = 'CONFIGURED_CAPITAL_REQUIRED_AT_ADMISSION'
     base = dict(base_plan or {}, reasons=prov['base_reasons'], status=prov['base_status'])
     if not ok:
         return wait_plan(base, prov, 'NOT_APPLICABLE')
+    acq = acquisition if isinstance(acquisition, dict) else {}
+    if acq:
+        prov['acquisition'] = {k: acq.get(k) for k in ('status', 'elapsed_ms', 'budget_ms', 'requests', 'bytes')}
+    if acq.get('status') == 'DEADLINE_EXHAUSTED':
+        return wait_plan(base, prov, 'ACQUISITION_DEADLINE_EXHAUSTED')
     cutoff_dt = _dt(cutoff_ms)
     if cutoff_dt is None:
         return wait_plan(base, prov, 'SELECTION_CUTOFF_UNAVAILABLE')
-    res = resolve_expiry(index, session_date, reader.listing(index, cutoff_ms), cutoff_ms, calendar)
+    lrec = reader.listing(index, cutoff_ms)
+    if isinstance(lrec, dict):
+        deps['listing_receipt_ms'] = lrec.get('receipt_ms')
+    res = resolve_expiry(index, session_date, lrec, cutoff_ms, calendar)
     prov['resolution'] = res
     if res['expiry'] is None:
         return wait_plan(base, prov, res['reason'])
@@ -374,6 +449,8 @@ def plan_fallback(index, decision, base_plan, spot, *, session_date, trade_expir
     if not exit_before_expiry(session_date, fx):
         return wait_plan(base, prov, 'EXIT_NOT_BEFORE_CONTRACT_EXPIRY')
     crec = reader.chain(index, fx, cutoff_ms)
+    if isinstance(crec, dict):
+        deps['chain_receipt_ms'] = crec.get('receipt_ms')
     chain, why = check_chain(index, fx, crec, cutoff_ms)
     if why:
         return wait_plan(base, prov, why)
@@ -381,6 +458,8 @@ def plan_fallback(index, decision, base_plan, spot, *, session_date, trade_expir
                             'age_at_cutoff_s': round((cutoff_ms - crec['receipt_ms']) / 1000.0, 3),
                             'exchange_event': 'UNAVAILABLE'}
     mrec = reader.contracts(index, fx, cutoff_ms)
+    if isinstance(mrec, dict):
+        deps['contracts_receipt_ms'] = mrec.get('receipt_ms')
     rows, why = check_contracts(index, fx, mrec, cutoff_ms, session_date)
     if why:
         return wait_plan(base, prov, why)
@@ -391,7 +470,11 @@ def plan_fallback(index, decision, base_plan, spot, *, session_date, trade_expir
     k, _w = _sl.select_strike(action, chain, _sl._num(spot)) if _sl._num(spot) is not None else (None, None)
     leg = ((_sl._strike_map(chain).get(k) or {}).get(action[-2:]) or {}) if k is not None else {}
     key = leg.get('instrument_key')
+    if k is not None:
+        deps['strike'] = k
     if key:
+        deps['instrument_key'] = key
+        deps['contract_row_present'] = key in rows
         for cand in (reader.snapshot(index, fx, key, cutoff_ms), (store_snapshots or {}).get(key)):
             s, r = snapshot_at_cutoff(cand, key, cutoff_ms)
             if r:
@@ -400,6 +483,7 @@ def plan_fallback(index, decision, base_plan, spot, *, session_date, trade_expir
                 snaps[key] = s
     if snaps:
         ev['snapshots'] = snaps
+        deps['snapshot_receipt_ms'] = snaps[key].get('receipt_ms')
     prov['snapshot_rejections'] = snap_rej
     prov['later_evidence_rejected'] = list(reader.later)
     if capital is None or max_risk_pct is None:          # never a default: missing state is a named WAIT
@@ -415,8 +499,20 @@ def plan_fallback(index, decision, base_plan, spot, *, session_date, trade_expir
     if not ident:
         return wait_plan(base, prov, 'FALLBACK_IDENTITY_MISMATCH')
     p['expiry_fallback'] = dict(prov, status=STATUS_APPLIED, planner_status=p.get('status'),
-                                planner_reasons=list(p.get('reasons') or []), instrument_key=key, strike=k)
+                                planner_reasons=list(p.get('reasons') or []), instrument_key=key, strike=k,
+                                contract_expiry=fx)
     return p
+
+
+def withdraw(plan, reason):
+    """Mirror of the native ExpiryFallbackAcquirer.markWait: a plan still at EVIDENCE_REQUIRED (no acquisition this
+    poll: refresh, no token, deadline, apply timeout/error) becomes an explicit WAIT with a stable code.  Any other
+    plan is returned unchanged (an APPLIED plan is never touched; nothing older is resurrected)."""
+    fb = (plan or {}).get('expiry_fallback') or {}
+    if fb.get('status') != STATUS_REQUIRED:
+        return plan
+    return wait_plan(dict(plan, reasons=list(fb.get('base_reasons') or []), status=fb.get('base_status')),
+                     {k: v for k, v in fb.items() if k != 'status'}, reason)
 
 
 # ---- live evidence -> records, bounded retention -----------------------------------------------------------
@@ -428,6 +524,8 @@ def records_from_native(index, ev):
     if isinstance(li, dict):
         out.append({'kind': 'listing', 'index': index, 'session': li.get('session'),
                     'expiries': sorted({str(x)[:10] for x in li.get('expiries') or []}),
+                    'weekly': {str(k)[:10]: v for k, v in (li.get('weekly') or {}).items()}
+                    if isinstance(li.get('weekly'), dict) else None,
                     'request_start_ms': li.get('request_start_ms'), 'receipt_ms': li.get('receipt_ms'),
                     'source': li.get('source')})
     co = e.get('contracts')
@@ -451,16 +549,39 @@ def _window_keys(chain, spot):
     return set(keep)
 
 
+def _strike_num(s):
+    try:
+        f = float(s)
+    except (TypeError, ValueError):
+        return None
+    return int(f) if f == int(f) else f
+
+
 def bound_record(rec, spot):
-    """Retention copy: chains keep a strike window around spot; contracts keep only those strikes' rows."""
+    """Retention copy: chains keep a strike window around spot and only RETAIN_LEG_FIELDS per leg."""
     r = dict(rec)
     if r.get('kind') == 'chain' and isinstance(r.get('chain'), dict):
         keep = _window_keys(r['chain'], spot)
         c = {k: v for k, v in r['chain'].items() if k not in ('strikes', 'allStrikes')}
-        c['strikes'] = {s: v for s, v in (r['chain'].get('strikes') or {}).items()
-                        if _sl._num(s) is not None and (int(float(s)) if float(s) == int(float(s)) else float(s)) in keep}
-        c['retained_window'] = {'each_side': RETAIN_STRIKES_EACH_SIDE, 'kept': len(c['strikes']),
-                                'listed': len((r['chain'].get('strikes') or {}))}
+        strikes = {}
+        exp, uk = str(r.get('expiry') or '')[:10], _me.UNDERLYING_KEYS.get(r.get('index'))
+
+        def _leg(leg):
+            out = {f: leg[f] for f in RETAIN_LEG_FIELDS if f in leg}
+            # identity fields are kept only when they DIFFER from the request (check_chain fails only on a
+            # mismatch and passes when absent), so the retained copy reaches the same check_chain verdict
+            if str(out.get('contract_expiry') or '')[:10] == exp:
+                out.pop('contract_expiry', None)
+            if out.get('underlying_key') == uk:
+                out.pop('underlying_key', None)
+            return out
+        for s, sides in (r['chain'].get('strikes') or {}).items():
+            if _strike_num(s) in keep and isinstance(sides, dict):
+                strikes[s] = {side: (_leg(leg) if isinstance(leg, dict) else leg) for side, leg in sides.items()}
+        c['strikes'] = strikes
+        c['retained_window'] = {'each_side': RETAIN_STRIKES_EACH_SIDE, 'kept': len(strikes),
+                                'listed': len((r['chain'].get('strikes') or {})), 'leg_fields': list(RETAIN_LEG_FIELDS),
+                                'leg_identity': 'OMITTED_WHEN_EQUAL_TO_REQUEST'}
         r['chain'] = c
         r['_keep'] = sorted(keep)
     return r
@@ -469,27 +590,120 @@ def bound_record(rec, spot):
 def bound_contracts(rec, keep):
     r = dict(rec)
     resp = r.get('response') if isinstance(r.get('response'), dict) else {}
-    rows = [x for x in (resp.get('data') or []) if isinstance(x, dict) and _sl._num(x.get('strike_price')) is not None
-            and float(x.get('strike_price')) in {float(k) for k in keep}]
+    kf = {float(k) for k in keep}
+    valid = [x for x in (resp.get('data') or []) if isinstance(x, dict) and _sl._num(x.get('strike_price')) is not None]
+    rows = [x for x in valid if float(x.get('strike_price')) in kf]
+    if not rows and valid and kf:
+        # no listed row in the window: keep the rows of the nearest listed strike so the retained record still
+        # says "this response had rows for the expiry" (check_contracts) and the replay reaches the planner's own
+        # verdict (CONTRACT_METADATA_UNAVAILABLE for the selected key), exactly as live.
+        mid = sum(kf) / len(kf)
+        near = min({float(x['strike_price']) for x in valid}, key=lambda v: (abs(v - mid), v))
+        rows = [x for x in valid if float(x['strike_price']) == near]
+        r['nearest_row_sentinel'] = True
     r['response'] = {'status': resp.get('status'), 'data': rows}
     r['retained_rows'] = len(rows)
     r['listed_rows'] = len(resp.get('data') or [])
     return r
 
 
-def _trim(records, limit):
-    """Drop oldest chain/snapshot records first; the newest listing and contracts record per (session, expiry)
-    are dropped last, so retained later chains stay replayable."""
-    recs = list(records)
-    while len(recs) > max(0, limit):
-        newest = {}
-        for i, r in enumerate(recs):
-            if r.get('kind') in ('listing', 'contracts'):
-                newest[(r.get('kind'), r.get('session'), r.get('expiry'))] = i
-        keep = set(newest.values())
-        idx = next((i for i, r in enumerate(recs) if i not in keep), None)
-        recs.pop(idx if idx is not None else 0)
-    return recs
+def _rkey(r):
+    """Retention identity: kind, index, expiry, instrument key and ORIGINAL receipt (Codex R1 reply s1)."""
+    return (r.get('kind'), r.get('index'), r.get('expiry'), r.get('instrument_key'), r.get('receipt_ms'))
+
+
+def _merge_contracts(old, new):
+    """Same original response (identical kind/index/expiry/receipt): union of rows by instrument_key.  The receipt,
+    index and expiry are the original ones; nothing received later can enter this record."""
+    rows = {}
+    for x in ((old.get('response') or {}).get('data') or []) + ((new.get('response') or {}).get('data') or []):
+        if isinstance(x, dict):
+            rows.setdefault(x.get('instrument_key'), x)
+    out = dict(old)
+    out['response'] = {'status': (old.get('response') or {}).get('status'),
+                       'data': sorted(rows.values(), key=lambda x: (float(x.get('strike_price') or 0),
+                                                                    str(x.get('instrument_type')), str(x.get('instrument_key'))))}
+    out['retained_rows'] = len(out['response']['data'])
+    out['listed_rows'] = max(int(old.get('listed_rows') or 0), int(new.get('listed_rows') or 0))
+    out['merged_reads'] = int(old.get('merged_reads') or 1) + 1
+    return out
+
+
+def _dep_keys(index, outcome):
+    """Retention identities an outcome's verdict read (from provenance deps, epoch ms)."""
+    d = (outcome or {}).get('deps') or {}
+    fx, ks = outcome.get('fallback_expiry'), []
+    if d.get('listing_receipt_ms') is not None:
+        ks.append(('listing', index, None, None, d['listing_receipt_ms']))
+    if d.get('contracts_receipt_ms') is not None:
+        ks.append(('contracts', index, fx, None, d['contracts_receipt_ms']))
+    if d.get('chain_receipt_ms') is not None:
+        ks.append(('chain', index, fx, None, d['chain_receipt_ms']))
+    if d.get('snapshot_receipt_ms') is not None:
+        ks.append(('snapshot', index, fx, d.get('instrument_key'), d['snapshot_receipt_ms']))
+    return ks
+
+
+def coverage_of(index, outcome, by_key):
+    """REPLAYABLE when every dependency record is retained (with the selected strike in the chain window and the
+    instrument's metadata row in the contracts record); else INCOMPLETE with named reasons."""
+    d = (outcome or {}).get('deps') or {}
+    missing = []
+    for k in _dep_keys(index, outcome):
+        r = by_key.get(k)
+        if r is None:
+            missing.append(k[0].upper() + '_RECORD_DROPPED')
+            continue
+        if k[0] == 'chain' and d.get('strike') is not None:
+            if d['strike'] not in {_strike_num(s) for s in ((r.get('chain') or {}).get('strikes') or {})}:
+                missing.append('CHAIN_STRIKE_NOT_RETAINED')
+        if k[0] == 'contracts' and d.get('instrument_key') and d.get('contract_row_present', True):
+            if d['instrument_key'] not in {x.get('instrument_key') for x in ((r.get('response') or {}).get('data') or [])}:
+                missing.append('CONTRACT_ROW_NOT_RETAINED')
+    if not d:
+        missing.append('NO_DEPENDENCIES_RECORDED')
+    return {'status': 'INCOMPLETE' if missing else 'REPLAYABLE', 'reasons': sorted(set(missing))}
+
+
+def _referenced(index, ix_doc):
+    refs = set()
+    for o in ix_doc.get('outcomes') or []:
+        refs.update(_dep_keys(index, o))
+    return refs
+
+
+def _drop_one(index, ix_doc, ledger, reason):
+    """Dependency-aware: oldest unreferenced chain/snapshot, then unreferenced listing/contracts, then the oldest
+    referenced record (its outcomes become INCOMPLETE).  Returns False when nothing is left to drop."""
+    recs = ix_doc['records']
+    if not recs:
+        return False
+    refs = _referenced(index, ix_doc)
+    order = sorted(range(len(recs)), key=lambda i: (recs[i].get('receipt_ms') or 0, i))
+    pick = None
+    for tier in (lambda r: r.get('kind') in ('chain', 'snapshot') and _rkey(r) not in refs,
+                 lambda r: _rkey(r) not in refs,
+                 lambda r: r.get('kind') in ('chain', 'snapshot'),
+                 lambda r: True):
+        pick = next((i for i in order if tier(recs[i])), None)
+        if pick is not None:
+            break
+    r = recs.pop(pick)
+    sess = r.get('session') or '?'
+    e = ledger.setdefault(sess, {})
+    k = '%s:%s%s' % (reason, r.get('kind'), ':REFERENCED' if _rkey(r) in refs else '')
+    e[k] = e.get(k, 0) + 1
+    return True
+
+
+def _trim(records, limit, index=None, ix_doc=None, ledger=None):
+    """Compatibility wrapper (R1 signature): drop records until <= limit, dependency-aware when ix_doc given."""
+    doc = ix_doc if ix_doc is not None else {'records': list(records), 'outcomes': []}
+    doc['records'] = list(records)
+    led = ledger if ledger is not None else {}
+    while len(doc['records']) > max(0, limit) and _drop_one(index, doc, led, 'RECORD_CAP'):
+        pass
+    return doc['records']
 
 
 def _retain_path(sl_dir):
@@ -505,12 +719,36 @@ def read_retained(sl_dir):
         return None
 
 
+def _recompute(index, ix_doc):
+    by_key = {_rkey(r): r for r in ix_doc.get('records') or []}
+    cov = {'REPLAYABLE': 0, 'INCOMPLETE': 0}
+    for o in ix_doc.get('outcomes') or []:
+        o['replay_coverage'] = coverage_of(index, o, by_key)
+        cov[o['replay_coverage']['status']] += 1
+    rows = {}
+    for r in ix_doc.get('records') or []:
+        e = rows.setdefault(r.get('session') or '?', {'chain_rows_excluded': 0, 'contract_rows_excluded': 0})
+        if r.get('kind') == 'chain':
+            w = (r.get('chain') or {}).get('retained_window') or {}
+            e['chain_rows_excluded'] += max(0, int(w.get('listed') or 0) - int(w.get('kept') or 0))
+        elif r.get('kind') == 'contracts':
+            e['contract_rows_excluded'] += max(0, int(r.get('listed_rows') or 0) - int(r.get('retained_rows') or 0))
+    ix_doc['coverage'] = cov
+    ix_doc['window_exclusions'] = rows
+    return cov
+
+
 def retain(sl_dir, session_date, index, records, outcome, stats, spot=None):
-    """Append bounded records + one outcome row for `index`; enforce per-index and total byte caps.
-    Returns {'retained_bytes': file bytes, 'index_bytes': bytes of this index's records}."""
+    """Append bounded records + one outcome row for `index`; enforce sessions / records / outcomes / total bytes.
+
+    R2 (Codex R1 reply s1): identity = (kind, index, expiry, instrument_key, receipt_ms); a re-read of the same
+    contracts response is merged (row union), never discarded; every outcome's replay_coverage is recomputed after
+    the trim; drops are counted per index / session / reason in ix_doc['drops'].
+    Returns {'retained_bytes', 'index_bytes', 'coverage'}."""
     doc = read_retained(sl_dir) or {'schema': EVIDENCE_SCHEMA, 'indices': {}}
     sess = str(session_date)[:10]
     ixd = doc['indices'].setdefault(index, {'records': [], 'outcomes': [], 'stats': {}})
+    ixd.setdefault('drops', {})
     keep = None
     bounded = []
     for r in records:
@@ -523,11 +761,16 @@ def retain(sl_dir, session_date, index, records, outcome, stats, spot=None):
             bounded.append(bound_contracts(r, keep or []))
         elif r.get('kind') in ('listing', 'snapshot'):
             bounded.append(dict(r))
-    # identical listing/contracts already retained (same receipt) are not duplicated
-    seen = {(x.get('kind'), x.get('expiry'), x.get('receipt_ms')) for x in ixd['records']}
+    pos = {_rkey(x): i for i, x in enumerate(ixd['records'])}
     for b in bounded:
-        if (b.get('kind'), b.get('expiry'), b.get('receipt_ms')) not in seen:
-            ixd['records'].append(dict(b, session=sess))
+        b = dict(b, index=b.get('index') or index, session=sess)
+        k = _rkey(b)
+        if k in pos:
+            if b.get('kind') == 'contracts':
+                ixd['records'][pos[k]] = _merge_contracts(ixd['records'][pos[k]], b)
+            continue
+        pos[k] = len(ixd['records'])
+        ixd['records'].append(b)
     ixd['outcomes'].append(dict(outcome or {}, session=sess))
     st = ixd['stats'].setdefault(sess, {'requests': {}, 'response_bytes': {}, 'polls': 0})
     st['polls'] += 1
@@ -535,19 +778,38 @@ def retain(sl_dir, session_date, index, records, outcome, stats, spot=None):
         st['requests'][k] = st['requests'].get(k, 0) + int(v or 0)
     for k, v in ((stats or {}).get('response_bytes') or {}).items():
         st['response_bytes'][k] = st['response_bytes'].get(k, 0) + int(v or 0)
-    # bounds: sessions, records per index, outcomes, total bytes (oldest first)
-    for ix_doc in doc['indices'].values():
+    acq = (stats or {}).get('acquisition') if isinstance((stats or {}).get('acquisition'), dict) else None
+    if acq:
+        st['elapsed_ms_total'] = st.get('elapsed_ms_total', 0) + int(acq.get('elapsed_ms') or 0)
+        st['elapsed_ms_max'] = max(st.get('elapsed_ms_max', 0), int(acq.get('elapsed_ms') or 0))
+        if acq.get('status') == 'DEADLINE_EXHAUSTED':
+            st['deadline_exhausted'] = st.get('deadline_exhausted', 0) + 1
+    # bounds: sessions, outcomes, records per index, total bytes (dependency-aware, oldest first)
+    for ix, ix_doc in doc['indices'].items():
+        ix_doc.setdefault('drops', {})
         sessions = sorted({r.get('session') for r in ix_doc['records'] + ix_doc['outcomes'] if r.get('session')})
         drop = set(sessions[:-RETENTION_SESSIONS]) if len(sessions) > RETENTION_SESSIONS else set()
-        ix_doc['records'] = _trim([r for r in ix_doc['records'] if r.get('session') not in drop], MAX_RECORDS_PER_INDEX)
-        ix_doc['outcomes'] = [r for r in ix_doc['outcomes'] if r.get('session') not in drop][-MAX_RECORDS_PER_INDEX:]
+        if drop:
+            ds = doc.setdefault('dropped_sessions', {}).setdefault(ix, [])
+            ds += sorted(x for x in drop if x not in ds)
+            del ds[:-16]
+        ix_doc['records'] = [r for r in ix_doc['records'] if r.get('session') not in drop]
+        ix_doc['outcomes'] = [r for r in ix_doc['outcomes'] if r.get('session') not in drop]
         ix_doc['stats'] = {s: v for s, v in ix_doc['stats'].items() if s not in drop}
+        ix_doc['drops'] = {s: v for s, v in ix_doc['drops'].items() if s not in drop}
+        while len(ix_doc['outcomes']) > MAX_OUTCOMES_PER_INDEX:
+            o = ix_doc['outcomes'].pop(0)
+            e = ix_doc['drops'].setdefault(o.get('session') or '?', {})
+            e['OUTCOME_CAP:outcome'] = e.get('OUTCOME_CAP:outcome', 0) + 1
+        while len(ix_doc['records']) > MAX_RECORDS_PER_INDEX and _drop_one(ix, ix_doc, ix_doc['drops'], 'RECORD_CAP'):
+            pass
+        _recompute(ix, ix_doc)
     raw = json.dumps(doc, separators=(',', ':'), sort_keys=True)
     while len(raw.encode('utf-8')) > MAX_RETAINED_BYTES:
-        biggest = max(doc['indices'].values(), key=lambda x: len(json.dumps(x['records'])))
-        if not biggest['records']:
+        ix, biggest = max(doc['indices'].items(), key=lambda kv: len(json.dumps(kv[1]['records'])))
+        if not _drop_one(ix, biggest, biggest['drops'], 'BYTE_CAP'):
             break
-        biggest['records'] = _trim(biggest['records'], len(biggest['records']) - 1)
+        _recompute(ix, biggest)
         raw = json.dumps(doc, separators=(',', ':'), sort_keys=True)
     os.makedirs(os.path.dirname(_retain_path(sl_dir)), exist_ok=True)
     tmp = _retain_path(sl_dir) + '.tmp'
@@ -555,15 +817,73 @@ def retain(sl_dir, session_date, index, records, outcome, stats, spot=None):
         f.write(raw)
     os.replace(tmp, _retain_path(sl_dir))
     ix_bytes = len(json.dumps(doc['indices'].get(index, {}), separators=(',', ':'), sort_keys=True).encode('utf-8'))
-    return {'retained_bytes': len(raw.encode('utf-8')), 'index_bytes': ix_bytes}
+    return {'retained_bytes': len(raw.encode('utf-8')), 'index_bytes': ix_bytes,
+            'coverage': dict((doc['indices'].get(index) or {}).get('coverage') or {})}
+
+
+def outcome_record(decision_id, plan, cutoff_ms, spot, decision):
+    """The retained outcome row: verdict, contract identity, dependencies (ms) and the minimal replay inputs."""
+    efb = (plan or {}).get('expiry_fallback') or {}
+    dr = ((decision or {}).get('direction') or {}) if isinstance(decision, dict) else {}
+    return {'decision_id': decision_id, 'cutoff': efb.get('selection_cutoff'), 'cutoff_ms': cutoff_ms,
+            'status': efb.get('status'), 'reason': efb.get('reason'), 'action': efb.get('action'),
+            'trade_expiry': efb.get('trade_expiry'), 'trade_expiry_meaning': WHY_EXP_MEANING,
+            'fallback_expiry': efb.get('fallback_expiry'), 'contract_expiry': (plan.get('contract') or {}).get('expiry')
+            if efb.get('status') == STATUS_APPLIED else None,
+            'instrument_key': plan.get('instrument_key'), 'strike': plan.get('strike'), 'spot': spot,
+            'direction': {'value': dr.get('value'), 'er': dr.get('er')},
+            'planning_capital_source': efb.get('planning_capital_source'),
+            'deps': dict(efb.get('deps') or {}),
+            'planner_status': plan.get('status'), 'planner_reasons': list(plan.get('reasons') or [])[:12]}
 
 
 def summary(sl_dir):
-    """Per-index, per-session request counts / response bytes / retained bytes (bounded diagnostic)."""
+    """Per-index, per-session request counts / response bytes / elapsed / retained bytes, replay coverage and
+    drops (bounded diagnostic)."""
     doc = read_retained(sl_dir) or {'indices': {}}
     out = {}
     for ix, d in doc['indices'].items():
         out[ix] = {'stats': d.get('stats'), 'records': len(d.get('records') or []),
-                   'outcomes': len(d.get('outcomes') or []),
+                   'outcomes': len(d.get('outcomes') or []), 'coverage': d.get('coverage'),
+                   'drops': d.get('drops'), 'window_exclusions': d.get('window_exclusions'),
                    'retained_bytes': len(json.dumps(d, separators=(',', ':'), sort_keys=True).encode('utf-8'))}
+    if doc.get('dropped_sessions'):
+        out['_dropped_sessions'] = doc['dropped_sessions']
     return out
+
+
+def export_part(sl_dir, session, read_cap):
+    """(status, part|None) for session_evidence_v1: None when the retention directory does not exist (a build that
+    never retained exports exactly as before).  The part holds the selected IST session's records, outcomes,
+    coverage, stats and drops for each index (NF and BNF separate)."""
+    base = os.path.join(sl_dir, RETAIN_DIR)
+    if not os.path.isdir(base):
+        return None
+    path = _retain_path(sl_dir)
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        return 'MISSING', None
+    if size > read_cap:
+        return 'OVER_CAP', {'schema': EVIDENCE_SCHEMA, 'session_date': session, 'file_bytes': size}
+    doc = read_retained(sl_dir)
+    if doc is None:
+        return 'UNREADABLE', None
+    part = {'schema': EVIDENCE_SCHEMA, 'session_date': session, 'fallback_id': FALLBACK_ID,
+            'labels': {'trade_expiry': WHY_EXP_MEANING, 'why_exp': WHY_EXP_MEANING,
+                       'contract_expiry': 'fallback contract expiry (plan contract.expiry)',
+                       'chain_max_age': '%ss %s' % (CHAIN_MAX_AGE_S, CHAIN_MAX_AGE_STATUS),
+                       'data': 'phone-retained evidence (device receipt clocks); exchange event clock UNAVAILABLE'},
+            'indices': {}}
+    for ix, d in sorted((doc.get('indices') or {}).items()):
+        part['indices'][ix] = {
+            'records': [r for r in d.get('records') or [] if r.get('session') == session],
+            'outcomes': [o for o in d.get('outcomes') or [] if o.get('session') == session],
+            'coverage_session': {s: sum(1 for o in d.get('outcomes') or [] if o.get('session') == session
+                                        and (o.get('replay_coverage') or {}).get('status') == s)
+                                 for s in ('REPLAYABLE', 'INCOMPLETE')},
+            'stats': (d.get('stats') or {}).get(session),
+            'drops': (d.get('drops') or {}).get(session) or {},
+            'window_exclusions': (d.get('window_exclusions') or {}).get(session) or {}}
+    part['dropped_sessions'] = doc.get('dropped_sessions') or {}
+    return 'PRESENT', part

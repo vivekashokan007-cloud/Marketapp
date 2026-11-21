@@ -444,6 +444,9 @@ def monitor(d, snapshots, observations_by_index, *, clock=None, spots=None):
                            entry_quote=np_.get('entry_quote'),
                            entry_decision_poll_ts=np_.get('entry_decision_poll_ts'),
                            admission_evidence=np_.get('admission_evidence'))
+                if isinstance(np_.get('expiry_fallback'), dict):   # expiry-day fallback: contract expiry explicit
+                    acc.update(contract_expiry=np_.get('expiry'), strike=np_.get('strike'),
+                               option_type=np_.get('option_type'), expiry_fallback=np_['expiry_fallback'])
                 doc.setdefault('closed', []).append(acc)
                 for h in doc.get('history') or []:
                     if h.get('position_id') == np_['position_id']:

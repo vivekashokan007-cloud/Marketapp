@@ -413,7 +413,9 @@ def open_position(plan, entry_ts, entry_direction):
     if isinstance(fb, dict) and fb.get('status') == 'APPLIED':
         # expiry_fallback_v1 provenance (small, bounded); absent on every ordinary-day position
         pos['expiry_fallback'] = {k: fb.get(k) for k in ('id', 'trade_expiry', 'fallback_expiry', 'decision_id',
-                                                        'selection_cutoff', 'chain_clocks', 'contracts_receipt')}
+                                                        'selection_cutoff', 'chain_clocks', 'contracts_receipt',
+                                                        'trade_expiry_meaning', 'planning_capital_source')}
+        pos['expiry_fallback']['contract_expiry'] = pos['expiry']     # unambiguous: the contract's own expiry
     return pos
 
 

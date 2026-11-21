@@ -191,7 +191,8 @@ class MarketWatchService : Service() {
         private const val PY_AGENT_TIMEOUT_MS = 3_000L
         private const val PY_POLL_TIMEOUT_KEY = "poll.brain"
         private const val PY_EXPIRY_FALLBACK_TIMEOUT_KEY = "poll.expiry_fallback"
-        private const val PY_EXPIRY_FALLBACK_TIMEOUT_MS = 15_000L
+        private const val PY_EXPIRY_FALLBACK_RESOLVE_KEY = "poll.expiry_fallback_resolve"
+        private const val PY_EXPIRY_FALLBACK_RESOLVE_TIMEOUT_MS = 2_000L
         private const val PY_SNAPSHOT_TIMEOUT_KEY = "poll.snapshot"
         private const val PY_PAPER_MENU_TIMEOUT_KEY = "poll.paper_menu_capture"
         // Evidence batch 1 (Item B): once-per-session Paper decision-menu capture state.
@@ -2256,9 +2257,10 @@ class MarketWatchService : Service() {
     private fun applyExpiryFallback(brain: com.chaquo.python.PyObject, resultObj: JSONObject, ctxObj: JSONObject, openTradesJson: String) {
         try {
             val needs = ExpiryFallbackAcquirer.needs(resultObj)
-            if (needs.isEmpty()) return
+            if (needs.isEmpty()) { ExpiryFallbackAcquirer.markWait(resultObj, "NOT_ACQUIRED"); return }
             val tok = (prefs.getString("auth_token", "") ?: "").trim()
             if (tok.isEmpty()) {
+                ExpiryFallbackAcquirer.markWait(resultObj, "NO_TOKEN")
                 LogBuffer.add('W', TAG, "EXPIRY_FALLBACK_SKIP: reason=NO_TOKEN")
                 return
             }
@@ -2268,7 +2270,9 @@ class MarketWatchService : Service() {
             val ev = ExpiryFallbackAcquirer.acquire(needs, slDir, sess,
                 { cap -> ManagedReadAdapters.HttpTransport(cap) { tok } }, clocks,
                 { ix, listing, cutoff ->
-                    brain.callAttr("single_leg_expiry_fallback_resolve", ix, sess, listing, cutoff).toString()
+                    PyTimeout.callWithTimeout(PY_EXPIRY_FALLBACK_RESOLVE_KEY, PY_EXPIRY_FALLBACK_RESOLVE_TIMEOUT_MS) {
+                        brain.callAttr("single_leg_expiry_fallback_resolve", ix, sess, listing, cutoff).toString()
+                    } ?: "{\"expiry\":null,\"reason\":\"RESOLVE_TIMEOUT\"}"
                 },
                 { raw, spot -> formatChainForBrain(raw, spot) })
             val minCtx = JSONObject()
@@ -2276,17 +2280,26 @@ class MarketWatchService : Service() {
                     "bnfExpiry", "nfDTE", "bnfDTE", "session_date")) {
                 if (ctxObj.has(k)) minCtx.put(k, ctxObj.get(k))
             }
-            val patchStr = PyTimeout.callWithTimeout(PY_EXPIRY_FALLBACK_TIMEOUT_KEY, PY_EXPIRY_FALLBACK_TIMEOUT_MS) {
+            // planning capital source (Codex R1 reply s3.5); admission separately requires configured capital
+            minCtx.put("capitalSource", if (prefs.contains("capital")) "CONFIGURED" else "APP_DEFAULT")
+            // Python refuses to retain or return plans after this instant (no late publication after a timeout)
+            val applyDeadline = System.currentTimeMillis() + ExpiryFallbackAcquirer.APPLY_TIMEOUT_MS
+            val patchStr = PyTimeout.callWithTimeout(PY_EXPIRY_FALLBACK_TIMEOUT_KEY, ExpiryFallbackAcquirer.APPLY_TIMEOUT_MS) {
                 brain.callAttr("single_leg_expiry_fallback_apply", slDir.absolutePath, resultObj.toString(),
-                    minCtx.toString(), ev.toString(), null, openTradesJson).toString()
+                    minCtx.toString(), ev.toString(), null, openTradesJson, applyDeadline).toString()
             } ?: run {
+                ExpiryFallbackAcquirer.markWait(resultObj, "APPLY_TIMEOUT")
                 LogBuffer.add('W', TAG, "EXPIRY_FALLBACK_FAIL: reason=PY_TIMEOUT")
                 return
             }
             val patch = JSONObject(patchStr)
             val n = ExpiryFallbackAcquirer.applyPatch(resultObj, patch)
+            if (patch.has("error")) ExpiryFallbackAcquirer.markWait(resultObj,
+                if (patch.optString("error") == "APPLY_DEADLINE_EXCEEDED") "APPLY_DEADLINE_EXCEEDED" else "APPLY_ERROR")
+            else ExpiryFallbackAcquirer.markWait(resultObj, "NOT_ACQUIRED")   // a skipped index never stays pending
             LogBuffer.add('I', TAG, "EXPIRY_FALLBACK: applied=$n ${ExpiryFallbackAcquirer.logLine(ev, patch)}")
         } catch (e: Exception) {
+            ExpiryFallbackAcquirer.markWait(resultObj, "APPLY_ERROR")
             LogBuffer.add('W', TAG, "EXPIRY_FALLBACK_FAIL: ${e.javaClass.simpleName}")
         }
     }
@@ -2989,7 +3002,11 @@ class MarketWatchService : Service() {
                     .put("brain_result_duration_ms", brainAnalyzeDurationMs)
                 // expiry_fallback_v1: own-expiry-day Paper BUY -> acquire the later-expiry evidence and re-plan
                 // BEFORE the persist delta is detached and anything is published (never on a refresh).
+                // R2: a refresh never acquires; a pending fallback plan is withdrawn with an explicit WAIT so a
+                // displayed fallback proposal cannot be tapped against a refreshed decision (stale tap rejected by
+                // admission's decision/instrument probe; the next qualifying poll re-plans from fresh evidence).
                 if (!isRefresh) applyExpiryFallback(brain, resultObj, ctxObj, openTradesJson)
+                else ExpiryFallbackAcquirer.markWait(resultObj, "REFRESH_NOT_ACQUIRED")
                 // R5 s2: authority state delta leaves the result; persisted by the serialized IO worker below
                 val iaPersist = try { IndexAuthorityContext.takePersist(resultObj) } catch (e: Exception) { null }
                 // Evidence batch 1 (Item B): detach the menu before anything else reads, caches,

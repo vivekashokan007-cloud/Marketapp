@@ -1,4 +1,4 @@
-"""expiry_fallback_v1 (REVIEW DRAFT r1): expiry-day Paper-BUY fallback.  SYNTHETIC fixtures and deterministic
+"""expiry_fallback_v1 (REVIEW DRAFT r1, fixtures updated for r2): expiry-day Paper-BUY fallback.  SYNTHETIC fixtures and deterministic
 clocks only (no network, no phone observation).  Covers: quote after cutoff (Codex finding 1), BNF monthly
 through the fallback path (Codex finding 2), stale/missing evidence, wrong index/instrument, holiday-shifted
 expiry, unchanged sell and ordinary-day behaviour, low capital / occupied exposure, and the integration path
@@ -61,6 +61,8 @@ class Sc:
                     'decision_id': 'idx1_fb_' + ix, 'decision_poll_ts': (self.T - timedelta(seconds=20)).isoformat(),
                     'analysis_ts': self.T.isoformat(), 'session_date': session}
         self.chain = stamped_chain(ix, fallback) if fallback else None
+        # R2: Upstox listing rows carry `weekly`; BNF monthly identity needs weekly == false for the monthly expiry
+        self.weekly = {e: (e != fallback) for e in self.listed}
 
     def base(self, enabled=True, paper_mode=True, **kw):
         tchain = stamped_chain(self.ix, self.trade)
@@ -80,7 +82,7 @@ class Sc:
                 snapshot=True, listing_ix=None, chain_ix=None, contracts_underlying=None):
         T = self.T
         c = chain or self.chain
-        recs = [{'kind': 'listing', 'index': listing_ix or self.ix, 'expiries': self.listed,
+        recs = [{'kind': 'listing', 'index': listing_ix or self.ix, 'expiries': self.listed, 'weekly': self.weekly,
                  'request_start_ms': ms(T) + int(listing_s * 1000) - 300, 'receipt_ms': ms(T) + int(listing_s * 1000)}]
         if c is not None:
             recs.append({'kind': 'chain', 'index': chain_ix or self.ix, 'expiry': self.fallback, 'chain': c,
@@ -360,7 +362,7 @@ class Retention(unittest.TestCase):
         kept = efb.read_retained(self.d)['indices']['NF']['records']
         self.assertLessEqual(len(kept), efb.MAX_RECORDS_PER_INDEX)
         # trimming drops the oldest chains first: the listing and contracts stay, so later chains still replay
-        self.assertEqual({r['kind'] for r in kept}, {'listing', 'contracts', 'chain'})
+        self.assertTrue({'listing', 'contracts', 'chain'} <= {r['kind'] for r in kept})
         late = sc.run(reader=efb.EvidenceReader.from_doc(efb.read_retained(self.d)),
                       cutoff=chain_rec['receipt_ms'] + efb.MAX_RECORDS_PER_INDEX + 10)
         self.assertEqual(late['expiry_fallback']['status'], efb.STATUS_APPLIED, late.get('reasons'))
@@ -398,6 +400,7 @@ class Integration(unittest.TestCase):
         ch = stamped_chain('NF', self.NEXT, spot)
         ev = {'NF': {'listing': {'index': 'NF', 'session': self.SESSION,
                                  'expiries': [self.SESSION, self.NEXT, '2026-11-23'],
+                                 'weekly': {self.SESSION: True, self.NEXT: True, '2026-11-23': True},
                                  'request_start_ms': ms(at) + 1500, 'receipt_ms': ms(at) + 2000},
                      'contracts': {'index': 'NF', 'expiry': self.NEXT, 'fetched_at_ms': ms(at) + 2500,
                                    'response': TB.contracts_response(ch, 'NF', expiry=self.NEXT, lot=65)},
@@ -481,6 +484,14 @@ class Integration(unittest.TestCase):
         self.assertEqual(m2['events'][0]['event'], 'EXIT', m2)
         closed = sls.read(self.d)['closed'][-1]
         self.assertEqual(closed.get('instrument_key', key), key)
+        # R2 (Codex R1 reply s3.6): the exit record names the contract expiry unambiguously; trade_expiry stays the
+        # ORIGINAL trading expiry (== why.exp)
+        self.assertEqual(closed['contract_expiry'], self.NEXT)
+        self.assertEqual(closed['expiry_fallback']['trade_expiry'], self.SESSION)
+        self.assertEqual(closed['expiry_fallback']['trade_expiry_meaning'], 'ORIGINAL_TRADING_EXPIRY')
+        self.assertEqual(closed['expiry_fallback']['contract_expiry'], self.NEXT)
+        self.assertEqual(p['expiry_fallback']['contract_expiry'], self.NEXT)
+        self.assertEqual(p['expiry_fallback']['trade_expiry_meaning'], 'ORIGINAL_TRADING_EXPIRY')
         self.assertLess(t_exit, ia.parse_ts(self.NEXT + 'T15:30:00+05:30'))
 
     def test_decision_changed_between_analysis_and_apply_is_skipped(self):

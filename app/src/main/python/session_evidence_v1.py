@@ -19,6 +19,10 @@ Contract (Claude brief PM1-5 as corrected by Codex PM1 s6):
     wrote one exports exactly as before), re-filtered through an allow-list (no free numbers, token-like strings
     redacted), summarised per index (NF and BNF separately), and attached AFTER the released parts with staged
     degradation (full -> no RENDER -> summary -> OMITTED_FOR_CAP -> absent) so it never truncates a released part.
+  * OPTIONAL (Codex R1 reply 21 Nov 2026, s2): single_leg_v1/expiry_fallback_v1/evidence.json (expiry-day Paper-BUY
+    fallback retention): the selected session's records / outcomes / replay coverage / stats / drops per index,
+    attached LAST (after C1 and the trace) with staged degradation (full -> no chain records -> outcomes only ->
+    counts only -> OMITTED_FOR_CAP -> absent); absent directory = no part; unreadable / oversized = explicit status.
 """
 from __future__ import annotations
 
@@ -183,6 +187,7 @@ def _single_leg(files_dir, session):
 
 # ── Codex reply 20 Nov 2026: optional single-leg Trade trace (mr.single_leg_trace.v1) ──────────────────────────
 TRACE_DIR = 'single_leg_trace_v1'
+EXPIRY_FALLBACK_READ_CAP = 1536 * 1024     # device retention cap is 1 MiB (expiry_fallback_v1.MAX_RETAINED_BYTES)
 TRACE_READ_CAP = 512 * 1024
 TRACE_KINDS = ('CONFIG', 'RENDER', 'TAP', 'REFUSED', 'SUBMITTED', 'OUTCOME', 'RECOVERY_STARTED', 'RECOVERY_BRIDGE_WAIT',
                'RECOVERY_OUTCOME', 'N_SUBMIT', 'N_QUOTE_STARTED', 'N_OUTCOME')
@@ -547,4 +552,69 @@ def build(files_dir, session_date, closed_trades_json=None, meta=None, versions=
             else:
                 entries.pop('single_leg_trace', None)
                 raw = assemble()
+    # Expiry-day Paper-BUY fallback evidence (expiry_fallback_v1, Codex R1 reply s2), attached LAST so it can never
+    # displace a released part, C1 or the single-leg trace: full -> without chain records -> outcomes only ->
+    # counts only -> a bounded OMITTED_FOR_CAP stub.  Present ONLY when single_leg_v1/expiry_fallback_v1/ exists.
+    # Absent / unreadable / oversized files give an explicit status and never touch any other part.
+    try:
+        import expiry_fallback_v1 as _efb
+        fb = _efb.export_part(os.path.join(files_dir, 'single_leg_v1'), sess, EXPIRY_FALLBACK_READ_CAP)
+    except Exception as exc:
+        fb = ('UNREADABLE', None)
+    if fb is not None:
+        fst, fpart = fb
+        base_parts, base_entries = dict(parts), dict(entries)
+        if fst != 'PRESENT' or not isinstance(fpart, dict):
+            entries['expiry_fallback'] = _part_entry('UNREADABLE' if fst == 'OVER_CAP' else fst, None,
+                                                     {'reason': fst, 'file_bytes': (fpart or {}).get('file_bytes')})
+            cand = assemble()
+            if len(cand) <= MAX_BUNDLE_BYTES:
+                raw = cand
+            else:
+                entries.pop('expiry_fallback', None)
+                raw = assemble()
+        else:
+            def _ix_map(fn):
+                return dict(fpart, indices={ix: fn(d) for ix, d in fpart['indices'].items()})
+
+            def _drop_report(obj):
+                rep = {}
+                for ix, d in (obj.get('indices') or {}).items():
+                    full = fpart['indices'][ix]
+                    rep[ix] = {'records_retained': len(full.get('records') or []),
+                               'records_exported': len(d.get('records') or []),
+                               'chain_records_omitted_for_cap': sum(1 for r in full.get('records') or []
+                                                                    if r.get('kind') == 'chain')
+                               - sum(1 for r in d.get('records') or [] if r.get('kind') == 'chain'),
+                               'outcomes_retained': len(full.get('outcomes') or []),
+                               'outcomes_exported': len(d.get('outcomes') or []),
+                               'device_drops': full.get('drops') or {},
+                               'window_exclusions': full.get('window_exclusions') or {},
+                               'coverage_session': full.get('coverage_session')}
+                return rep
+            stages = [('PRESENT', fpart, None),
+                      ('TRUNCATED', _ix_map(lambda d: dict(d, records=[r for r in d['records'] if r.get('kind') != 'chain'])),
+                       {'fallback_level': 'no_chain', 'reduced_for_cap': True}),
+                      ('TRUNCATED', _ix_map(lambda d: dict(d, records=[])),
+                       {'fallback_level': 'outcomes_only', 'reduced_for_cap': True}),
+                      ('TRUNCATED', _ix_map(lambda d: {k: v for k, v in d.items() if k not in ('records', 'outcomes')}),
+                       {'fallback_level': 'counts_only', 'reduced_for_cap': True})]
+            attached = False
+            for est, obj, extra in stages:
+                parts['expiry_fallback'] = obj
+                entries['expiry_fallback'] = _part_entry(est, obj, dict(extra or {}, drops=_drop_report(obj)))
+                cand = assemble()
+                if len(cand) <= MAX_BUNDLE_BYTES:
+                    raw, attached = cand, True
+                    break
+            if not attached:
+                parts.clear(); parts.update(base_parts)
+                entries.clear(); entries.update(base_entries)
+                entries['expiry_fallback'] = _part_entry('OMITTED_FOR_CAP', None)
+                cand = assemble()
+                if len(cand) <= MAX_BUNDLE_BYTES:
+                    raw = cand
+                else:
+                    entries.pop('expiry_fallback', None)
+                    raw = assemble()
     return {'manifest': man, 'parts': parts}, raw

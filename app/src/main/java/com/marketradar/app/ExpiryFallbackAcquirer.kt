@@ -4,9 +4,14 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.net.URLEncoder
+import java.util.concurrent.Callable
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 
 /**
- * Expiry-day Paper-BUY fallback (expiry_fallback_v1, REVIEW DRAFT r1): native acquisition of the evidence the
+ * Expiry-day Paper-BUY fallback (expiry_fallback_v1, REVIEW DRAFT r2): native acquisition of the evidence the
  * Python planner asked for, separate from the frozen direction scale (no `*ScaleChain` key, no
  * `scale_next_expiry_*` pref, no DirectionScaleNeed state is read or written here).
  *
@@ -21,6 +26,14 @@ import java.net.URLEncoder
  *   4. the chain for that expiry: GET /v2/option/chain, formatted by the unchanged OptionChainBrainFormatter
  *      and stamped with the requested expiry/underlying.
  * Read-only broker calls; never an order. Every request is counted per index (requests and response bytes).
+ *
+ * R2 (Codex R1 reply s4) total acquisition deadline: all requests for BOTH indices share ACQUISITION_BUDGET_MS of
+ * monotonic time; each index may use at most (remaining / indices left). Every request runs on a daemon worker
+ * with a timeout equal to the remaining budget; on expiry the request is abandoned (its late result is discarded,
+ * nothing is cached from it) and the index is marked DEADLINE_EXHAUSTED, which Python turns into an explicit
+ * WAIT (ACQUISITION_DEADLINE_EXHAUSTED) so the poll still finishes and publishes. Elapsed ms, requests and bytes
+ * are recorded per index. The budget value is a DEVELOPMENT choice; phone latency is UNPROVEN.
+ * Listing rows' `weekly` flags are kept per expiry (true / false / "MIXED") for the BNF monthly identity check.
  */
 object ExpiryFallbackAcquirer {
     const val DIR = "expiry_fallback_v1"
@@ -32,6 +45,48 @@ object ExpiryFallbackAcquirer {
     const val CHAIN_MAX_FETCHES_PER_SESSION = 80             // per index; an expiry-day session has <= ~75 polls
     const val CHAIN_COUNT_FILE = "chain_counts.json"
     const val STATUS_REQUIRED = "EVIDENCE_REQUIRED"
+    const val ACQUISITION_BUDGET_MS = 8_000L                 // both indices, all requests (development choice)
+    const val MIN_STEP_MS = 250L                             // never start a request with less than this left
+    const val APPLY_TIMEOUT_MS = 4_000L                      // Python apply; poll worst case ~= budget + apply
+    const val ACQ_COMPLETE = "COMPLETE"
+    const val ACQ_DEADLINE = "DEADLINE_EXHAUSTED"
+    const val CODE_TIMED_OUT = -2
+    const val CODE_REFUSED = -3
+    private val worker: ExecutorService = Executors.newCachedThreadPool { r ->
+        Thread(r, "expiry-fallback-io").apply { isDaemon = true }
+    }
+
+    /** Shared monotonic budget for one acquisition (both indices). */
+    class Deadline(val budgetMs: Long, private val monoMs: () -> Long) {
+        private val start = monoMs()
+        @Volatile var exhausted = false
+        fun elapsed(): Long = monoMs() - start
+        fun remaining(): Long = budgetMs - elapsed()
+    }
+
+    /**
+     * Runs each call with a timeout = min(remaining total, index cap). A timed-out call returns
+     * Response(CODE_TIMED_OUT) (request issued, counted); a call refused for lack of budget returns
+     * Response(CODE_REFUSED) (never issued, not counted). Both mark the deadline; an abandoned call's late result
+     * is never returned or counted.
+     */
+    class DeadlineTransport(private val inner: ManagedReadAdapters.Transport, private val deadline: Deadline,
+                            private val indexCapEndMs: Long) : ManagedReadAdapters.Transport {
+        override fun call(method: String, url: String, body: String?): ManagedReadAdapters.Response {
+            val left = minOf(deadline.remaining(), indexCapEndMs - deadline.elapsed())
+            if (left < MIN_STEP_MS) { deadline.exhausted = true; return ManagedReadAdapters.Response(CODE_REFUSED, null) }
+            val f = worker.submit(Callable { inner.call(method, url, body) })
+            return try {
+                f.get(left, TimeUnit.MILLISECONDS)
+            } catch (e: TimeoutException) {
+                f.cancel(true); deadline.exhausted = true; ManagedReadAdapters.Response(CODE_TIMED_OUT, null)
+            } catch (e: Exception) {
+                val c = e.cause
+                if (c is RuntimeException) throw c
+                ManagedReadAdapters.Response(-1, null)
+            }
+        }
+    }
     private const val BASE = "https://api.upstox.com"
 
     data class Need(val index: String, val decisionId: String, val tradeExpiry: String, val spot: Double)
@@ -40,16 +95,22 @@ object ExpiryFallbackAcquirer {
     class Stats {
         val requests = linkedMapOf("listing" to 0, "contracts" to 0, "chain" to 0)
         val bytes = linkedMapOf("listing" to 0L, "contracts" to 0L, "chain" to 0L)
+        var status = ACQ_COMPLETE
+        var elapsedMs = 0L
+        var budgetMs = 0L
         fun toJson(): JSONObject = JSONObject().put("requests", JSONObject(requests as Map<*, *>))
             .put("response_bytes", JSONObject(bytes as Map<*, *>))
+            .put("acquisition", JSONObject().put("status", status).put("elapsed_ms", elapsedMs)
+                .put("budget_ms", budgetMs).put("requests", requests.values.sum()).put("bytes", bytes.values.sum()))
     }
 
     /** Counts every call made through it under one label. */
     class CountingTransport(private val inner: ManagedReadAdapters.Transport, private val stats: Stats,
                             private val label: String) : ManagedReadAdapters.Transport {
         override fun call(method: String, url: String, body: String?): ManagedReadAdapters.Response {
-            stats.requests[label] = (stats.requests[label] ?: 0) + 1
             val r = inner.call(method, url, body)
+            if (r.code == CODE_REFUSED) return r
+            stats.requests[label] = (stats.requests[label] ?: 0) + 1
             stats.bytes[label] = (stats.bytes[label] ?: 0L) + (r.body?.toByteArray(Charsets.UTF_8)?.size ?: 0)
             return r
         }
@@ -112,15 +173,25 @@ object ExpiryFallbackAcquirer {
         val rows = parsed?.takeIf { it.optString("status") == "success" }?.optJSONArray("data")
         if (rows != null) {
             val set = sortedSetOf<String>()
+            val weekly = JSONObject()
             var foreign = 0
             for (i in 0 until rows.length()) {
                 val row = rows.optJSONObject(i) ?: continue
                 if (row.optString("underlying_key") != underlying) { foreign++; continue }
                 val e = row.optString("expiry", "")
-                if (e.length >= 10) set.add(e.substring(0, 10))
+                if (e.length < 10) continue
+                val ex = e.substring(0, 10)
+                set.add(ex)
+                // Upstox `weekly` boolean per row; absent -> not recorded (Python then cannot verify monthly identity)
+                val w: Any? = if (row.has("weekly") && row.opt("weekly") is Boolean) row.getBoolean("weekly") else null
+                if (w != null) {
+                    val prev = weekly.opt(ex)
+                    weekly.put(ex, if (prev == null || prev == w) w else "MIXED")
+                } else if (weekly.has(ex)) weekly.put(ex, "MIXED")
             }
             if (set.isNotEmpty()) {
                 entry.put("index", index).put("session", session).put("expiries", JSONArray(set.toList()))
+                    .put("weekly", weekly)
                     .put("request_start_ms", start).put("receipt_ms", receipt).put("rows", rows.length())
                     .put("foreign_rows", foreign).put("source", "upstox_v2_option_contract_listing")
             }
@@ -169,34 +240,75 @@ object ExpiryFallbackAcquirer {
      */
     fun acquire(needs: List<Need>, slDir: File, session: String,
                 transportFor: (Int) -> ManagedReadAdapters.Transport, clocks: ManagedReadAdapters.Clocks,
-                resolve: (String, String, Long) -> String, format: (JSONObject, Double) -> JSONObject?): JSONObject {
+                resolve: (String, String, Long) -> String, format: (JSONObject, Double) -> JSONObject?,
+                budgetMs: Long = ACQUISITION_BUDGET_MS): JSONObject {
         val dir = File(slDir, DIR)
         val out = JSONObject()
-        for (n in needs) {
+        val deadline = Deadline(budgetMs, clocks.monoMs)
+        needs.forEachIndexed { i, n ->
             val stats = Stats()
+            stats.budgetMs = budgetMs
             val e = JSONObject()
-            val li = listing(dir, n.index, session, CountingTransport(transportFor(LISTING_MAX_BODY_BYTES), stats, "listing"), clocks)
-            if (li != null) {
+            val t0 = deadline.elapsed()
+            val capEnd = t0 + maxOf(0L, deadline.remaining()) / (needs.size - i)
+            fun tr(cap: Int, label: String): ManagedReadAdapters.Transport =
+                CountingTransport(DeadlineTransport(transportFor(cap), deadline, capEnd), stats, label)
+            fun leftOk(): Boolean = minOf(deadline.remaining(), capEnd - deadline.elapsed()) >= MIN_STEP_MS
+            val before = deadline.exhausted
+            deadline.exhausted = false
+            if (!leftOk()) deadline.exhausted = true
+            val li = if (deadline.exhausted) null else listing(dir, n.index, session, tr(LISTING_MAX_BODY_BYTES, "listing"), clocks)
+            if (li != null && !deadline.exhausted) {
                 e.put("listing", li)
                 val res = try { JSONObject(resolve(n.index, li.toString(), clocks.wallMs())) } catch (x: Exception) { JSONObject() }
                 e.put("resolution", res)
                 val fx = res.optString("expiry", "")
                 if (fx.length == 10 && !res.isNull("expiry")) {
-                    ManagedReadAdapters.ensureContracts(dir, n.index, fx, session,
-                        CountingTransport(transportFor(ManagedReadAdapters.MAX_BODY_BYTES), stats, "contracts"), clocks)?.let { c ->
-                        e.put("contracts", JSONObject().put("index", n.index).put("expiry", fx)
-                            .put("response", c.getJSONObject("response")).put("fetched_at_ms", c.optLong("fetched_at_ms")))
+                    if (!leftOk()) deadline.exhausted = true
+                    if (!deadline.exhausted) {
+                        ManagedReadAdapters.ensureContracts(dir, n.index, fx, session,
+                            tr(ManagedReadAdapters.MAX_BODY_BYTES, "contracts"), clocks)?.let { c ->
+                            e.put("contracts", JSONObject().put("index", n.index).put("expiry", fx)
+                                .put("response", c.getJSONObject("response")).put("fetched_at_ms", c.optLong("fetched_at_ms")))
+                        }
                     }
-                    if (e.has("contracts") && chainBudgetOk(dir, n.index, session)) {
-                        chain(n.index, fx, n.spot, CountingTransport(transportFor(CHAIN_MAX_BODY_BYTES), stats, "chain"),
-                            clocks, format)?.let { e.put("chain", it) }
+                    if (!leftOk()) deadline.exhausted = true
+                    if (e.has("contracts") && !deadline.exhausted && chainBudgetOk(dir, n.index, session)) {
+                        chain(n.index, fx, n.spot, tr(CHAIN_MAX_BODY_BYTES, "chain"), clocks, format)?.let { e.put("chain", it) }
                     }
                 }
             }
+            if (deadline.exhausted) stats.status = ACQ_DEADLINE
+            deadline.exhausted = before || deadline.exhausted
+            stats.elapsedMs = deadline.elapsed() - t0
             e.put("stats", stats.toJson())
             out.put(n.index, e)
         }
         return out
+    }
+
+    /**
+     * Explicit WAIT for every plan still at EVIDENCE_REQUIRED (no acquisition / no usable apply this poll:
+     * refresh, missing token, apply timeout or error, deadline). Mirrors expiry_fallback_v1.withdraw: reasons =
+     * base reasons + "EXPIRY_FALLBACK_WAIT:<code>", status BLOCKED, admit false. APPLIED or WAIT plans are
+     * untouched, so an older decision is never resurrected. Returns the number of plans withdrawn.
+     */
+    fun markWait(result: JSONObject, reason: String): Int {
+        val sl = result.optJSONObject("single_leg_by_index") ?: return 0
+        var n = 0
+        for (ix in listOf("NF", "BNF")) {
+            val p = sl.optJSONObject(ix) ?: continue
+            val fb = p.optJSONObject("expiry_fallback") ?: continue
+            if (fb.optString("status") != STATUS_REQUIRED) continue
+            val base = fb.optJSONArray("base_reasons") ?: JSONArray()
+            val reasons = JSONArray()
+            for (i in 0 until base.length()) reasons.put(base.get(i))
+            reasons.put("EXPIRY_FALLBACK_WAIT:$reason")
+            fb.put("status", "WAIT").put("reason", reason)
+            p.put("reasons", reasons).put("admit", false).put("status", "BLOCKED")
+            n++
+        }
+        return n
     }
 
     /** Apply the Python patch to the result BEFORE publication: replacement plans and matching why records. */
@@ -221,7 +333,9 @@ object ExpiryFallbackAcquirer {
             val ret = patch.optJSONObject("retention")?.optJSONObject(ix)
             parts.add("$ix status=${fb?.optString("status")} reason=${fb?.optString("reason")} " +
                 "exp=${fb?.optString("fallback_expiry")} req=${st?.optJSONObject("requests")} " +
-                "bytes=${st?.optJSONObject("response_bytes")} retained=${ret?.optLong("index_bytes")}")
+                "bytes=${st?.optJSONObject("response_bytes")} retained=${ret?.optLong("index_bytes")} " +
+                "acq=${st?.optJSONObject("acquisition")?.optString("status")} " +
+                "elapsed_ms=${st?.optJSONObject("acquisition")?.optLong("elapsed_ms")}")
         }
         return parts.joinToString(" | ")
     }

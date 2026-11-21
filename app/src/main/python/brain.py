@@ -28172,12 +28172,16 @@ def single_leg_expiry_fallback_resolve(index, session_date, listing_json, cutoff
 
 
 def single_leg_expiry_fallback_apply(sl_dir, result_json, ctx_json, evidence_json, cutoff_ms=None,
-                                     open_trades_json='[]'):
+                                     open_trades_json='[]', deadline_ms=None):
     """Native acquisition step 3 (before publication): re-plan each index that asked for evidence with the
     UNCHANGED index_single_leg_v1.plan_entry on the acquired later-expiry chain / metadata / snapshots, judged
     at the selection cutoff (this call's clock when cutoff_ms is None).  Returns replacement plans, the
     matching bounded why records for decisions written this analysis, and the retention/acquisition counts.
-    Exposure, history and snapshots are read from the durable store exactly as analysis reads them."""
+    Exposure, history and snapshots are read from the durable store exactly as analysis reads them.
+    R2: `deadline_ms` (device epoch ms) bounds this call: once passed, nothing is retained and an
+    APPLY_DEADLINE_EXCEEDED error is returned, so the native caller publishes explicit WAITs (no late publish).
+    planning_capital_source: ctx.capitalSource (native: CONFIGURED / APP_DEFAULT) when ctx.capital is supplied,
+    ANALYSIS_DEFAULT when brain._CONST['CAPITAL'] is used; admission still requires configured capital."""
     import time as _time
     import decision_why_v1 as _dw
     import expiry_fallback_v1 as _efb
@@ -28195,7 +28199,14 @@ def single_leg_expiry_fallback_apply(sl_dir, result_json, ctx_json, evidence_jso
         snaps = _sls.read_snapshots(d)
         persist_why = ((res.get('index_authority_persist') or {}).get('delta') or {}).get('why') or {}
         mode = _explicit_execution_mode(ctx)
+        dl = int(deadline_ms) if deadline_ms is not None else None
+        late = (lambda: dl is not None and int(_time.time() * 1000) > dl)
+        if ctx.get('capital') not in (None, ''):
+            cap, cap_src = float(ctx.get('capital')), str(ctx.get('capitalSource') or 'UNSTATED')[:24]
+        else:
+            cap, cap_src = float(_CONST['CAPITAL']), 'ANALYSIS_DEFAULT'
         out = {'cutoff_ms': cutoff, 'single_leg_by_index': {}, 'why': {}, 'retention': {}, 'skipped': {}}
+        pending = []
         for ix in ('NF', 'BNF'):
             if ix not in evn:
                 continue
@@ -28216,25 +28227,25 @@ def single_leg_expiry_fallback_apply(sl_dir, result_json, ctx_json, evidence_jso
                                    reader=_efb.EvidenceReader(recs), open_trades=ot,
                                    single_leg_positions=positions, history=hist or [],
                                    history_supplied=hist is not None,
-                                   capital=float(ctx.get('capital') or _CONST['CAPITAL']),
-                                   max_risk_pct=float(_CONST['MAX_RISK_PCT']), store_snapshots=snaps)
+                                   capital=cap, max_risk_pct=float(_CONST['MAX_RISK_PCT']), store_snapshots=snaps,
+                                   capital_source=cap_src,
+                                   acquisition=((evn[ix] or {}).get('stats') or {}).get('acquisition'))
             p['paper_enabled'] = bool(ctx.get('singleLegPaperEnabled'))
             out['single_leg_by_index'][ix] = p
             did = dec.get('decision_id')
             if did in persist_why:
                 out['why'][did] = _dw.build_bounded(ix, dec, (res.get('candidates_by_index') or {}).get(ix),
                                                     (res.get('managed_policy') or {}).get(ix), p, ctx, mode)
-            efb = p.get('expiry_fallback') or {}
-            outcome = {'decision_id': did, 'cutoff': efb.get('selection_cutoff'), 'status': efb.get('status'),
-                       'reason': efb.get('reason'), 'fallback_expiry': efb.get('fallback_expiry'),
-                       'instrument_key': p.get('instrument_key'), 'strike': p.get('strike'),
-                       'planner_status': p.get('status'), 'planner_reasons': list(p.get('reasons') or [])[:12]}
+            outcome = _efb.outcome_record(did, p, cutoff, spot, dec)
             if isinstance(p.get('entry_snapshot'), dict):          # the snapshot this verdict used (replayable)
                 recs.append({'kind': 'snapshot', 'index': ix, 'expiry': (p.get('contract') or {}).get('expiry'),
                              'instrument_key': p.get('instrument_key'),
                              'receipt_ms': p['entry_snapshot'].get('receipt_ms'), 'snapshot': p['entry_snapshot']})
-            out['retention'][ix] = _efb.retain(d, base.get('session_date'), ix, recs, outcome,
-                                               (evn[ix] or {}).get('stats'), spot)
+            pending.append((ix, base.get('session_date'), recs, outcome, (evn[ix] or {}).get('stats'), spot))
+        if late():                       # no retention write and no plans once the deadline has passed
+            return json.dumps({'error': 'APPLY_DEADLINE_EXCEEDED', 'cutoff_ms': cutoff})
+        for ix, sess_d, recs, outcome, stats, spot in pending:
+            out['retention'][ix] = _efb.retain(d, sess_d, ix, recs, outcome, stats, spot)
         return json.dumps(out)
     except Exception as exc:
         return json.dumps({'error': 'EXPIRY_FALLBACK_APPLY_ERROR:' + type(exc).__name__})

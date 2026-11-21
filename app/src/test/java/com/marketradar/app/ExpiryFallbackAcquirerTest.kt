@@ -11,7 +11,8 @@ import org.junit.Test
 import java.io.File
 import java.nio.file.Files
 
-/** expiry_fallback_v1 native acquisition: SYNTHETIC fixture shapes, fake transport, deterministic clocks. */
+/** expiry_fallback_v1 native acquisition: SYNTHETIC fixture shapes, fake transport, deterministic clocks.
+ *  R2 adds: total acquisition deadline (slow / failed fake transports across NF and BNF), markWait, weekly flags. */
 class ExpiryFallbackAcquirerTest {
     private class Fake(val responses: (String) -> ManagedReadAdapters.Response) : ManagedReadAdapters.Transport {
         val calls = mutableListOf<String>()
@@ -147,5 +148,124 @@ class ExpiryFallbackAcquirerTest {
         assertEquals("idx1_b", r.getJSONObject("single_leg_by_index").getJSONObject("BNF").getString("decision_id"))
         assertEquals(0, ExpiryFallbackAcquirer.applyPatch(r, JSONObject().put("error", "X")))
         assertNotNull(r.optJSONObject("single_leg_by_index"))
+    }
+
+    // ---- R2 (Codex R1 reply s4): total acquisition deadline across NF and BNF -------------------------------
+    private val realClocks = ManagedReadAdapters.Clocks({ System.currentTimeMillis() }, { System.nanoTime() / 1_000_000L })
+
+    private fun result2(): JSONObject {
+        fun dec(did: String, spot: Double) = JSONObject().put("decision_id", did).put("direction", JSONObject().put("inputs",
+            JSONObject().put("spot", JSONObject().put("value", spot))))
+        fun plan(did: String) = JSONObject().put("decision_id", did).put("reasons", JSONArray().put("EXPIRY_DAY_NO_NEXT_CHAIN")
+            .put("EXPIRY_FALLBACK_EVIDENCE_PENDING")).put("status", "BLOCKED").put("admit", false)
+            .put("expiry_fallback", JSONObject().put("status", "EVIDENCE_REQUIRED").put("decision_id", did)
+                .put("trade_expiry", "2026-11-23").put("base_reasons", JSONArray().put("EXPIRY_DAY_NO_NEXT_CHAIN"))
+                .put("base_status", "BLOCKED"))
+        return JSONObject().put("by_index", JSONObject().put("NF", dec("idx1_n", 24010.0)).put("BNF", dec("idx1_b", 52010.0)))
+            .put("single_leg_by_index", JSONObject().put("NF", plan("idx1_n")).put("BNF", plan("idx1_b")))
+    }
+
+    private fun slowFake(slowMs: Long, slowWhen: (String) -> Boolean, log: MutableList<String> = mutableListOf()) =
+        ManagedReadAdapters.Transport { _, url, _ ->
+            log.add(url)
+            if (slowWhen(url)) Thread.sleep(slowMs)
+            fake().call("GET", url, null)
+        }
+
+    private val resolveAny: (String, String, Long) -> String = { ix, _, _ ->
+        JSONObject().put("index", ix).put("expiry", if (ix == "NF") "2026-12-01" else "2026-12-29").toString()
+    }
+
+    private fun acq(o: JSONObject, ix: String) = o.getJSONObject(ix).getJSONObject("stats").getJSONObject("acquisition")
+
+    @Test fun slowNfChainExhaustsItsShareBnfStillAcquiredWithinTotalBudget() {
+        val budget = 1_200L
+        val calls = mutableListOf<String>()
+        val t = slowFake(3_000L, { it.contains("/v2/option/chain?") && it.contains("Nifty+50") }, calls)
+        val t0 = System.nanoTime()
+        val ev = ExpiryFallbackAcquirer.acquire(ExpiryFallbackAcquirer.needs(result2()), tmp(), "2026-11-23", { t },
+            realClocks, resolveAny, fmt, budget)
+        val took = (System.nanoTime() - t0) / 1_000_000L
+        assertTrue("acquire returned in ${took}ms", took < budget + 400)        // the poll finishes
+        assertEquals("DEADLINE_EXHAUSTED", acq(ev, "NF").getString("status"))
+        assertFalse(ev.getJSONObject("NF").has("chain"))                         // nothing late is published
+        assertEquals(1, ev.getJSONObject("NF").getJSONObject("stats").getJSONObject("requests").getInt("chain"))
+        assertEquals("COMPLETE", acq(ev, "BNF").getString("status"))
+        assertTrue(ev.getJSONObject("BNF").has("chain"))
+        for (ix in listOf("NF", "BNF")) {
+            val a = acq(ev, ix)
+            assertEquals(budget, a.getLong("budget_ms"))
+            assertTrue(a.getLong("elapsed_ms") >= 0)
+            assertTrue(a.has("requests") && a.has("bytes"))
+        }
+        assertTrue(acq(ev, "NF").getLong("elapsed_ms") <= budget / 2 + 300)       // NF capped at its share
+    }
+
+    @Test fun slowListingTimesOutAndItsLateResultIsNeverCachedOrCounted() {
+        val d = tmp()
+        val t = slowFake(1_500L, { !it.contains("expiry_date") && it.contains("/v2/option/contract?") })
+        val ev = ExpiryFallbackAcquirer.acquire(ExpiryFallbackAcquirer.needs(result2()), d, "2026-11-23", { t },
+            realClocks, resolveAny, fmt, 600L)
+        for (ix in listOf("NF", "BNF")) {
+            assertEquals("DEADLINE_EXHAUSTED", acq(ev, ix).getString("status"))
+            assertFalse(ev.getJSONObject(ix).has("listing"))
+        }
+        val bytesBefore = ev.getJSONObject("NF").getJSONObject("stats").toString()
+        Thread.sleep(1_800L)                                                     // the abandoned calls finish now
+        val cache = JSONObject(File(File(d, ExpiryFallbackAcquirer.DIR), ExpiryFallbackAcquirer.LISTING_CACHE_FILE).readText())
+        assertFalse(cache.getJSONObject("NF|2026-11-23").has("expiries"))
+        assertEquals(-2, cache.getJSONObject("NF|2026-11-23").getInt("last_code"))
+        assertEquals(bytesBefore, ev.getJSONObject("NF").getJSONObject("stats").toString())
+    }
+
+    @Test fun zeroBudgetIssuesNoRequestForEitherIndex() {
+        val calls = mutableListOf<String>()
+        val t = slowFake(0L, { false }, calls)
+        val ev = ExpiryFallbackAcquirer.acquire(ExpiryFallbackAcquirer.needs(result2()), tmp(), "2026-11-23", { t },
+            realClocks, resolveAny, fmt, 0L)
+        assertTrue(calls.isEmpty())
+        for (ix in listOf("NF", "BNF")) {
+            assertEquals("DEADLINE_EXHAUSTED", acq(ev, ix).getString("status"))
+            assertEquals(0, acq(ev, ix).getInt("requests"))
+        }
+    }
+
+    @Test fun failedTransportIsNotADeadlineAndLeavesNamedGapsForPython() {
+        val t = ManagedReadAdapters.Transport { _, _, _ -> ManagedReadAdapters.Response(503, null) }
+        val ev = ExpiryFallbackAcquirer.acquire(ExpiryFallbackAcquirer.needs(result2()), tmp(), "2026-11-23", { t },
+            realClocks, resolveAny, fmt, 2_000L)
+        for (ix in listOf("NF", "BNF")) {
+            assertEquals("COMPLETE", acq(ev, ix).getString("status"))
+            assertFalse(ev.getJSONObject(ix).has("listing"))
+            assertEquals(1, acq(ev, ix).getInt("requests"))
+        }
+    }
+
+    @Test fun markWaitWithdrawsOnlyPendingPlansAndStopsAcquisition() {
+        val r = result2()
+        r.getJSONObject("single_leg_by_index").getJSONObject("BNF").getJSONObject("expiry_fallback").put("status", "APPLIED")
+        val bnfBefore = r.getJSONObject("single_leg_by_index").getJSONObject("BNF").toString()
+        assertEquals(1, ExpiryFallbackAcquirer.markWait(r, "REFRESH_NOT_ACQUIRED"))
+        val nf = r.getJSONObject("single_leg_by_index").getJSONObject("NF")
+        assertEquals("WAIT", nf.getJSONObject("expiry_fallback").getString("status"))
+        assertEquals("REFRESH_NOT_ACQUIRED", nf.getJSONObject("expiry_fallback").getString("reason"))
+        assertEquals(listOf("EXPIRY_DAY_NO_NEXT_CHAIN", "EXPIRY_FALLBACK_WAIT:REFRESH_NOT_ACQUIRED"),
+            (0 until nf.getJSONArray("reasons").length()).map { nf.getJSONArray("reasons").getString(it) })
+        assertEquals(false, nf.getBoolean("admit")); assertEquals("BLOCKED", nf.getString("status"))
+        assertEquals(bnfBefore, r.getJSONObject("single_leg_by_index").getJSONObject("BNF").toString())  // APPLIED untouched
+        assertTrue(ExpiryFallbackAcquirer.needs(r).isEmpty())                    // a withdrawn plan is never acquired
+        assertEquals(0, ExpiryFallbackAcquirer.markWait(r, "NO_TOKEN"))          // idempotent, no resurrection
+    }
+
+    @Test fun listingKeepsWeeklyFlagsPerExpiry() {
+        val rows = JSONArray()
+        fun row(e: String, w: Any?) = JSONObject().put("expiry", e).put("underlying_key", "NSE_INDEX|Nifty Bank")
+            .also { if (w != null) it.put("weekly", w) }
+        rows.put(row("2026-11-23", false)).put(row("2026-12-29", false)).put(row("2026-12-29", false))
+            .put(row("2027-01-26", true)).put(row("2027-01-26", false)).put(row("2027-02-23", null))
+        val t = Fake { ManagedReadAdapters.Response(200, JSONObject().put("status", "success").put("data", rows).toString()) }
+        val li = ExpiryFallbackAcquirer.listing(File(tmp(), ExpiryFallbackAcquirer.DIR), "BNF", "2026-11-23", t, clocks)!!
+        val w = li.getJSONObject("weekly")
+        assertEquals(false, w.get("2026-12-29")); assertEquals("MIXED", w.get("2027-01-26")); assertFalse(w.has("2027-02-23"))
     }
 }
