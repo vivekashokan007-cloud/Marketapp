@@ -1,0 +1,1390 @@
+{
+ "calendar_days": [
+  {
+   "date": "2026-11-12",
+   "regular_session": true,
+   "weekday": "Thu",
+   "why": null
+  },
+  {
+   "date": "2026-11-13",
+   "regular_session": true,
+   "weekday": "Fri",
+   "why": null
+  },
+  {
+   "date": "2026-11-14",
+   "regular_session": false,
+   "weekday": "Sat",
+   "why": "session 2026-11-14 is a weekend"
+  },
+  {
+   "date": "2026-11-15",
+   "regular_session": false,
+   "weekday": "Sun",
+   "why": "session 2026-11-15 is a weekend"
+  },
+  {
+   "date": "2026-11-16",
+   "regular_session": true,
+   "weekday": "Mon",
+   "why": null
+  },
+  {
+   "date": "2026-11-17",
+   "regular_session": true,
+   "weekday": "Tue",
+   "why": null
+  },
+  {
+   "date": "2026-11-18",
+   "regular_session": true,
+   "weekday": "Wed",
+   "why": null
+  },
+  {
+   "date": "2026-11-19",
+   "regular_session": true,
+   "weekday": "Thu",
+   "why": null
+  },
+  {
+   "date": "2026-11-20",
+   "regular_session": true,
+   "weekday": "Fri",
+   "why": null
+  }
+ ],
+ "exact_contract_coverage": {
+  "2026-11-12|BNF": 323,
+  "2026-11-12|NF": 318,
+  "2026-11-13|BNF": 0,
+  "2026-11-13|NF": 0,
+  "2026-11-16|BNF": 414,
+  "2026-11-16|NF": 414
+ },
+ "files": [
+  {
+   "app_version": null,
+   "basename": "fixture_A_bnf_no_contract_list.json",
+   "build": null,
+   "bytes": 1763840,
+   "export_version": null,
+   "indices": {
+    "BNF": {
+     "distinct_slots": 54,
+     "export_version": "premium_capture_export_v3_verified_and_resolved",
+     "first_slot": "09:20",
+     "is_synthetic": false,
+     "last_slot": "13:45",
+     "pinned_contracts": 0,
+     "planned_opportunities_60": 0,
+     "records": 323,
+     "schedule_state": "INCOMPLETE_COHORT_NOT_RESOLVED",
+     "session_date": "2026-11-12",
+     "slot_envelopes": 54,
+     "slot_manifest_rows": 4,
+     "unusable_by_reason": {},
+     "usable_quotes": 323
+    },
+    "NF": {
+     "distinct_slots": 53,
+     "export_version": "premium_capture_export_v3_verified_and_resolved",
+     "first_slot": "09:20",
+     "is_synthetic": false,
+     "last_slot": "13:40",
+     "pinned_contracts": 6,
+     "planned_opportunities_60": 342,
+     "records": 318,
+     "schedule_state": "VERIFIED",
+     "session_date": "2026-11-12",
+     "slot_envelopes": 53,
+     "slot_manifest_rows": 4,
+     "unusable_by_reason": {},
+     "usable_quotes": 318
+    }
+   },
+   "kind": "SYNTHETIC",
+   "paths": [
+    "/tmp/claude-0/-home-user-Marketapp/268ce485-daff-5c24-9478-cd84813bcb59/scratchpad/r6/fixtures/fixture_A_bnf_no_contract_list.json",
+    "/tmp/claude-0/-home-user-Marketapp/268ce485-daff-5c24-9478-cd84813bcb59/scratchpad/r7/fixtures/fixture_A_bnf_no_contract_list.json"
+   ],
+   "session_claimed": "2026-11-12",
+   "sha256": "08a649fd0437a735fb8f593a37b17c60f9095c2300a641dd5c90f6332c2a119e",
+   "why": "not uploaded; path marks generated output (fixtures)"
+  },
+  {
+   "app_version": null,
+   "basename": "fixture_B_bnf_cohort_removed.json",
+   "build": null,
+   "bytes": 1764798,
+   "export_version": null,
+   "indices": {
+    "BNF": {
+     "distinct_slots": 54,
+     "export_version": "premium_capture_export_v3_verified_and_resolved",
+     "first_slot": "09:20",
+     "is_synthetic": false,
+     "last_slot": "13:45",
+     "pinned_contracts": 0,
+     "planned_opportunities_60": 342,
+     "records": 323,
+     "schedule_state": "VERIFIED",
+     "session_date": "2026-11-12",
+     "slot_envelopes": 54,
+     "slot_manifest_rows": 4,
+     "unusable_by_reason": {},
+     "usable_quotes": 323
+    },
+    "NF": {
+     "distinct_slots": 53,
+     "export_version": "premium_capture_export_v3_verified_and_resolved",
+     "first_slot": "09:20",
+     "is_synthetic": false,
+     "last_slot": "13:40",
+     "pinned_contracts": 6,
+     "planned_opportunities_60": 342,
+     "records": 318,
+     "schedule_state": "VERIFIED",
+     "session_date": "2026-11-12",
+     "slot_envelopes": 53,
+     "slot_manifest_rows": 4,
+     "unusable_by_reason": {},
+     "usable_quotes": 318
+    }
+   },
+   "kind": "SYNTHETIC",
+   "paths": [
+    "/tmp/claude-0/-home-user-Marketapp/268ce485-daff-5c24-9478-cd84813bcb59/scratchpad/r6/fixtures/fixture_B_bnf_cohort_removed.json",
+    "/tmp/claude-0/-home-user-Marketapp/268ce485-daff-5c24-9478-cd84813bcb59/scratchpad/r6/fixtures/fixture_bnf_missing_contracts.json",
+    "/tmp/claude-0/-home-user-Marketapp/268ce485-daff-5c24-9478-cd84813bcb59/scratchpad/r7/fixtures/fixture_B_bnf_cohort_removed.json"
+   ],
+   "session_claimed": "2026-11-12",
+   "sha256": "1dfb5423310e3f1e6c49f2e97e92c4b5379480a1a33129473ee9e8bba2df12a4",
+   "why": "not uploaded; path marks generated output (fixtures)"
+  },
+  {
+   "app_version": null,
+   "basename": "fixture_C_bnf_copies_disagree.json",
+   "build": null,
+   "bytes": 1765756,
+   "export_version": null,
+   "indices": {
+    "BNF": {
+     "distinct_slots": 54,
+     "export_version": "premium_capture_export_v3_verified_and_resolved",
+     "first_slot": "09:20",
+     "is_synthetic": false,
+     "last_slot": "13:45",
+     "pinned_contracts": 6,
+     "planned_opportunities_60": 0,
+     "records": 323,
+     "schedule_state": "INCOMPLETE_COHORT_NOT_RESOLVED",
+     "session_date": "2026-11-12",
+     "slot_envelopes": 54,
+     "slot_manifest_rows": 4,
+     "unusable_by_reason": {},
+     "usable_quotes": 323
+    },
+    "NF": {
+     "distinct_slots": 53,
+     "export_version": "premium_capture_export_v3_verified_and_resolved",
+     "first_slot": "09:20",
+     "is_synthetic": false,
+     "last_slot": "13:40",
+     "pinned_contracts": 6,
+     "planned_opportunities_60": 342,
+     "records": 318,
+     "schedule_state": "VERIFIED",
+     "session_date": "2026-11-12",
+     "slot_envelopes": 53,
+     "slot_manifest_rows": 4,
+     "unusable_by_reason": {},
+     "usable_quotes": 318
+    }
+   },
+   "kind": "SYNTHETIC",
+   "paths": [
+    "/tmp/claude-0/-home-user-Marketapp/268ce485-daff-5c24-9478-cd84813bcb59/scratchpad/r6/fixtures/fixture_C_bnf_copies_disagree.json",
+    "/tmp/claude-0/-home-user-Marketapp/268ce485-daff-5c24-9478-cd84813bcb59/scratchpad/r7/fixtures/fixture_C_bnf_copies_disagree.json"
+   ],
+   "session_claimed": "2026-11-12",
+   "sha256": "4062b6e0c931afa315641083427739f5128069a49c3bc044807e8cde64abf3f6",
+   "why": "not uploaded; path marks generated output (fixtures)"
+  },
+  {
+   "app_version": null,
+   "basename": "fixture_E_undeclared_alpha_first.json",
+   "build": null,
+   "bytes": 1764154,
+   "export_version": null,
+   "indices": {
+    "BNF": {
+     "distinct_slots": 54,
+     "export_version": "premium_capture_export_v3_verified_and_resolved",
+     "first_slot": "09:20",
+     "is_synthetic": false,
+     "last_slot": "13:45",
+     "pinned_contracts": 0,
+     "planned_opportunities_60": 0,
+     "records": 323,
+     "schedule_state": "INCOMPLETE_COHORT_NOT_RESOLVED",
+     "session_date": "2026-11-12",
+     "slot_envelopes": 54,
+     "slot_manifest_rows": 4,
+     "unusable_by_reason": {},
+     "usable_quotes": 323
+    },
+    "NF": {
+     "distinct_slots": 53,
+     "export_version": "premium_capture_export_v3_verified_and_resolved",
+     "first_slot": "09:20",
+     "is_synthetic": false,
+     "last_slot": "13:40",
+     "pinned_contracts": 6,
+     "planned_opportunities_60": 342,
+     "records": 318,
+     "schedule_state": "VERIFIED",
+     "session_date": "2026-11-12",
+     "slot_envelopes": 53,
+     "slot_manifest_rows": 4,
+     "unusable_by_reason": {},
+     "usable_quotes": 318
+    }
+   },
+   "kind": "SYNTHETIC",
+   "paths": [
+    "/tmp/claude-0/-home-user-Marketapp/268ce485-daff-5c24-9478-cd84813bcb59/scratchpad/r7/fixtures/fixture_E_undeclared_alpha_first.json"
+   ],
+   "session_claimed": "2026-11-12",
+   "sha256": "5312b656cf0d46e21635f6df28fe4daa5a3663eb5eedb2f774d71dd772b4aa28",
+   "why": "not uploaded; path marks generated output (fixtures)"
+  },
+  {
+   "app_version": null,
+   "basename": "phone_2026-11-12.json",
+   "build": null,
+   "bytes": 1658253,
+   "export_version": null,
+   "indices": {
+    "BNF": {
+     "distinct_slots": 54,
+     "export_version": "premium_capture_export_v3_verified_and_resolved",
+     "first_slot": "09:20",
+     "is_synthetic": false,
+     "last_slot": "13:45",
+     "pinned_contracts": 6,
+     "planned_opportunities_60": 342,
+     "records": 323,
+     "schedule_state": "VERIFIED",
+     "session_date": "2026-11-12",
+     "slot_envelopes": 54,
+     "slot_manifest_rows": 4,
+     "unusable_by_reason": {},
+     "usable_quotes": 323
+    },
+    "NF": {
+     "distinct_slots": 53,
+     "export_version": "premium_capture_export_v3_verified_and_resolved",
+     "first_slot": "09:20",
+     "is_synthetic": false,
+     "last_slot": "13:40",
+     "pinned_contracts": 6,
+     "planned_opportunities_60": 342,
+     "records": 318,
+     "schedule_state": "VERIFIED",
+     "session_date": "2026-11-12",
+     "slot_envelopes": 53,
+     "slot_manifest_rows": 4,
+     "unusable_by_reason": {},
+     "usable_quotes": 318
+    }
+   },
+   "kind": "CAPTURE",
+   "paths": [
+    "/tmp/claude-0/-home-user-Marketapp/268ce485-daff-5c24-9478-cd84813bcb59/scratchpad/allexp/phone_2026-11-12.json",
+    "/tmp/claude-0/-home-user-Marketapp/268ce485-daff-5c24-9478-cd84813bcb59/scratchpad/nov12/export_2026-11-12.json",
+    "/tmp/claude-0/-home-user-Marketapp/268ce485-daff-5c24-9478-cd84813bcb59/scratchpad/pilot_review/out/phone_export_2026-11-12.json",
+    "/tmp/claude-0/-home-user-Marketapp/268ce485-daff-5c24-9478-cd84813bcb59/scratchpad/rangein/exports/export_2026-11-12.json"
+   ],
+   "session_claimed": "2026-11-12",
+   "sha256": "5f399accefabd0dd3f1f1f3bb829bb71fd6ae56a309dfc92db5ac18e6d3444cb",
+   "why": "content digest is present in the upload channel"
+  },
+  {
+   "app_version": null,
+   "basename": "fixture_D_bnf_section_removed.json",
+   "build": null,
+   "bytes": 1060302,
+   "export_version": null,
+   "indices": {
+    "NF": {
+     "distinct_slots": 53,
+     "export_version": "premium_capture_export_v3_verified_and_resolved",
+     "first_slot": "09:20",
+     "is_synthetic": false,
+     "last_slot": "13:40",
+     "pinned_contracts": 6,
+     "planned_opportunities_60": 342,
+     "records": 318,
+     "schedule_state": "VERIFIED",
+     "session_date": "2026-11-12",
+     "slot_envelopes": 53,
+     "slot_manifest_rows": 4,
+     "unusable_by_reason": {},
+     "usable_quotes": 318
+    }
+   },
+   "kind": "SYNTHETIC",
+   "paths": [
+    "/tmp/claude-0/-home-user-Marketapp/268ce485-daff-5c24-9478-cd84813bcb59/scratchpad/r7/fixtures/fixture_D_bnf_section_removed.json"
+   ],
+   "session_claimed": "2026-11-12",
+   "sha256": "74571ac467b2954e2c7002adb67a9d83d8268ac999562bcf0baa64c3cf4a6a73",
+   "why": "not uploaded; path marks generated output (fixtures)"
+  },
+  {
+   "app_version": null,
+   "basename": "fixture_F_undeclared_omega_first.json",
+   "build": null,
+   "bytes": 1764154,
+   "export_version": null,
+   "indices": {
+    "BNF": {
+     "distinct_slots": 54,
+     "export_version": "premium_capture_export_v3_verified_and_resolved",
+     "first_slot": "09:20",
+     "is_synthetic": false,
+     "last_slot": "13:45",
+     "pinned_contracts": 0,
+     "planned_opportunities_60": 0,
+     "records": 323,
+     "schedule_state": "INCOMPLETE_COHORT_NOT_RESOLVED",
+     "session_date": "2026-11-12",
+     "slot_envelopes": 54,
+     "slot_manifest_rows": 4,
+     "unusable_by_reason": {},
+     "usable_quotes": 323
+    },
+    "NF": {
+     "distinct_slots": 53,
+     "export_version": "premium_capture_export_v3_verified_and_resolved",
+     "first_slot": "09:20",
+     "is_synthetic": false,
+     "last_slot": "13:40",
+     "pinned_contracts": 6,
+     "planned_opportunities_60": 342,
+     "records": 318,
+     "schedule_state": "VERIFIED",
+     "session_date": "2026-11-12",
+     "slot_envelopes": 53,
+     "slot_manifest_rows": 4,
+     "unusable_by_reason": {},
+     "usable_quotes": 318
+    }
+   },
+   "kind": "SYNTHETIC",
+   "paths": [
+    "/tmp/claude-0/-home-user-Marketapp/268ce485-daff-5c24-9478-cd84813bcb59/scratchpad/r7/fixtures/fixture_F_undeclared_omega_first.json"
+   ],
+   "session_claimed": "2026-11-12",
+   "sha256": "c147f919635562717a9ad963cc99563b9716955d3911945dbe0b6f32cc2c0bcb",
+   "why": "not uploaded; path marks generated output (fixtures)"
+  },
+  {
+   "app_version": null,
+   "basename": "phone_2026-11-13.json",
+   "build": null,
+   "bytes": 430596,
+   "export_version": null,
+   "indices": {
+    "BNF": {
+     "distinct_slots": 0,
+     "export_version": null,
+     "first_slot": null,
+     "is_synthetic": false,
+     "last_slot": null,
+     "pinned_contracts": 0,
+     "planned_opportunities_60": 0,
+     "records": 0,
+     "schedule_state": "INCOMPLETE_COHORT_NOT_RESOLVED",
+     "session_date": null,
+     "slot_envelopes": 0,
+     "slot_manifest_rows": 0,
+     "unusable_by_reason": {},
+     "usable_quotes": 0
+    },
+    "NF": {
+     "distinct_slots": 0,
+     "export_version": null,
+     "first_slot": null,
+     "is_synthetic": false,
+     "last_slot": null,
+     "pinned_contracts": 0,
+     "planned_opportunities_60": 0,
+     "records": 0,
+     "schedule_state": "INCOMPLETE_COHORT_NOT_RESOLVED",
+     "session_date": null,
+     "slot_envelopes": 0,
+     "slot_manifest_rows": 0,
+     "unusable_by_reason": {},
+     "usable_quotes": 0
+    }
+   },
+   "kind": "CAPTURE",
+   "paths": [
+    "/tmp/claude-0/-home-user-Marketapp/268ce485-daff-5c24-9478-cd84813bcb59/scratchpad/allexp/phone_2026-11-13.json"
+   ],
+   "session_claimed": "2026-11-13",
+   "sha256": "4b18570f740caf017ebe187332e15f501155444ee048385cd4fc569f8927ab83",
+   "why": "content digest is present in the upload channel"
+  },
+  {
+   "app_version": null,
+   "basename": "export_2026-11-13.json",
+   "build": null,
+   "bytes": 194382,
+   "export_version": null,
+   "indices": {
+    "BNF": {
+     "distinct_slots": 0,
+     "export_version": null,
+     "first_slot": null,
+     "is_synthetic": false,
+     "last_slot": null,
+     "pinned_contracts": 0,
+     "planned_opportunities_60": 0,
+     "records": 0,
+     "schedule_state": "INCOMPLETE_COHORT_NOT_RESOLVED",
+     "session_date": null,
+     "slot_envelopes": 0,
+     "slot_manifest_rows": 0,
+     "unusable_by_reason": {},
+     "usable_quotes": 0
+    },
+    "NF": {
+     "distinct_slots": 0,
+     "export_version": null,
+     "first_slot": null,
+     "is_synthetic": false,
+     "last_slot": null,
+     "pinned_contracts": 0,
+     "planned_opportunities_60": 0,
+     "records": 0,
+     "schedule_state": "INCOMPLETE_COHORT_NOT_RESOLVED",
+     "session_date": null,
+     "slot_envelopes": 0,
+     "slot_manifest_rows": 0,
+     "unusable_by_reason": {},
+     "usable_quotes": 0
+    }
+   },
+   "kind": "CAPTURE",
+   "paths": [
+    "/tmp/claude-0/-home-user-Marketapp/268ce485-daff-5c24-9478-cd84813bcb59/scratchpad/rangein/exports/export_2026-11-13.json"
+   ],
+   "session_claimed": "2026-11-13",
+   "sha256": "4f544bee59af9020d5eb2846161d8ebffa7010a0d0e1492ef41a92ac41f51301",
+   "why": "content digest is present in the upload channel"
+  },
+  {
+   "app_version": null,
+   "basename": "export_full_session_2026-11-16.json",
+   "build": null,
+   "bytes": 2303145,
+   "export_version": null,
+   "indices": {
+    "BNF": {
+     "distinct_slots": 69,
+     "export_version": "premium_capture_export_v3_verified_and_resolved",
+     "first_slot": "09:20",
+     "is_synthetic": true,
+     "last_slot": "15:00",
+     "pinned_contracts": 6,
+     "planned_opportunities_60": 342,
+     "records": 414,
+     "schedule_state": "VERIFIED",
+     "session_date": "2026-11-16",
+     "slot_envelopes": 69,
+     "slot_manifest_rows": 4,
+     "unusable_by_reason": {},
+     "usable_quotes": 414
+    },
+    "NF": {
+     "distinct_slots": 69,
+     "export_version": "premium_capture_export_v3_verified_and_resolved",
+     "first_slot": "09:20",
+     "is_synthetic": true,
+     "last_slot": "15:00",
+     "pinned_contracts": 6,
+     "planned_opportunities_60": 342,
+     "records": 414,
+     "schedule_state": "VERIFIED",
+     "session_date": "2026-11-16",
+     "slot_envelopes": 69,
+     "slot_manifest_rows": 4,
+     "unusable_by_reason": {},
+     "usable_quotes": 414
+    }
+   },
+   "kind": "SYNTHETIC",
+   "paths": [
+    "/tmp/claude-0/-home-user-Marketapp/268ce485-daff-5c24-9478-cd84813bcb59/scratchpad/out5/fresh/export_full_session_2026-11-16.json"
+   ],
+   "session_claimed": "2026-11-16",
+   "sha256": "1f38688a933edae79fc5279763fa0172c499bce2ef50d430a270c208c399d1bf",
+   "why": "not uploaded, and is_synthetic is true"
+  },
+  {
+   "app_version": null,
+   "basename": "export_2026-11-16.json",
+   "build": null,
+   "bytes": 1985305,
+   "export_version": null,
+   "indices": {
+    "BNF": {
+     "distinct_slots": 69,
+     "export_version": "premium_capture_export_v3_verified_and_resolved",
+     "first_slot": "09:20",
+     "is_synthetic": false,
+     "last_slot": "15:00",
+     "pinned_contracts": 6,
+     "planned_opportunities_60": 342,
+     "records": 414,
+     "schedule_state": "VERIFIED",
+     "session_date": "2026-11-16",
+     "slot_envelopes": 69,
+     "slot_manifest_rows": 4,
+     "unusable_by_reason": {},
+     "usable_quotes": 414
+    },
+    "NF": {
+     "distinct_slots": 69,
+     "export_version": "premium_capture_export_v3_verified_and_resolved",
+     "first_slot": "09:20",
+     "is_synthetic": false,
+     "last_slot": "15:00",
+     "pinned_contracts": 6,
+     "planned_opportunities_60": 342,
+     "records": 414,
+     "schedule_state": "VERIFIED",
+     "session_date": "2026-11-16",
+     "slot_envelopes": 69,
+     "slot_manifest_rows": 4,
+     "unusable_by_reason": {},
+     "usable_quotes": 414
+    }
+   },
+   "kind": "CAPTURE",
+   "paths": [
+    "/tmp/claude-0/-home-user-Marketapp/268ce485-daff-5c24-9478-cd84813bcb59/scratchpad/nov16/export_2026-11-16.json"
+   ],
+   "session_claimed": "2026-11-16",
+   "sha256": "2cd2006626d3a72713b017c9352232538abfadab07258938ed5395058b380f17",
+   "why": "content digest is present in the upload channel"
+  },
+  {
+   "app_version": null,
+   "basename": "export_2026-11-16.json",
+   "build": null,
+   "bytes": 2112539,
+   "export_version": null,
+   "indices": {
+    "BNF": {
+     "distinct_slots": 69,
+     "export_version": "premium_capture_export_v3_verified_and_resolved",
+     "first_slot": "09:20",
+     "is_synthetic": false,
+     "last_slot": "15:00",
+     "pinned_contracts": 6,
+     "planned_opportunities_60": 342,
+     "records": 414,
+     "schedule_state": "VERIFIED",
+     "session_date": "2026-11-16",
+     "slot_envelopes": 69,
+     "slot_manifest_rows": 4,
+     "unusable_by_reason": {},
+     "usable_quotes": 414
+    },
+    "NF": {
+     "distinct_slots": 69,
+     "export_version": "premium_capture_export_v3_verified_and_resolved",
+     "first_slot": "09:20",
+     "is_synthetic": false,
+     "last_slot": "15:00",
+     "pinned_contracts": 6,
+     "planned_opportunities_60": 342,
+     "records": 414,
+     "schedule_state": "VERIFIED",
+     "session_date": "2026-11-16",
+     "slot_envelopes": 69,
+     "slot_manifest_rows": 4,
+     "unusable_by_reason": {},
+     "usable_quotes": 414
+    }
+   },
+   "kind": "SYNTHETIC",
+   "paths": [
+    "/tmp/claude-0/-home-user-Marketapp/268ce485-daff-5c24-9478-cd84813bcb59/scratchpad/synth_overnight/export_2026-11-16.json"
+   ],
+   "session_claimed": "2026-11-16",
+   "sha256": "618a5b5368f0246604685ca460e303305bba1e71d5cb8e5373b4968703b5c83b",
+   "why": "not uploaded; path marks generated output (synth)"
+  },
+  {
+   "app_version": null,
+   "basename": "export_full_session_2026-11-16.json",
+   "build": null,
+   "bytes": 2302050,
+   "export_version": null,
+   "indices": {
+    "BNF": {
+     "distinct_slots": 69,
+     "export_version": "premium_capture_export_v3_verified_and_resolved",
+     "first_slot": "09:20",
+     "is_synthetic": false,
+     "last_slot": "15:00",
+     "pinned_contracts": 6,
+     "planned_opportunities_60": 342,
+     "records": 414,
+     "schedule_state": "VERIFIED",
+     "session_date": "2026-11-16",
+     "slot_envelopes": 69,
+     "slot_manifest_rows": 4,
+     "unusable_by_reason": {},
+     "usable_quotes": 414
+    },
+    "NF": {
+     "distinct_slots": 69,
+     "export_version": "premium_capture_export_v3_verified_and_resolved",
+     "first_slot": "09:20",
+     "is_synthetic": false,
+     "last_slot": "15:00",
+     "pinned_contracts": 6,
+     "planned_opportunities_60": 342,
+     "records": 414,
+     "schedule_state": "VERIFIED",
+     "session_date": "2026-11-16",
+     "slot_envelopes": 69,
+     "slot_manifest_rows": 4,
+     "unusable_by_reason": {},
+     "usable_quotes": 414
+    }
+   },
+   "kind": "SYNTHETIC",
+   "paths": [
+    "/tmp/claude-0/-home-user-Marketapp/268ce485-daff-5c24-9478-cd84813bcb59/scratchpad/kotlin/out/full/export_full_session_2026-11-16.json",
+    "/tmp/claude-0/-home-user-Marketapp/268ce485-daff-5c24-9478-cd84813bcb59/scratchpad/out/exports/export_full_session_2026-11-16.json",
+    "/tmp/claude-0/-home-user-Marketapp/268ce485-daff-5c24-9478-cd84813bcb59/scratchpad/zip_monday3/MARKET_RADAR_PREMIUM_1GIB_CORRECTIONS_20261116/exports/export_full_session_2026-11-16.json"
+   ],
+   "session_claimed": "2026-11-16",
+   "sha256": "85706b15ef2e491a1e5be3d2fb938e65aa64cf004a1a345380b90f9fc8e80404",
+   "why": "not uploaded; path marks generated output (out)"
+  },
+  {
+   "app_version": null,
+   "basename": "synthetic_HEAD_2026-11-16.json",
+   "build": null,
+   "bytes": 2303023,
+   "export_version": null,
+   "indices": {
+    "BNF": {
+     "distinct_slots": 69,
+     "export_version": "premium_capture_export_v3_verified_and_resolved",
+     "first_slot": "09:20",
+     "is_synthetic": true,
+     "last_slot": "15:00",
+     "pinned_contracts": 6,
+     "planned_opportunities_60": 342,
+     "records": 414,
+     "schedule_state": "VERIFIED",
+     "session_date": "2026-11-16",
+     "slot_envelopes": 69,
+     "slot_manifest_rows": 4,
+     "unusable_by_reason": {},
+     "usable_quotes": 414
+    },
+    "NF": {
+     "distinct_slots": 69,
+     "export_version": "premium_capture_export_v3_verified_and_resolved",
+     "first_slot": "09:20",
+     "is_synthetic": true,
+     "last_slot": "15:00",
+     "pinned_contracts": 6,
+     "planned_opportunities_60": 342,
+     "records": 414,
+     "schedule_state": "VERIFIED",
+     "session_date": "2026-11-16",
+     "slot_envelopes": 69,
+     "slot_manifest_rows": 4,
+     "unusable_by_reason": {},
+     "usable_quotes": 414
+    }
+   },
+   "kind": "SYNTHETIC",
+   "paths": [
+    "/tmp/claude-0/-home-user-Marketapp/268ce485-daff-5c24-9478-cd84813bcb59/scratchpad/allexp/synthetic_HEAD_2026-11-16.json",
+    "/tmp/claude-0/-home-user-Marketapp/268ce485-daff-5c24-9478-cd84813bcb59/scratchpad/out2/exports/export_full_session_2026-11-16.json",
+    "/tmp/claude-0/-home-user-Marketapp/268ce485-daff-5c24-9478-cd84813bcb59/scratchpad/out2/pkg/MARKET_RADAR_PREMIUM_REFUSAL_PROVENANCE_20261116/exports/export_full_session_2026-11-16.json"
+   ],
+   "session_claimed": "2026-11-16",
+   "sha256": "89d1b11e3c4d86734784488c2860922f1ccbd4792d0f9461de70d4740bfc1a2a",
+   "why": "not uploaded, and is_synthetic is true"
+  },
+  {
+   "app_version": null,
+   "basename": "export_2026-11-17.json",
+   "build": null,
+   "bytes": 2112300,
+   "export_version": null,
+   "indices": {
+    "BNF": {
+     "distinct_slots": 69,
+     "export_version": "premium_capture_export_v3_verified_and_resolved",
+     "first_slot": "09:20",
+     "is_synthetic": false,
+     "last_slot": "15:00",
+     "pinned_contracts": 6,
+     "planned_opportunities_60": 342,
+     "records": 414,
+     "schedule_state": "VERIFIED",
+     "session_date": "2026-11-17",
+     "slot_envelopes": 69,
+     "slot_manifest_rows": 4,
+     "unusable_by_reason": {},
+     "usable_quotes": 414
+    },
+    "NF": {
+     "distinct_slots": 69,
+     "export_version": "premium_capture_export_v3_verified_and_resolved",
+     "first_slot": "09:20",
+     "is_synthetic": false,
+     "last_slot": "15:00",
+     "pinned_contracts": 6,
+     "planned_opportunities_60": 342,
+     "records": 414,
+     "schedule_state": "VERIFIED",
+     "session_date": "2026-11-17",
+     "slot_envelopes": 69,
+     "slot_manifest_rows": 4,
+     "unusable_by_reason": {},
+     "usable_quotes": 414
+    }
+   },
+   "kind": "SYNTHETIC",
+   "paths": [
+    "/tmp/claude-0/-home-user-Marketapp/268ce485-daff-5c24-9478-cd84813bcb59/scratchpad/synth_overnight/export_2026-11-17.json"
+   ],
+   "session_claimed": "2026-11-17",
+   "sha256": "08f1c9cb550295c1cb6db79490cab35d20fb8653e9952ae585d5825f9500272a",
+   "why": "not uploaded; path marks generated output (synth)"
+  },
+  {
+   "app_version": null,
+   "basename": "export_full_session_2026-11-17.json",
+   "build": null,
+   "bytes": 2303157,
+   "export_version": null,
+   "indices": {
+    "BNF": {
+     "distinct_slots": 69,
+     "export_version": "premium_capture_export_v3_verified_and_resolved",
+     "first_slot": "09:20",
+     "is_synthetic": true,
+     "last_slot": "15:00",
+     "pinned_contracts": 6,
+     "planned_opportunities_60": 342,
+     "records": 414,
+     "schedule_state": "VERIFIED",
+     "session_date": "2026-11-17",
+     "slot_envelopes": 69,
+     "slot_manifest_rows": 4,
+     "unusable_by_reason": {},
+     "usable_quotes": 414
+    },
+    "NF": {
+     "distinct_slots": 69,
+     "export_version": "premium_capture_export_v3_verified_and_resolved",
+     "first_slot": "09:20",
+     "is_synthetic": true,
+     "last_slot": "15:00",
+     "pinned_contracts": 6,
+     "planned_opportunities_60": 342,
+     "records": 414,
+     "schedule_state": "VERIFIED",
+     "session_date": "2026-11-17",
+     "slot_envelopes": 69,
+     "slot_manifest_rows": 4,
+     "unusable_by_reason": {},
+     "usable_quotes": 414
+    }
+   },
+   "kind": "SYNTHETIC",
+   "paths": [
+    "/tmp/claude-0/-home-user-Marketapp/268ce485-daff-5c24-9478-cd84813bcb59/scratchpad/out2/exports/export_full_session_2026-11-17.json",
+    "/tmp/claude-0/-home-user-Marketapp/268ce485-daff-5c24-9478-cd84813bcb59/scratchpad/out2/pkg/MARKET_RADAR_PREMIUM_REFUSAL_PROVENANCE_20261116/exports/export_full_session_2026-11-17.json"
+   ],
+   "session_claimed": "2026-11-17",
+   "sha256": "1401e90bfd2b11d3c9ad99f9a10a2de7a783cde2c1fe680db862549555afb0de",
+   "why": "not uploaded, and is_synthetic is true"
+  },
+  {
+   "app_version": null,
+   "basename": "export_full_session_2026-11-17.json",
+   "build": null,
+   "bytes": 2303279,
+   "export_version": null,
+   "indices": {
+    "BNF": {
+     "distinct_slots": 69,
+     "export_version": "premium_capture_export_v3_verified_and_resolved",
+     "first_slot": "09:20",
+     "is_synthetic": true,
+     "last_slot": "15:00",
+     "pinned_contracts": 6,
+     "planned_opportunities_60": 342,
+     "records": 414,
+     "schedule_state": "VERIFIED",
+     "session_date": "2026-11-17",
+     "slot_envelopes": 69,
+     "slot_manifest_rows": 4,
+     "unusable_by_reason": {},
+     "usable_quotes": 414
+    },
+    "NF": {
+     "distinct_slots": 69,
+     "export_version": "premium_capture_export_v3_verified_and_resolved",
+     "first_slot": "09:20",
+     "is_synthetic": true,
+     "last_slot": "15:00",
+     "pinned_contracts": 6,
+     "planned_opportunities_60": 342,
+     "records": 414,
+     "schedule_state": "VERIFIED",
+     "session_date": "2026-11-17",
+     "slot_envelopes": 69,
+     "slot_manifest_rows": 4,
+     "unusable_by_reason": {},
+     "usable_quotes": 414
+    }
+   },
+   "kind": "SYNTHETIC",
+   "paths": [
+    "/tmp/claude-0/-home-user-Marketapp/268ce485-daff-5c24-9478-cd84813bcb59/scratchpad/out5/fresh/export_full_session_2026-11-17.json"
+   ],
+   "session_claimed": "2026-11-17",
+   "sha256": "7aff0c94b7fab99472046c04333fcc7451611eac4d6a148c9afe2bff660e8881",
+   "why": "not uploaded, and is_synthetic is true"
+  },
+  {
+   "app_version": null,
+   "basename": "export_full_session_2026-11-17.json",
+   "build": null,
+   "bytes": 2302184,
+   "export_version": null,
+   "indices": {
+    "BNF": {
+     "distinct_slots": 69,
+     "export_version": "premium_capture_export_v3_verified_and_resolved",
+     "first_slot": "09:20",
+     "is_synthetic": false,
+     "last_slot": "15:00",
+     "pinned_contracts": 6,
+     "planned_opportunities_60": 342,
+     "records": 414,
+     "schedule_state": "VERIFIED",
+     "session_date": "2026-11-17",
+     "slot_envelopes": 69,
+     "slot_manifest_rows": 4,
+     "unusable_by_reason": {},
+     "usable_quotes": 414
+    },
+    "NF": {
+     "distinct_slots": 69,
+     "export_version": "premium_capture_export_v3_verified_and_resolved",
+     "first_slot": "09:20",
+     "is_synthetic": false,
+     "last_slot": "15:00",
+     "pinned_contracts": 6,
+     "planned_opportunities_60": 342,
+     "records": 414,
+     "schedule_state": "VERIFIED",
+     "session_date": "2026-11-17",
+     "slot_envelopes": 69,
+     "slot_manifest_rows": 4,
+     "unusable_by_reason": {},
+     "usable_quotes": 414
+    }
+   },
+   "kind": "SYNTHETIC",
+   "paths": [
+    "/tmp/claude-0/-home-user-Marketapp/268ce485-daff-5c24-9478-cd84813bcb59/scratchpad/kotlin/out/full/export_full_session_2026-11-17.json",
+    "/tmp/claude-0/-home-user-Marketapp/268ce485-daff-5c24-9478-cd84813bcb59/scratchpad/out/exports/export_full_session_2026-11-17.json",
+    "/tmp/claude-0/-home-user-Marketapp/268ce485-daff-5c24-9478-cd84813bcb59/scratchpad/zip_monday3/MARKET_RADAR_PREMIUM_1GIB_CORRECTIONS_20261116/exports/export_full_session_2026-11-17.json"
+   ],
+   "session_claimed": "2026-11-17",
+   "sha256": "87cb7e25ddb8a128757d1358710269023cb3b1d7a8b8bb2eca22888a7763e624",
+   "why": "not uploaded; path marks generated output (out)"
+  },
+  {
+   "app_version": null,
+   "basename": "export_full_session_2026-11-18.json",
+   "build": null,
+   "bytes": 2303042,
+   "export_version": null,
+   "indices": {
+    "BNF": {
+     "distinct_slots": 69,
+     "export_version": "premium_capture_export_v3_verified_and_resolved",
+     "first_slot": "09:20",
+     "is_synthetic": true,
+     "last_slot": "15:00",
+     "pinned_contracts": 6,
+     "planned_opportunities_60": 342,
+     "records": 414,
+     "schedule_state": "VERIFIED",
+     "session_date": "2026-11-18",
+     "slot_envelopes": 69,
+     "slot_manifest_rows": 4,
+     "unusable_by_reason": {},
+     "usable_quotes": 414
+    },
+    "NF": {
+     "distinct_slots": 69,
+     "export_version": "premium_capture_export_v3_verified_and_resolved",
+     "first_slot": "09:20",
+     "is_synthetic": true,
+     "last_slot": "15:00",
+     "pinned_contracts": 6,
+     "planned_opportunities_60": 342,
+     "records": 414,
+     "schedule_state": "VERIFIED",
+     "session_date": "2026-11-18",
+     "slot_envelopes": 69,
+     "slot_manifest_rows": 4,
+     "unusable_by_reason": {},
+     "usable_quotes": 414
+    }
+   },
+   "kind": "SYNTHETIC",
+   "paths": [
+    "/tmp/claude-0/-home-user-Marketapp/268ce485-daff-5c24-9478-cd84813bcb59/scratchpad/out2/exports/export_full_session_2026-11-18.json",
+    "/tmp/claude-0/-home-user-Marketapp/268ce485-daff-5c24-9478-cd84813bcb59/scratchpad/out2/pkg/MARKET_RADAR_PREMIUM_REFUSAL_PROVENANCE_20261116/exports/export_full_session_2026-11-18.json"
+   ],
+   "session_claimed": "2026-11-18",
+   "sha256": "239cf9035274b451fbb53b410dba3ef52098c9ad29fe0d022e4b3a6eaef14f0f",
+   "why": "not uploaded, and is_synthetic is true"
+  },
+  {
+   "app_version": null,
+   "basename": "export_full_session_2026-11-18.json",
+   "build": null,
+   "bytes": 2302069,
+   "export_version": null,
+   "indices": {
+    "BNF": {
+     "distinct_slots": 69,
+     "export_version": "premium_capture_export_v3_verified_and_resolved",
+     "first_slot": "09:20",
+     "is_synthetic": false,
+     "last_slot": "15:00",
+     "pinned_contracts": 6,
+     "planned_opportunities_60": 342,
+     "records": 414,
+     "schedule_state": "VERIFIED",
+     "session_date": "2026-11-18",
+     "slot_envelopes": 69,
+     "slot_manifest_rows": 4,
+     "unusable_by_reason": {},
+     "usable_quotes": 414
+    },
+    "NF": {
+     "distinct_slots": 69,
+     "export_version": "premium_capture_export_v3_verified_and_resolved",
+     "first_slot": "09:20",
+     "is_synthetic": false,
+     "last_slot": "15:00",
+     "pinned_contracts": 6,
+     "planned_opportunities_60": 342,
+     "records": 414,
+     "schedule_state": "VERIFIED",
+     "session_date": "2026-11-18",
+     "slot_envelopes": 69,
+     "slot_manifest_rows": 4,
+     "unusable_by_reason": {},
+     "usable_quotes": 414
+    }
+   },
+   "kind": "SYNTHETIC",
+   "paths": [
+    "/tmp/claude-0/-home-user-Marketapp/268ce485-daff-5c24-9478-cd84813bcb59/scratchpad/kotlin/out/full/export_full_session_2026-11-18.json",
+    "/tmp/claude-0/-home-user-Marketapp/268ce485-daff-5c24-9478-cd84813bcb59/scratchpad/out/exports/export_full_session_2026-11-18.json",
+    "/tmp/claude-0/-home-user-Marketapp/268ce485-daff-5c24-9478-cd84813bcb59/scratchpad/zip_monday3/MARKET_RADAR_PREMIUM_1GIB_CORRECTIONS_20261116/exports/export_full_session_2026-11-18.json"
+   ],
+   "session_claimed": "2026-11-18",
+   "sha256": "2687fa1abc2857d0ca8040861ba3a25d87d7923e357a10253cd414eeb7719d70",
+   "why": "not uploaded; path marks generated output (out)"
+  },
+  {
+   "app_version": null,
+   "basename": "export_full_session_2026-11-18.json",
+   "build": null,
+   "bytes": 2303164,
+   "export_version": null,
+   "indices": {
+    "BNF": {
+     "distinct_slots": 69,
+     "export_version": "premium_capture_export_v3_verified_and_resolved",
+     "first_slot": "09:20",
+     "is_synthetic": true,
+     "last_slot": "15:00",
+     "pinned_contracts": 6,
+     "planned_opportunities_60": 342,
+     "records": 414,
+     "schedule_state": "VERIFIED",
+     "session_date": "2026-11-18",
+     "slot_envelopes": 69,
+     "slot_manifest_rows": 4,
+     "unusable_by_reason": {},
+     "usable_quotes": 414
+    },
+    "NF": {
+     "distinct_slots": 69,
+     "export_version": "premium_capture_export_v3_verified_and_resolved",
+     "first_slot": "09:20",
+     "is_synthetic": true,
+     "last_slot": "15:00",
+     "pinned_contracts": 6,
+     "planned_opportunities_60": 342,
+     "records": 414,
+     "schedule_state": "VERIFIED",
+     "session_date": "2026-11-18",
+     "slot_envelopes": 69,
+     "slot_manifest_rows": 4,
+     "unusable_by_reason": {},
+     "usable_quotes": 414
+    }
+   },
+   "kind": "SYNTHETIC",
+   "paths": [
+    "/tmp/claude-0/-home-user-Marketapp/268ce485-daff-5c24-9478-cd84813bcb59/scratchpad/out5/fresh/export_full_session_2026-11-18.json"
+   ],
+   "session_claimed": "2026-11-18",
+   "sha256": "86533f80d2e733f72b5647383e5b6eb7e5e540c019f7c9c991b8bf8190484f39",
+   "why": "not uploaded, and is_synthetic is true"
+  },
+  {
+   "app_version": null,
+   "basename": "export_refused_at_cap_2026-11-19.json",
+   "build": null,
+   "bytes": 4983,
+   "export_version": null,
+   "indices": {
+    "BNF": {
+     "distinct_slots": 0,
+     "export_version": null,
+     "first_slot": null,
+     "is_synthetic": false,
+     "last_slot": null,
+     "pinned_contracts": 0,
+     "planned_opportunities_60": 0,
+     "records": 0,
+     "schedule_state": "INCOMPLETE_COHORT_NOT_RESOLVED",
+     "session_date": null,
+     "slot_envelopes": 0,
+     "slot_manifest_rows": 0,
+     "unusable_by_reason": {},
+     "usable_quotes": 0
+    },
+    "NF": {
+     "distinct_slots": 0,
+     "export_version": null,
+     "first_slot": null,
+     "is_synthetic": false,
+     "last_slot": null,
+     "pinned_contracts": 0,
+     "planned_opportunities_60": 0,
+     "records": 0,
+     "schedule_state": "INCOMPLETE_COHORT_NOT_RESOLVED",
+     "session_date": null,
+     "slot_envelopes": 0,
+     "slot_manifest_rows": 0,
+     "unusable_by_reason": {},
+     "usable_quotes": 0
+    }
+   },
+   "kind": "SYNTHETIC",
+   "paths": [
+    "/tmp/claude-0/-home-user-Marketapp/268ce485-daff-5c24-9478-cd84813bcb59/scratchpad/out5/fresh/export_refused_at_cap_2026-11-19.json"
+   ],
+   "session_claimed": "2026-11-19",
+   "sha256": "0e301481048ab12dfdeae2f2a7a427b3e9a58299ce516556aab8355f67fb1b86",
+   "why": "not uploaded; path marks generated output (out5)"
+  },
+  {
+   "app_version": null,
+   "basename": "export_refusal_after_full_day_2026-11-19.json",
+   "build": null,
+   "bytes": 5321,
+   "export_version": null,
+   "indices": {
+    "BNF": {
+     "distinct_slots": 0,
+     "export_version": null,
+     "first_slot": null,
+     "is_synthetic": false,
+     "last_slot": null,
+     "pinned_contracts": 0,
+     "planned_opportunities_60": 0,
+     "records": 0,
+     "schedule_state": "INCOMPLETE_COHORT_NOT_RESOLVED",
+     "session_date": null,
+     "slot_envelopes": 0,
+     "slot_manifest_rows": 0,
+     "unusable_by_reason": {},
+     "usable_quotes": 0
+    },
+    "NF": {
+     "distinct_slots": 0,
+     "export_version": null,
+     "first_slot": null,
+     "is_synthetic": false,
+     "last_slot": null,
+     "pinned_contracts": 0,
+     "planned_opportunities_60": 0,
+     "records": 0,
+     "schedule_state": "INCOMPLETE_COHORT_NOT_RESOLVED",
+     "session_date": null,
+     "slot_envelopes": 0,
+     "slot_manifest_rows": 0,
+     "unusable_by_reason": {},
+     "usable_quotes": 0
+    }
+   },
+   "kind": "SYNTHETIC",
+   "paths": [
+    "/tmp/claude-0/-home-user-Marketapp/268ce485-daff-5c24-9478-cd84813bcb59/scratchpad/out5/fresh/export_refusal_after_full_day_2026-11-19.json"
+   ],
+   "session_claimed": "2026-11-19",
+   "sha256": "359ca38d7c3c7a9fd29eefe8217c35901667d8591041dd0e96987746384c3134",
+   "why": "not uploaded; path marks generated output (out5)"
+  },
+  {
+   "app_version": null,
+   "basename": "export_refused_at_cap_2026-11-19.json",
+   "build": null,
+   "bytes": 4983,
+   "export_version": null,
+   "indices": {
+    "BNF": {
+     "distinct_slots": 0,
+     "export_version": null,
+     "first_slot": null,
+     "is_synthetic": false,
+     "last_slot": null,
+     "pinned_contracts": 0,
+     "planned_opportunities_60": 0,
+     "records": 0,
+     "schedule_state": "INCOMPLETE_COHORT_NOT_RESOLVED",
+     "session_date": null,
+     "slot_envelopes": 0,
+     "slot_manifest_rows": 0,
+     "unusable_by_reason": {},
+     "usable_quotes": 0
+    },
+    "NF": {
+     "distinct_slots": 0,
+     "export_version": null,
+     "first_slot": null,
+     "is_synthetic": false,
+     "last_slot": null,
+     "pinned_contracts": 0,
+     "planned_opportunities_60": 0,
+     "records": 0,
+     "schedule_state": "INCOMPLETE_COHORT_NOT_RESOLVED",
+     "session_date": null,
+     "slot_envelopes": 0,
+     "slot_manifest_rows": 0,
+     "unusable_by_reason": {},
+     "usable_quotes": 0
+    }
+   },
+   "kind": "SYNTHETIC",
+   "paths": [
+    "/tmp/claude-0/-home-user-Marketapp/268ce485-daff-5c24-9478-cd84813bcb59/scratchpad/out2/exports/export_refused_at_cap_2026-11-19.json",
+    "/tmp/claude-0/-home-user-Marketapp/268ce485-daff-5c24-9478-cd84813bcb59/scratchpad/out2/pkg/MARKET_RADAR_PREMIUM_REFUSAL_PROVENANCE_20261116/exports/export_refused_at_cap_2026-11-19.json"
+   ],
+   "session_claimed": "2026-11-19",
+   "sha256": "35fbe9d91f08c527b2471e1a3b230032329570c7e126d044e3e563d1aaacb816",
+   "why": "not uploaded; path marks generated output (out2)"
+  },
+  {
+   "app_version": null,
+   "basename": "export_refusal_after_full_day_2026-11-19.json",
+   "build": null,
+   "bytes": 5321,
+   "export_version": null,
+   "indices": {
+    "BNF": {
+     "distinct_slots": 0,
+     "export_version": null,
+     "first_slot": null,
+     "is_synthetic": false,
+     "last_slot": null,
+     "pinned_contracts": 0,
+     "planned_opportunities_60": 0,
+     "records": 0,
+     "schedule_state": "INCOMPLETE_COHORT_NOT_RESOLVED",
+     "session_date": null,
+     "slot_envelopes": 0,
+     "slot_manifest_rows": 0,
+     "unusable_by_reason": {},
+     "usable_quotes": 0
+    },
+    "NF": {
+     "distinct_slots": 0,
+     "export_version": null,
+     "first_slot": null,
+     "is_synthetic": false,
+     "last_slot": null,
+     "pinned_contracts": 0,
+     "planned_opportunities_60": 0,
+     "records": 0,
+     "schedule_state": "INCOMPLETE_COHORT_NOT_RESOLVED",
+     "session_date": null,
+     "slot_envelopes": 0,
+     "slot_manifest_rows": 0,
+     "unusable_by_reason": {},
+     "usable_quotes": 0
+    }
+   },
+   "kind": "SYNTHETIC",
+   "paths": [
+    "/tmp/claude-0/-home-user-Marketapp/268ce485-daff-5c24-9478-cd84813bcb59/scratchpad/out2/exports/export_refusal_after_full_day_2026-11-19.json",
+    "/tmp/claude-0/-home-user-Marketapp/268ce485-daff-5c24-9478-cd84813bcb59/scratchpad/out2/pkg/MARKET_RADAR_PREMIUM_REFUSAL_PROVENANCE_20261116/exports/export_refusal_after_full_day_2026-11-19.json"
+   ],
+   "session_claimed": "2026-11-19",
+   "sha256": "37b019984cf812faa9101bfa619880b47d094856392653bac3fc49ad3426cb4e",
+   "why": "not uploaded; path marks generated output (out2)"
+  },
+  {
+   "app_version": null,
+   "basename": "export_refused_at_cap_2026-11-19.json",
+   "build": null,
+   "bytes": 4726,
+   "export_version": null,
+   "indices": {
+    "BNF": {
+     "distinct_slots": 0,
+     "export_version": null,
+     "first_slot": null,
+     "is_synthetic": false,
+     "last_slot": null,
+     "pinned_contracts": 0,
+     "planned_opportunities_60": 0,
+     "records": 0,
+     "schedule_state": "INCOMPLETE_COHORT_NOT_RESOLVED",
+     "session_date": null,
+     "slot_envelopes": 0,
+     "slot_manifest_rows": 0,
+     "unusable_by_reason": {},
+     "usable_quotes": 0
+    },
+    "NF": {
+     "distinct_slots": 0,
+     "export_version": null,
+     "first_slot": null,
+     "is_synthetic": false,
+     "last_slot": null,
+     "pinned_contracts": 0,
+     "planned_opportunities_60": 0,
+     "records": 0,
+     "schedule_state": "INCOMPLETE_COHORT_NOT_RESOLVED",
+     "session_date": null,
+     "slot_envelopes": 0,
+     "slot_manifest_rows": 0,
+     "unusable_by_reason": {},
+     "usable_quotes": 0
+    }
+   },
+   "kind": "SYNTHETIC",
+   "paths": [
+    "/tmp/claude-0/-home-user-Marketapp/268ce485-daff-5c24-9478-cd84813bcb59/scratchpad/kotlin/out/full/export_refused_at_cap_2026-11-19.json"
+   ],
+   "session_claimed": "2026-11-19",
+   "sha256": "679f07df231c3e9ec52fa43d9e7027bec31a8a9f4f763ea5fac1a3a1f05cd10c",
+   "why": "not uploaded; path marks generated output (out)"
+  },
+  {
+   "app_version": null,
+   "basename": "export_refused_at_cap_2026-11-19.json",
+   "build": null,
+   "bytes": 4726,
+   "export_version": null,
+   "indices": {
+    "BNF": {
+     "distinct_slots": 0,
+     "export_version": null,
+     "first_slot": null,
+     "is_synthetic": false,
+     "last_slot": null,
+     "pinned_contracts": 0,
+     "planned_opportunities_60": 0,
+     "records": 0,
+     "schedule_state": "INCOMPLETE_COHORT_NOT_RESOLVED",
+     "session_date": null,
+     "slot_envelopes": 0,
+     "slot_manifest_rows": 0,
+     "unusable_by_reason": {},
+     "usable_quotes": 0
+    },
+    "NF": {
+     "distinct_slots": 0,
+     "export_version": null,
+     "first_slot": null,
+     "is_synthetic": false,
+     "last_slot": null,
+     "pinned_contracts": 0,
+     "planned_opportunities_60": 0,
+     "records": 0,
+     "schedule_state": "INCOMPLETE_COHORT_NOT_RESOLVED",
+     "session_date": null,
+     "slot_envelopes": 0,
+     "slot_manifest_rows": 0,
+     "unusable_by_reason": {},
+     "usable_quotes": 0
+    }
+   },
+   "kind": "SYNTHETIC",
+   "paths": [
+    "/tmp/claude-0/-home-user-Marketapp/268ce485-daff-5c24-9478-cd84813bcb59/scratchpad/out/exports/export_refused_at_cap_2026-11-19.json",
+    "/tmp/claude-0/-home-user-Marketapp/268ce485-daff-5c24-9478-cd84813bcb59/scratchpad/zip_monday3/MARKET_RADAR_PREMIUM_1GIB_CORRECTIONS_20261116/exports/export_refused_at_cap_2026-11-19.json"
+   ],
+   "session_claimed": "2026-11-19",
+   "sha256": "dbefa97326fdd186956bb97fafb865784ca57933f303b8fe2fcf2b7dae66d0fe",
+   "why": "not uploaded; path marks generated output (out)"
+  }
+ ],
+ "files_claiming_a_session_in_span": 27,
+ "files_scanned": 457,
+ "inventory_version": "premium_span_inventory_v1",
+ "roots": [
+  "/tmp/claude-0/-home-user-Marketapp/268ce485-daff-5c24-9478-cd84813bcb59/scratchpad"
+ ],
+ "session_calendar": {
+  "covered_years": [
+   "2026",
+   "2026"
+  ],
+  "holiday_count": 15,
+  "sha256": "304115d9f9f347a39c4ff79bf7ca5d90b026b41436049a16c52d397e4d44c40a",
+  "source": "app/src/main/python/brain.py",
+  "version": "nse_regular_session_calendar_v1_app_holidays"
+ },
+ "span": {
+  "from": "2026-11-12",
+  "to": "2026-11-20"
+ },
+ "upload_channel": "/root/.claude/uploads",
+ "upload_digests_seen": 7
+}

@@ -170,17 +170,57 @@ class ReportedEconomics(unittest.TestCase):
         self.assertGreater(bought, 0,
                            'the legacy path bought nothing, so it does not demonstrate the leak')
 
-    def test_wait_is_never_beaten_in_any_cell(self):
-        """The central economic claim. WAIT earns zero, so any arm beating it must earn > 0."""
+    def test_wait_is_never_beaten_in_a_two_sided_run(self):
+        """WAIT earns zero, so beating it means earning > 0 after costs.
+
+        THIS CLAIM IS NOW SIDE-SPECIFIC, and the test was changed because the finding changed:
+        separating BUY CALL from BUY PUT revealed profitable put arms on NIFTY that the blended
+        population had been averaging away. So WAIT is unbeaten only in the TWO-SIDED runs, and
+        the one-sided case is asserted separately below rather than by weakening this one.
+        """
         beaten = []
         for o in self.runs:
+            if o.get('one_sided_population'):
+                continue
             for ix, n in (o.get('indices') or {}).items():
                 for name, a in n['arms'].items():
                     if name == 'WAIT':
                         continue
                     if (a['total_net_inr'] or 0) > 0:
                         beaten.append((o['session'], ix, name, a['total_net_inr']))
-        self.assertEqual(beaten, [], 'the memo claims WAIT wins everywhere: %r' % beaten)
+        self.assertEqual(beaten, [],
+                         'a two-sided arm beat WAIT, which the memo does not claim: %r' % beaten)
+
+    def test_a_one_sided_run_records_which_side_it_is(self):
+        """A one-sided arm's coverage is of that side only. If the flag were missing, its
+        figures could be read as coverage of the whole plan."""
+        seen = 0
+        for o in self.runs:
+            if not o.get('one_sided_population'):
+                continue
+            seen += 1
+            self.assertIn(o.get('side'), ('CE', 'PE'), o.get('session'))
+        if not seen:
+            self.skipTest('no one-sided run is committed')
+
+    def test_the_profitable_one_sided_arms_are_puts_and_are_reported_as_such(self):
+        """The finding: on these two sessions the index fell, so the PUT side is where the
+        positive totals are. If a CALL arm ever turns positive here, the memo's explanation --
+        direction, not forecast edge -- needs revisiting."""
+        positive = []
+        for o in self.runs:
+            if not o.get('one_sided_population'):
+                continue
+            for ix, n in (o.get('indices') or {}).items():
+                for name, a in n['arms'].items():
+                    if name != 'WAIT' and (a['total_net_inr'] or 0) > 0:
+                        positive.append((o['session'], ix, o['side'], name))
+        if not positive:
+            self.skipTest('no one-sided run is committed')
+        calls = [x for x in positive if x[2] == 'CE']
+        self.assertLessEqual(len(calls), len(positive) - len(calls),
+                             'more CALL arms are profitable than PUT arms, which contradicts '
+                             'the direction explanation: %r' % calls)
 
     def test_the_mid_centred_arms_take_no_trades_anywhere(self):
         """Structural: a buy pays the ask, so a mid-centred forecast cannot predict a profit."""

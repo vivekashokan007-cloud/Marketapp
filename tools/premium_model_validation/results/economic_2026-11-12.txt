@@ -14,17 +14,23 @@ label   PROXY_SIMULATED_FILL -- no order was placed
         receipt_proxy: every instant is the app acquisition receipt; the exchange quote event clock is UNVERIFIED in these exports
 
 --- BNF   60 min   planned 342   decision-time opportunities 323   lots resolved 323 ---
-    arm                        decided    buys     buy%   scored   total INR   mean INR  worst INR    win% peak pos   plan risk   real risk
-    WAIT                           323       0       0%        0          +0          -          -       -        0           0           0
-    BUY_ALL_DIAGNOSTIC             323     323     100%      251     -102982     -410.3      -5448     39%       66     1589774     1585743
-    FORECAST_RULE_E0_TILT_0        323       0       0%        0          +0          -          -       -        0           0           0
-    FORECAST_RULE_E0_TILT_0p5      323     107      33%       86      -30997     -360.4      -5448     58%       30      726975      727962
-    FORECAST_RULE_E0_TILT_1        323     138      43%      111      -41491     -373.8      -5448     53%       32      748578      749228
-    FORECAST_RULE_IV_ONLY          323       0       0%        0          +0          -          -       -        0           0           0
-    FORECAST_RULE_HIST             323       0       0%        0          +0          -          -       -        0           0           0
-    RANGE_EV_E0_TILT_0             323     156      48%      119      -39111     -328.7      -4169     43%       39      942240      935500
-    RANGE_EV_IV_ONLY               323       0       0%        0          +0          -          -       -        0           0           0
-    RANGE_EV_HIST                  323     156      48%      119      -39111     -328.7      -4169     43%       39      942240      935500
+    arm                        decided    buys     buy%   scored   total INR   mean INR  worst INR    win%   net p10   bar met
+    WAIT                           323       0       0%        0          +0          -          -       -         -         -
+    BUY_ALL_DIAGNOSTIC             323     323     100%      251     -102982     -410.3      -5448     39%     -2279        no
+    FORECAST_RULE_E0_TILT_0        323       0       0%        0          +0          -          -       -         -         -
+    FORECAST_RULE_E0_TILT_0p5      323     107      33%       86      -30997     -360.4      -5448     58%     -3060        no
+    FORECAST_RULE_E0_TILT_1        323     138      43%      111      -41491     -373.8      -5448     53%     -3003        no
+    FORECAST_RULE_IV_ONLY          323       0       0%        0          +0          -          -       -         -         -
+    FORECAST_RULE_HIST             323       0       0%        0          +0          -          -       -         -         -
+    RANGE_EV_E0_TILT_0             323     156      48%      119      -39111     -328.7      -4169     43%     -2869        no
+    RANGE_EV_IV_ONLY               323       0       0%        0          +0          -          -       -         -         -
+    RANGE_EV_HIST                  323     156      48%      119      -39111     -328.7      -4169     43%     -2869        no
+    arm                         orders  unfilled      closed  UNRESOLVED unres pos   peak cmtd fill>resv
+    BUY_ALL_DIAGNOSTIC             323         6         251     1528128        66     1585743       123
+    FORECAST_RULE_E0_TILT_0p5      107         1          86      463910        20      727962        48
+    FORECAST_RULE_E0_TILT_1        138         1         111      606120        26      755043        60
+    RANGE_EV_E0_TILT_0             156         3         119      805564        34      935500        42
+    RANGE_EV_HIST                  156         3         119      805564        34      935500        42
       BUY_ALL_DIAGNOSTIC         outcomes: NOT_FILLED_NO_QUOTE_AT_FILL_POLL=6, NO_EXIT_QUOTE_AT_TARGET_INSTANT=66, SCORED=251
       FORECAST_RULE_E0_TILT_0p5  outcomes: NOT_FILLED_NO_QUOTE_AT_FILL_POLL=1, NO_EXIT_QUOTE_AT_TARGET_INSTANT=20, SCORED=86
       FORECAST_RULE_E0_TILT_1    outcomes: NOT_FILLED_NO_QUOTE_AT_FILL_POLL=1, NO_EXIT_QUOTE_AT_TARGET_INSTANT=26, SCORED=111
@@ -32,17 +38,23 @@ label   PROXY_SIMULATED_FILL -- no order was placed
       RANGE_EV_HIST              outcomes: NOT_FILLED_NO_QUOTE_AT_FILL_POLL=3, NO_EXIT_QUOTE_AT_TARGET_INSTANT=34, SCORED=119
 
 --- NF   60 min   planned 342   decision-time opportunities 318   lots resolved 318 ---
-    arm                        decided    buys     buy%   scored   total INR   mean INR  worst INR    win% peak pos   plan risk   real risk
-    WAIT                           318       0       0%        0          +0          -          -       -        0           0           0
-    BUY_ALL_DIAGNOSTIC             318     318     100%      246      -90333     -367.2      -3589     45%       66      898719      894156
-    FORECAST_RULE_E0_TILT_0        318       0       0%        0          +0          -          -       -        0           0           0
-    FORECAST_RULE_E0_TILT_0p5      318     110      35%       79      -10475     -132.6      -2704     43%       28      385336      386188
-    FORECAST_RULE_E0_TILT_1        318     128      40%       92        -283       -3.1      -2704     48%       33      453362      455221
-    FORECAST_RULE_IV_ONLY          318       0       0%        0          +0          -          -       -        0           0           0
-    FORECAST_RULE_HIST             318       0       0%        0          +0          -          -       -        0           0           0
-    RANGE_EV_E0_TILT_0             318     169      53%      128        -457       -3.6      -3452     52%       38      475660      453700
-    RANGE_EV_IV_ONLY               318       0       0%        0          +0          -          -       -        0           0           0
-    RANGE_EV_HIST                  318     170      53%      128        -457       -3.6      -3452     52%       39      492479      453700
+    arm                        decided    buys     buy%   scored   total INR   mean INR  worst INR    win%   net p10   bar met
+    WAIT                           318       0       0%        0          +0          -          -       -         -         -
+    BUY_ALL_DIAGNOSTIC             318     318     100%      246      -90333     -367.2      -3589     45%     -2575        no
+    FORECAST_RULE_E0_TILT_0        318       0       0%        0          +0          -          -       -         -         -
+    FORECAST_RULE_E0_TILT_0p5      318     110      35%       79      -10475     -132.6      -2704     43%     -2054        no
+    FORECAST_RULE_E0_TILT_1        318     128      40%       92        -283       -3.1      -2704     48%     -1913        no
+    FORECAST_RULE_IV_ONLY          318       0       0%        0          +0          -          -       -         -         -
+    FORECAST_RULE_HIST             318       0       0%        0          +0          -          -       -         -         -
+    RANGE_EV_E0_TILT_0             318     169      53%      128        -457       -3.6      -3452     52%     -2378        no
+    RANGE_EV_IV_ONLY               318       0       0%        0          +0          -          -       -         -         -
+    RANGE_EV_HIST                  318     170      53%      128        -457       -3.6      -3452     52%     -2378        no
+    arm                         orders  unfilled      closed  UNRESOLVED unres pos   peak cmtd fill>resv
+    BUY_ALL_DIAGNOSTIC             318         6         246      832666        66      894156       121
+    FORECAST_RULE_E0_TILT_0p5      110         3          79      362970        28      386188        31
+    FORECAST_RULE_E0_TILT_1        128         3          92      425282        33      455221        39
+    RANGE_EV_E0_TILT_0             169         3         128      433095        38      475394        53
+    RANGE_EV_HIST                  170         3         128      449914        39      492212        53
       BUY_ALL_DIAGNOSTIC         outcomes: NOT_FILLED_NO_QUOTE_AT_FILL_POLL=6, NO_EXIT_QUOTE_AT_TARGET_INSTANT=66, SCORED=246
       FORECAST_RULE_E0_TILT_0p5  outcomes: NOT_FILLED_NO_QUOTE_AT_FILL_POLL=3, NO_EXIT_QUOTE_AT_TARGET_INSTANT=28, SCORED=79
       FORECAST_RULE_E0_TILT_1    outcomes: NOT_FILLED_NO_QUOTE_AT_FILL_POLL=3, NO_EXIT_QUOTE_AT_TARGET_INSTANT=33, SCORED=92
@@ -50,6 +62,12 @@ label   PROXY_SIMULATED_FILL -- no order was placed
       RANGE_EV_HIST              outcomes: NOT_FILLED_NO_QUOTE_AT_FILL_POLL=3, NO_EXIT_QUOTE_AT_TARGET_INSTANT=39, SCORED=128
 
 ================================================================================================================
+CAPITAL: reserved at the decision, reconciled at the fill, released only on an
+actual close. A filled position with no exit quote at its target stays OPEN and its
+capital UNRESOLVED to session end -- it is never freed on an assumed close. The
+budget is tested at each decision against what is still committed, so the PEAK can
+exceed it when a fill costs more than its reservation; that count is reported.
+
 WAIT is a DECISION on every opportunity, not an absence of one: zero rupees, zero
 risk. An unfilled BUY, a missing exit and an unscorable P&L are reported as their
 own outcome statuses and are never counted as WAIT. Arms are compared on the same

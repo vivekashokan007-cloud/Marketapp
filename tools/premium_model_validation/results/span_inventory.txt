@@ -2,7 +2,7 @@
 PREMIUM SPAN INVENTORY   premium_span_inventory_v1   2026-11-12 to 2026-11-20
 ======================================================================================================================
 calendar nse_regular_session_calendar_v1_app_holidays   source app/src/main/python/brain.py   sha 304115d9f9f347a3
-scanned 373 json files under 1 root(s); 27 claim a session in the span
+scanned 457 json files under 1 root(s); 27 claim a session in the span
 
 --- the span, from the app calendar alone (no file consulted) ---
     2026-11-12 Thu   REGULAR SESSION
@@ -123,4 +123,4 @@ A SYNTHETIC file is a generated fixture, not evidence. It is listed so it cannot
 mistaken for a capture, and it is never scored. A date with no CAPTURE row has no
 exact-contract coverage here, whatever else exists for it.
 ======================================================================================================================
-wrote /tmp/claude-0/-home-user-Marketapp/268ce485-daff-5c24-9478-cd84813bcb59/scratchpad/inv/span_inventory_2026-11-12_2026-11-20.json
+wrote tools/premium_model_validation/results/span_inventory_2026-11-12_2026-11-20.json

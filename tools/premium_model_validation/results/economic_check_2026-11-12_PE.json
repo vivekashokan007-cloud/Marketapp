@@ -1,0 +1,802 @@
+{
+ "common_risk_budget_inr": null,
+ "cost_basis_note": "PROVISIONAL: these rupees rest on a fee revision that is not committed in the ledger tree (research/replay/fee_models.py). Awaiting its own dated review.",
+ "economic_check_version": "premium_forecast_economic_check_v2_causal",
+ "history": {
+  "collapsed_identical_duplicates": 0,
+  "conflicting_slot_examples": [],
+  "dates": 11,
+  "excluded_conflicting_slots": 0,
+  "floor_collisions": 0,
+  "path": "spots_20261021_20261104.jsonl",
+  "retained_slots": 855,
+  "rows": 855,
+  "rows_off_five_minute_grid": 41,
+  "rows_with_explicit_slot": 0,
+  "sha256": "f6f29ed8fd6e1290f3d0f59e9be2cdd36f236b945409aebb2a73edffd499d186",
+  "slot_field_names_seen": [],
+  "slot_key_collisions_overwritten": 0,
+  "slot_policy": "exact",
+  "slots_from_inferred_clock": 855,
+  "slots_from_verified_schedule": 0
+ },
+ "hold_from_fill_min": 55,
+ "horizon_basis": "decision_anchored__forecast_target_equals_scored_exit",
+ "horizon_min": 60,
+ "indices": {
+  "BNF": {
+   "arms": {
+    "BUY_ALL_DIAGNOSTIC": {
+     "buy_rate": 1.0,
+     "buys": 161,
+     "capital": {
+      "fills_costing_more_than_reserved": 50,
+      "orders": 161,
+      "peak_committed_inr": 837250.5,
+      "peak_concurrent_positions": 33,
+      "states": {
+       "RELEASED_AT_EXIT": 125,
+       "RELEASED_UNFILLED": 3,
+       "UNRESOLVED_NO_EXIT": 33
+      },
+      "total_fill_shortfall_inr": 30275.999999999985,
+      "unresolved_capital_inr": 763239.0,
+      "unresolved_positions": 33,
+      "worst_fill_shortfall_inr": 1579.4999999999964
+     },
+     "decision_reasons": {
+      "DIAGNOSTIC_BUY_ALL": 161
+     },
+     "decision_time_opportunities": 161,
+     "downside_bar_inr": -1401.7652793682828,
+     "expected_shortfall_inr": -1798.678716361968,
+     "mean_net_inr": -700.8826396841414,
+     "median_net_inr": -56.810034486997296,
+     "meets_declared_downside_bar": false,
+     "net_p10_inr": -3092.7228427899972,
+     "outcome_coverage": 0.7763975155279503,
+     "outcome_status": {
+      "NOT_FILLED_NO_QUOTE_AT_FILL_POLL": 3,
+      "NO_EXIT_QUOTE_AT_TARGET_INSTANT": 33,
+      "SCORED": 125
+     },
+     "return_on_risk": -0.028273595449816707,
+     "scored_outcomes": 125,
+     "total_net_inr": -87610.32996051766,
+     "total_risk_inr": 3098662.5,
+     "win_rate": 0.456,
+     "worst_net_inr": -5447.8049249589985
+    },
+    "FORECAST_RULE_E0_TILT_0": {
+     "buy_rate": 0.0,
+     "buys": 0,
+     "capital": {
+      "fills_costing_more_than_reserved": 0,
+      "orders": 0,
+      "peak_committed_inr": 0,
+      "peak_concurrent_positions": 0,
+      "states": {},
+      "total_fill_shortfall_inr": 0,
+      "unresolved_capital_inr": 0,
+      "unresolved_positions": 0,
+      "worst_fill_shortfall_inr": null
+     },
+     "decision_reasons": {
+      "ESTIMATE_BELOW_MARGIN": 161
+     },
+     "decision_time_opportunities": 161,
+     "mean_net_inr": null,
+     "median_net_inr": null,
+     "outcome_coverage": null,
+     "outcome_status": {
+      "WAIT_NO_POSITION": 161
+     },
+     "return_on_risk": null,
+     "scored_outcomes": 0,
+     "total_net_inr": 0.0,
+     "total_risk_inr": 0.0,
+     "win_rate": null,
+     "worst_net_inr": null
+    },
+    "FORECAST_RULE_E0_TILT_0p5": {
+     "buy_rate": 0.4161490683229814,
+     "buys": 67,
+     "capital": {
+      "fills_costing_more_than_reserved": 33,
+      "orders": 67,
+      "peak_committed_inr": 727962.0,
+      "peak_concurrent_positions": 30,
+      "states": {
+       "RELEASED_AT_EXIT": 65,
+       "RELEASED_UNFILLED": 1,
+       "UNRESOLVED_NO_EXIT": 1
+      },
+      "total_fill_shortfall_inr": 21281.999999999993,
+      "unresolved_capital_inr": 25280.999999999996,
+      "unresolved_positions": 1,
+      "worst_fill_shortfall_inr": 1579.4999999999964
+     },
+     "decision_reasons": {
+      "ESTIMATE_BELOW_MARGIN": 94,
+      "ESTIMATE_CLEARS_MARGIN": 67
+     },
+     "decision_time_opportunities": 161,
+     "downside_bar_inr": -1197.276894461595,
+     "expected_shortfall_inr": -2324.7209723181086,
+     "mean_net_inr": -598.6384472307975,
+     "median_net_inr": 49.232711726004084,
+     "meets_declared_downside_bar": false,
+     "net_p10_inr": -3092.7228427899972,
+     "outcome_coverage": 0.9701492537313433,
+     "outcome_status": {
+      "NOT_FILLED_NO_QUOTE_AT_FILL_POLL": 1,
+      "NO_EXIT_QUOTE_AT_TARGET_INSTANT": 1,
+      "SCORED": 65,
+      "WAIT_NO_POSITION": 94
+     },
+     "return_on_risk": -0.024070437538044703,
+     "scored_outcomes": 65,
+     "total_net_inr": -38911.499070001846,
+     "total_risk_inr": 1616568.0,
+     "win_rate": 0.5846153846153846,
+     "worst_net_inr": -5447.8049249589985
+    },
+    "FORECAST_RULE_E0_TILT_1": {
+     "buy_rate": 0.515527950310559,
+     "buys": 83,
+     "capital": {
+      "fills_costing_more_than_reserved": 35,
+      "orders": 83,
+      "peak_committed_inr": 727962.0,
+      "peak_concurrent_positions": 30,
+      "states": {
+       "RELEASED_AT_EXIT": 79,
+       "RELEASED_UNFILLED": 1,
+       "UNRESOLVED_NO_EXIT": 3
+      },
+      "total_fill_shortfall_inr": 21371.999999999993,
+      "unresolved_capital_inr": 71116.5,
+      "unresolved_positions": 3,
+      "worst_fill_shortfall_inr": 1579.4999999999964
+     },
+     "decision_reasons": {
+      "ESTIMATE_BELOW_MARGIN": 78,
+      "ESTIMATE_CLEARS_MARGIN": 83
+     },
+     "decision_time_opportunities": 161,
+     "downside_bar_inr": -1247.7801394664252,
+     "expected_shortfall_inr": -2035.5429143007814,
+     "mean_net_inr": -623.8900697332126,
+     "median_net_inr": 20.81232929900274,
+     "meets_declared_downside_bar": false,
+     "net_p10_inr": -3904.901706234997,
+     "outcome_coverage": 0.9518072289156626,
+     "outcome_status": {
+      "NOT_FILLED_NO_QUOTE_AT_FILL_POLL": 1,
+      "NO_EXIT_QUOTE_AT_TARGET_INSTANT": 3,
+      "SCORED": 79,
+      "WAIT_NO_POSITION": 78
+     },
+     "return_on_risk": -0.025200545713781476,
+     "scored_outcomes": 79,
+     "total_net_inr": -49287.315508923806,
+     "total_risk_inr": 1955803.5,
+     "win_rate": 0.5316455696202531,
+     "worst_net_inr": -5447.8049249589985
+    },
+    "FORECAST_RULE_HIST": {
+     "buy_rate": 0.0,
+     "buys": 0,
+     "capital": {
+      "fills_costing_more_than_reserved": 0,
+      "orders": 0,
+      "peak_committed_inr": 0,
+      "peak_concurrent_positions": 0,
+      "states": {},
+      "total_fill_shortfall_inr": 0,
+      "unresolved_capital_inr": 0,
+      "unresolved_positions": 0,
+      "worst_fill_shortfall_inr": null
+     },
+     "decision_reasons": {
+      "ESTIMATE_BELOW_MARGIN": 161
+     },
+     "decision_time_opportunities": 161,
+     "mean_net_inr": null,
+     "median_net_inr": null,
+     "outcome_coverage": null,
+     "outcome_status": {
+      "WAIT_NO_POSITION": 161
+     },
+     "return_on_risk": null,
+     "scored_outcomes": 0,
+     "total_net_inr": 0.0,
+     "total_risk_inr": 0.0,
+     "win_rate": null,
+     "worst_net_inr": null
+    },
+    "FORECAST_RULE_IV_ONLY": {
+     "buy_rate": 0.0,
+     "buys": 0,
+     "capital": {
+      "fills_costing_more_than_reserved": 0,
+      "orders": 0,
+      "peak_committed_inr": 0,
+      "peak_concurrent_positions": 0,
+      "states": {},
+      "total_fill_shortfall_inr": 0,
+      "unresolved_capital_inr": 0,
+      "unresolved_positions": 0,
+      "worst_fill_shortfall_inr": null
+     },
+     "decision_reasons": {
+      "ESTIMATE_BELOW_MARGIN": 161
+     },
+     "decision_time_opportunities": 161,
+     "mean_net_inr": null,
+     "median_net_inr": null,
+     "outcome_coverage": null,
+     "outcome_status": {
+      "WAIT_NO_POSITION": 161
+     },
+     "return_on_risk": null,
+     "scored_outcomes": 0,
+     "total_net_inr": 0.0,
+     "total_risk_inr": 0.0,
+     "win_rate": null,
+     "worst_net_inr": null
+    },
+    "RANGE_EV_E0_TILT_0": {
+     "buy_rate": 0.5403726708074534,
+     "buys": 87,
+     "capital": {
+      "fills_costing_more_than_reserved": 24,
+      "orders": 87,
+      "peak_committed_inr": 741337.5,
+      "peak_concurrent_positions": 30,
+      "states": {
+       "RELEASED_AT_EXIT": 74,
+       "UNRESOLVED_NO_EXIT": 13
+      },
+      "total_fill_shortfall_inr": 14068.5,
+      "unresolved_capital_inr": 309913.5,
+      "unresolved_positions": 13,
+      "worst_fill_shortfall_inr": 1132.5
+     },
+     "decision_reasons": {
+      "EXPECTED_NET_BELOW_MARGIN": 74,
+      "EXPECTED_NET_CLEARS_MARGIN": 87
+     },
+     "decision_time_opportunities": 161,
+     "downside_bar_inr": -1185.9235424187243,
+     "expected_shortfall_inr": -1721.743755391363,
+     "mean_net_inr": -592.9617712093622,
+     "median_net_inr": -88.83588767349761,
+     "meets_declared_downside_bar": false,
+     "net_p10_inr": -3086.1973004349975,
+     "outcome_coverage": 0.8505747126436781,
+     "outcome_status": {
+      "NO_EXIT_QUOTE_AT_TARGET_INSTANT": 13,
+      "SCORED": 74,
+      "WAIT_NO_POSITION": 74
+     },
+     "return_on_risk": -0.024081872817809505,
+     "scored_outcomes": 74,
+     "total_net_inr": -43879.1710694928,
+     "total_risk_inr": 1822083.0,
+     "win_rate": 0.44594594594594594,
+     "worst_net_inr": -4168.966661592998
+    },
+    "RANGE_EV_HIST": {
+     "buy_rate": 0.5403726708074534,
+     "buys": 87,
+     "capital": {
+      "fills_costing_more_than_reserved": 24,
+      "orders": 87,
+      "peak_committed_inr": 741337.5,
+      "peak_concurrent_positions": 30,
+      "states": {
+       "RELEASED_AT_EXIT": 74,
+       "UNRESOLVED_NO_EXIT": 13
+      },
+      "total_fill_shortfall_inr": 14068.5,
+      "unresolved_capital_inr": 309913.5,
+      "unresolved_positions": 13,
+      "worst_fill_shortfall_inr": 1132.5
+     },
+     "decision_reasons": {
+      "EXPECTED_NET_BELOW_MARGIN": 74,
+      "EXPECTED_NET_CLEARS_MARGIN": 87
+     },
+     "decision_time_opportunities": 161,
+     "downside_bar_inr": -1185.9235424187243,
+     "expected_shortfall_inr": -1721.743755391363,
+     "mean_net_inr": -592.9617712093622,
+     "median_net_inr": -88.83588767349761,
+     "meets_declared_downside_bar": false,
+     "net_p10_inr": -3086.1973004349975,
+     "outcome_coverage": 0.8505747126436781,
+     "outcome_status": {
+      "NO_EXIT_QUOTE_AT_TARGET_INSTANT": 13,
+      "SCORED": 74,
+      "WAIT_NO_POSITION": 74
+     },
+     "return_on_risk": -0.024081872817809505,
+     "scored_outcomes": 74,
+     "total_net_inr": -43879.1710694928,
+     "total_risk_inr": 1822083.0,
+     "win_rate": 0.44594594594594594,
+     "worst_net_inr": -4168.966661592998
+    },
+    "RANGE_EV_IV_ONLY": {
+     "buy_rate": 0.0,
+     "buys": 0,
+     "capital": {
+      "fills_costing_more_than_reserved": 0,
+      "orders": 0,
+      "peak_committed_inr": 0,
+      "peak_concurrent_positions": 0,
+      "states": {},
+      "total_fill_shortfall_inr": 0,
+      "unresolved_capital_inr": 0,
+      "unresolved_positions": 0,
+      "worst_fill_shortfall_inr": null
+     },
+     "decision_reasons": {
+      "EXPECTED_NET_BELOW_MARGIN": 161
+     },
+     "decision_time_opportunities": 161,
+     "mean_net_inr": null,
+     "median_net_inr": null,
+     "outcome_coverage": null,
+     "outcome_status": {
+      "WAIT_NO_POSITION": 161
+     },
+     "return_on_risk": null,
+     "scored_outcomes": 0,
+     "total_net_inr": 0.0,
+     "total_risk_inr": 0.0,
+     "win_rate": null,
+     "worst_net_inr": null
+    },
+    "WAIT": {
+     "buy_rate": 0.0,
+     "buys": 0,
+     "capital": {
+      "fills_costing_more_than_reserved": 0,
+      "orders": 0,
+      "peak_committed_inr": 0,
+      "peak_concurrent_positions": 0,
+      "states": {},
+      "total_fill_shortfall_inr": 0,
+      "unresolved_capital_inr": 0,
+      "unresolved_positions": 0,
+      "worst_fill_shortfall_inr": null
+     },
+     "decision_time_opportunities": 161,
+     "mean_net_inr": null,
+     "median_net_inr": null,
+     "note": "WAIT on every decision-time opportunity: exactly zero rupees, zero risk, no position. The thing to beat.",
+     "outcome_coverage": null,
+     "return_on_risk": null,
+     "scored_outcomes": 0,
+     "total_net_inr": 0.0,
+     "total_risk_inr": 0.0,
+     "win_rate": null,
+     "worst_net_inr": null
+    }
+   },
+   "decision_time_opportunities": 161,
+   "lots_resolved": 161,
+   "outcome_status": {},
+   "planned_opportunities": 342,
+   "schedule_state": "VERIFIED",
+   "session_end_slot": 885
+  },
+  "NF": {
+   "arms": {
+    "BUY_ALL_DIAGNOSTIC": {
+     "buy_rate": 1.0,
+     "buys": 159,
+     "capital": {
+      "fills_costing_more_than_reserved": 61,
+      "orders": 159,
+      "peak_committed_inr": 490304.75,
+      "peak_concurrent_positions": 33,
+      "states": {
+       "RELEASED_AT_EXIT": 123,
+       "RELEASED_UNFILLED": 3,
+       "UNRESOLVED_NO_EXIT": 33
+      },
+      "total_fill_shortfall_inr": 30481.749999999993,
+      "unresolved_capital_inr": 476502.0,
+      "unresolved_positions": 33,
+      "worst_fill_shortfall_inr": 1735.4999999999982
+     },
+     "decision_reasons": {
+      "DIAGNOSTIC_BUY_ALL": 159
+     },
+     "decision_time_opportunities": 159,
+     "downside_bar_inr": -1322.3036557503385,
+     "expected_shortfall_inr": -1099.952252548488,
+     "mean_net_inr": 661.1518278751693,
+     "median_net_inr": 1082.4707496164995,
+     "meets_declared_downside_bar": true,
+     "net_p10_inr": -1232.4411023830023,
+     "outcome_coverage": 0.7735849056603774,
+     "outcome_status": {
+      "NOT_FILLED_NO_QUOTE_AT_FILL_POLL": 3,
+      "NO_EXIT_QUOTE_AT_TARGET_INSTANT": 33,
+      "SCORED": 123
+     },
+     "return_on_risk": 0.05287146188248683,
+     "scored_outcomes": 123,
+     "total_net_inr": 81321.67482864582,
+     "total_risk_inr": 1538101.5,
+     "win_rate": 0.6991869918699187,
+     "worst_net_inr": -2674.626095404501
+    },
+    "FORECAST_RULE_E0_TILT_0": {
+     "buy_rate": 0.0,
+     "buys": 0,
+     "capital": {
+      "fills_costing_more_than_reserved": 0,
+      "orders": 0,
+      "peak_committed_inr": 0,
+      "peak_concurrent_positions": 0,
+      "states": {},
+      "total_fill_shortfall_inr": 0,
+      "unresolved_capital_inr": 0,
+      "unresolved_positions": 0,
+      "worst_fill_shortfall_inr": null
+     },
+     "decision_reasons": {
+      "ESTIMATE_BELOW_MARGIN": 159
+     },
+     "decision_time_opportunities": 159,
+     "mean_net_inr": null,
+     "median_net_inr": null,
+     "outcome_coverage": null,
+     "outcome_status": {
+      "WAIT_NO_POSITION": 159
+     },
+     "return_on_risk": null,
+     "scored_outcomes": 0,
+     "total_net_inr": 0.0,
+     "total_risk_inr": 0.0,
+     "win_rate": null,
+     "worst_net_inr": null
+    },
+    "FORECAST_RULE_E0_TILT_0p5": {
+     "buy_rate": 0.3836477987421384,
+     "buys": 61,
+     "capital": {
+      "fills_costing_more_than_reserved": 19,
+      "orders": 61,
+      "peak_committed_inr": 350431.25,
+      "peak_concurrent_positions": 24,
+      "states": {
+       "RELEASED_AT_EXIT": 46,
+       "UNRESOLVED_NO_EXIT": 15
+      },
+      "total_fill_shortfall_inr": 13126.749999999995,
+      "unresolved_capital_inr": 220327.25,
+      "unresolved_positions": 15,
+      "worst_fill_shortfall_inr": 1735.4999999999982
+     },
+     "decision_reasons": {
+      "ESTIMATE_BELOW_MARGIN": 98,
+      "ESTIMATE_CLEARS_MARGIN": 61
+     },
+     "decision_time_opportunities": 159,
+     "downside_bar_inr": -1165.5788404040193,
+     "expected_shortfall_inr": -951.5240446258072,
+     "mean_net_inr": 582.7894202020096,
+     "median_net_inr": 601.3085739047485,
+     "meets_declared_downside_bar": true,
+     "net_p10_inr": -1092.6038205195007,
+     "outcome_coverage": 0.7540983606557377,
+     "outcome_status": {
+      "NO_EXIT_QUOTE_AT_TARGET_INSTANT": 15,
+      "SCORED": 46,
+      "WAIT_NO_POSITION": 98
+     },
+     "return_on_risk": 0.04401824931362667,
+     "scored_outcomes": 46,
+     "total_net_inr": 26808.313329292436,
+     "total_risk_inr": 609027.25,
+     "win_rate": 0.6086956521739131,
+     "worst_net_inr": -1726.3383954995018
+    },
+    "FORECAST_RULE_E0_TILT_1": {
+     "buy_rate": 0.46540880503144655,
+     "buys": 74,
+     "capital": {
+      "fills_costing_more_than_reserved": 24,
+      "orders": 74,
+      "peak_committed_inr": 381852.25,
+      "peak_concurrent_positions": 26,
+      "states": {
+       "RELEASED_AT_EXIT": 56,
+       "UNRESOLVED_NO_EXIT": 18
+      },
+      "total_fill_shortfall_inr": 17286.749999999993,
+      "unresolved_capital_inr": 262041.0,
+      "unresolved_positions": 18,
+      "worst_fill_shortfall_inr": 1735.4999999999982
+     },
+     "decision_reasons": {
+      "ESTIMATE_BELOW_MARGIN": 85,
+      "ESTIMATE_CLEARS_MARGIN": 74
+     },
+     "decision_time_opportunities": 159,
+     "downside_bar_inr": -1438.908787656051,
+     "expected_shortfall_inr": -951.5240446258072,
+     "mean_net_inr": 719.4543938280254,
+     "median_net_inr": 1061.9179014012484,
+     "meets_declared_downside_bar": true,
+     "net_p10_inr": -1081.7326402515012,
+     "outcome_coverage": 0.7567567567567568,
+     "outcome_status": {
+      "NO_EXIT_QUOTE_AT_TARGET_INSTANT": 18,
+      "SCORED": 56,
+      "WAIT_NO_POSITION": 85
+     },
+     "return_on_risk": 0.054570857832589414,
+     "scored_outcomes": 56,
+     "total_net_inr": 40289.44605436944,
+     "total_risk_inr": 738296.0,
+     "win_rate": 0.6785714285714286,
+     "worst_net_inr": -1726.3383954995018
+    },
+    "FORECAST_RULE_HIST": {
+     "buy_rate": 0.0,
+     "buys": 0,
+     "capital": {
+      "fills_costing_more_than_reserved": 0,
+      "orders": 0,
+      "peak_committed_inr": 0,
+      "peak_concurrent_positions": 0,
+      "states": {},
+      "total_fill_shortfall_inr": 0,
+      "unresolved_capital_inr": 0,
+      "unresolved_positions": 0,
+      "worst_fill_shortfall_inr": null
+     },
+     "decision_reasons": {
+      "ESTIMATE_BELOW_MARGIN": 159
+     },
+     "decision_time_opportunities": 159,
+     "mean_net_inr": null,
+     "median_net_inr": null,
+     "outcome_coverage": null,
+     "outcome_status": {
+      "WAIT_NO_POSITION": 159
+     },
+     "return_on_risk": null,
+     "scored_outcomes": 0,
+     "total_net_inr": 0.0,
+     "total_risk_inr": 0.0,
+     "win_rate": null,
+     "worst_net_inr": null
+    },
+    "FORECAST_RULE_IV_ONLY": {
+     "buy_rate": 0.0,
+     "buys": 0,
+     "capital": {
+      "fills_costing_more_than_reserved": 0,
+      "orders": 0,
+      "peak_committed_inr": 0,
+      "peak_concurrent_positions": 0,
+      "states": {},
+      "total_fill_shortfall_inr": 0,
+      "unresolved_capital_inr": 0,
+      "unresolved_positions": 0,
+      "worst_fill_shortfall_inr": null
+     },
+     "decision_reasons": {
+      "ESTIMATE_BELOW_MARGIN": 159
+     },
+     "decision_time_opportunities": 159,
+     "mean_net_inr": null,
+     "median_net_inr": null,
+     "outcome_coverage": null,
+     "outcome_status": {
+      "WAIT_NO_POSITION": 159
+     },
+     "return_on_risk": null,
+     "scored_outcomes": 0,
+     "total_net_inr": 0.0,
+     "total_risk_inr": 0.0,
+     "win_rate": null,
+     "worst_net_inr": null
+    },
+    "RANGE_EV_E0_TILT_0": {
+     "buy_rate": 0.5786163522012578,
+     "buys": 92,
+     "capital": {
+      "fills_costing_more_than_reserved": 36,
+      "orders": 92,
+      "peak_committed_inr": 382092.75,
+      "peak_concurrent_positions": 30,
+      "states": {
+       "RELEASED_AT_EXIT": 81,
+       "RELEASED_UNFILLED": 3,
+       "UNRESOLVED_NO_EXIT": 8
+      },
+      "total_fill_shortfall_inr": 17520.75,
+      "unresolved_capital_inr": 111572.5,
+      "unresolved_positions": 8,
+      "worst_fill_shortfall_inr": 1735.4999999999982
+     },
+     "decision_reasons": {
+      "EXPECTED_NET_BELOW_MARGIN": 67,
+      "EXPECTED_NET_CLEARS_MARGIN": 92
+     },
+     "decision_time_opportunities": 159,
+     "downside_bar_inr": -1409.3101811644658,
+     "expected_shortfall_inr": -1118.3827938533816,
+     "mean_net_inr": 704.6550905822329,
+     "median_net_inr": 1099.6063394579978,
+     "meets_declared_downside_bar": true,
+     "net_p10_inr": -1232.4411023830023,
+     "outcome_coverage": 0.8804347826086957,
+     "outcome_status": {
+      "NOT_FILLED_NO_QUOTE_AT_FILL_POLL": 3,
+      "NO_EXIT_QUOTE_AT_TARGET_INSTANT": 8,
+      "SCORED": 81,
+      "WAIT_NO_POSITION": 67
+     },
+     "return_on_risk": 0.05781956675858291,
+     "scored_outcomes": 81,
+     "total_net_inr": 57077.062337160874,
+     "total_risk_inr": 987158.25,
+     "win_rate": 0.691358024691358,
+     "worst_net_inr": -2674.626095404501
+    },
+    "RANGE_EV_HIST": {
+     "buy_rate": 0.5849056603773585,
+     "buys": 93,
+     "capital": {
+      "fills_costing_more_than_reserved": 36,
+      "orders": 93,
+      "peak_committed_inr": 382092.75,
+      "peak_concurrent_positions": 30,
+      "states": {
+       "RELEASED_AT_EXIT": 81,
+       "RELEASED_UNFILLED": 3,
+       "UNRESOLVED_NO_EXIT": 9
+      },
+      "total_fill_shortfall_inr": 17520.75,
+      "unresolved_capital_inr": 128391.25,
+      "unresolved_positions": 9,
+      "worst_fill_shortfall_inr": 1735.4999999999982
+     },
+     "decision_reasons": {
+      "EXPECTED_NET_BELOW_MARGIN": 66,
+      "EXPECTED_NET_CLEARS_MARGIN": 93
+     },
+     "decision_time_opportunities": 159,
+     "downside_bar_inr": -1409.3101811644658,
+     "expected_shortfall_inr": -1118.3827938533816,
+     "mean_net_inr": 704.6550905822329,
+     "median_net_inr": 1099.6063394579978,
+     "meets_declared_downside_bar": true,
+     "net_p10_inr": -1232.4411023830023,
+     "outcome_coverage": 0.8709677419354839,
+     "outcome_status": {
+      "NOT_FILLED_NO_QUOTE_AT_FILL_POLL": 3,
+      "NO_EXIT_QUOTE_AT_TARGET_INSTANT": 9,
+      "SCORED": 81,
+      "WAIT_NO_POSITION": 66
+     },
+     "return_on_risk": 0.05781956675858291,
+     "scored_outcomes": 81,
+     "total_net_inr": 57077.062337160874,
+     "total_risk_inr": 987158.25,
+     "win_rate": 0.691358024691358,
+     "worst_net_inr": -2674.626095404501
+    },
+    "RANGE_EV_IV_ONLY": {
+     "buy_rate": 0.0,
+     "buys": 0,
+     "capital": {
+      "fills_costing_more_than_reserved": 0,
+      "orders": 0,
+      "peak_committed_inr": 0,
+      "peak_concurrent_positions": 0,
+      "states": {},
+      "total_fill_shortfall_inr": 0,
+      "unresolved_capital_inr": 0,
+      "unresolved_positions": 0,
+      "worst_fill_shortfall_inr": null
+     },
+     "decision_reasons": {
+      "EXPECTED_NET_BELOW_MARGIN": 159
+     },
+     "decision_time_opportunities": 159,
+     "mean_net_inr": null,
+     "median_net_inr": null,
+     "outcome_coverage": null,
+     "outcome_status": {
+      "WAIT_NO_POSITION": 159
+     },
+     "return_on_risk": null,
+     "scored_outcomes": 0,
+     "total_net_inr": 0.0,
+     "total_risk_inr": 0.0,
+     "win_rate": null,
+     "worst_net_inr": null
+    },
+    "WAIT": {
+     "buy_rate": 0.0,
+     "buys": 0,
+     "capital": {
+      "fills_costing_more_than_reserved": 0,
+      "orders": 0,
+      "peak_committed_inr": 0,
+      "peak_concurrent_positions": 0,
+      "states": {},
+      "total_fill_shortfall_inr": 0,
+      "unresolved_capital_inr": 0,
+      "unresolved_positions": 0,
+      "worst_fill_shortfall_inr": null
+     },
+     "decision_time_opportunities": 159,
+     "mean_net_inr": null,
+     "median_net_inr": null,
+     "note": "WAIT on every decision-time opportunity: exactly zero rupees, zero risk, no position. The thing to beat.",
+     "outcome_coverage": null,
+     "return_on_risk": null,
+     "scored_outcomes": 0,
+     "total_net_inr": 0.0,
+     "total_risk_inr": 0.0,
+     "win_rate": null,
+     "worst_net_inr": null
+    }
+   },
+   "decision_time_opportunities": 159,
+   "lots_resolved": 159,
+   "outcome_status": {},
+   "planned_opportunities": 342,
+   "schedule_state": "VERIFIED",
+   "session_end_slot": 880
+  }
+ },
+ "label": "PROXY_SIMULATED_FILL -- no order was placed",
+ "ledger": {
+  "module": "/tmp/claude-0/-home-user-Marketapp/268ce485-daff-5c24-9478-cd84813bcb59/scratchpad/wt-followon/tools/premium_followon/cost_ledger.py",
+  "rates_table_version": "nse_equity_index_options_rates_20261116_v2",
+  "rates_verified_through": "2026-11-16",
+  "tree": {
+   "modified": [
+    "research/replay/fee_models.py"
+   ],
+   "note": "the ledger tree is MODIFIED relative to its commit; these figures are not reproducible from the committed tree alone",
+   "revision": "c73b28cd7358ac7e0307af48f8effe40ee430492",
+   "root": "/tmp/claude-0/-home-user-Marketapp/268ce485-daff-5c24-9478-cd84813bcb59/scratchpad/wt-followon"
+  },
+  "version": "premium_followon_stage_d_cost_ledger_v3_bound_authority_and_decision_clock"
+ },
+ "legacy_noncausal": false,
+ "one_sided_population": true,
+ "provisional_cost_basis": true,
+ "quote_clock": "receipt_proxy: every instant is the app acquisition receipt; the exchange quote event clock is UNVERIFIED in these exports",
+ "range_ev_predeclaration": "PREDECLARATION_RANGE_AWARE_RULE_20261121.md",
+ "range_ev_variants": [
+  "E0_TILT_0",
+  "IV_ONLY",
+  "HIST"
+ ],
+ "required_margin_inr": 0.0,
+ "rule_variants": [
+  "E0_TILT_0",
+  "E0_TILT_0p5",
+  "E0_TILT_1",
+  "IV_ONLY",
+  "HIST"
+ ],
+ "session": "2026-11-12",
+ "side": "PE",
+ "tick_inr": 0.05
+}

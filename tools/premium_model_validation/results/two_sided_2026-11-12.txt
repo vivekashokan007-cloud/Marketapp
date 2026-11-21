@@ -1,0 +1,56 @@
+================================================================================================================
+TWO-SIDED PREMIUM DIAGNOSTICS   premium_two_sided_diagnostics_v1
+================================================================================================================
+DIAGNOSTIC ONLY -- realised direction is used to explain, never to choose
+session 2026-11-12   horizon 60 min   flat band +/-0.05%
+receipt_proxy: every instant is the app acquisition receipt; the exchange quote event clock is UNVERIFIED in these exports
+
+--- BNF   scored rows 251 of 342 planned ---
+    realised premium move, by side:
+      side     n     up   down   flat    med pts   mean pts        p05        p95      worst       best
+      CE     126     43     82      1     -20.09       2.47     -69.42     114.85     -86.15     161.67
+      PE     125     63     62      0       1.67     -20.32    -132.20      58.27    -152.00      78.62
+    forecast tail calibration (nominal 10%% in each tail):
+      variant          n      <p10      >p90    inside  mean below   max below  mean above   max above
+      E0_TILT_0      251      8.0%      4.8%     87.3%       17.97       67.92       38.17       92.85
+      E0_TILT_1      251      7.2%      6.0%     86.9%       29.89       50.14       42.55       79.51
+      HIST           251      7.6%      4.8%     87.6%       18.51       66.83       37.94       94.02
+      IV_ONLY        251     14.3%      7.2%     78.5%       28.37       70.23       44.91       85.95
+    the same, split by side (E0_TILT_0):
+      CE             126      0.8%      9.5%     89.7%
+      PE             125     15.2%      0.0%     84.8%
+    where the expected-net signal comes from, per unit of premium:
+      variant        rows      E[gross]    from upper    from lower     upper%
+      E0_TILT_0       251        2.6685       38.9255      -36.2570       416%
+      E0_TILT_1       251        1.9853       38.5956      -36.6103       255%
+      HIST            251        2.9215       39.0817      -36.1602       416%
+      IV_ONLY         251        0.2130       23.9335      -23.7205      6774%
+
+--- NF   scored rows 246 of 342 planned ---
+    realised premium move, by side:
+      side     n     up   down   flat    med pts   mean pts        p05        p95      worst       best
+      CE     123     22    101      0     -27.65     -21.07     -50.20      14.60     -61.80      28.07
+      PE     123     87     36      0      18.77      12.17     -29.30      41.50     -52.38      53.05
+    forecast tail calibration (nominal 10%% in each tail):
+      variant          n      <p10      >p90    inside  mean below   max below  mean above   max above
+      E0_TILT_0      246     12.2%      6.9%     80.9%       11.72       42.36        8.99       35.69
+      E0_TILT_1      246      7.3%      6.1%     86.6%       13.65       25.24       10.22       23.39
+      HIST           246     11.8%      6.5%     81.7%       11.68       41.35       10.22       36.63
+      IV_ONLY        246     26.8%     18.3%     54.9%       10.43       28.36        7.18       25.36
+    the same, split by side (E0_TILT_0):
+      CE             123     22.0%      0.0%     78.0%
+      PE             123      2.4%     13.8%     83.7%
+    where the expected-net signal comes from, per unit of premium:
+      variant        rows      E[gross]    from upper    from lower     upper%
+      E0_TILT_0       246        2.0542       16.4956      -14.4414       237%
+      E0_TILT_1       246        1.6158       16.2903      -14.6745       260%
+      HIST            246        2.1870       16.5766      -14.3896       239%
+      IV_ONLY         246        0.4780        9.1677       -8.6897      1882%
+
+================================================================================================================
+A tail can have the right EXCEEDANCE RATE and the wrong MAGNITUDE; only the second
+explains a loss on an expected-net rule. The "from upper" column is the part of
+the buy signal that depends on scenarios above the forecast median, computed with
+no realised value in it.
+================================================================================================================
+wrote tools/premium_model_validation/results/two_sided_2026-11-12.json

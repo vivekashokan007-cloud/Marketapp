@@ -560,7 +560,7 @@ def arm_stats(decided, buys, outcomes, intervals, planned_intervals=(), capital=
 
 
 def run(export_path, spots_path, ledger_root, horizon_min=60, margin=REQUIRED_MARGIN_INR,
-        legacy_noncausal=False, risk_budget_inr=None):
+        legacy_noncausal=False, risk_budget_inr=None, side=None):
     led, why = load_ledger(ledger_root)
     out = {'economic_check_version': ECONOMIC_CHECK_VERSION,
            'horizon_min': horizon_min,
@@ -574,7 +574,13 @@ def run(export_path, spots_path, ledger_root, horizon_min=60, margin=REQUIRED_MA
            'label': 'PROXY_SIMULATED_FILL -- no order was placed',
            'quote_clock': TC.RECEIPT_PROXY,
            'legacy_noncausal': bool(legacy_noncausal),
-           'common_risk_budget_inr': risk_budget_inr}
+           'common_risk_budget_inr': risk_budget_inr,
+           # BUY CALL and BUY PUT are SEPARATE ALTERNATIVES, as Codex asked, not one blended
+           # arm. Restricting the population to one side is how they are compared: each gets the
+           # same budget, the same decision times and the same rules, and `one_sided_population`
+           # records that its coverage is of that side only.
+           'side': side,
+           'one_sided_population': bool(side)}
     if led is None:
         out['refused'] = why
         return out
@@ -620,6 +626,8 @@ def run(export_path, spots_path, ledger_root, horizon_min=60, margin=REQUIRED_MA
         lots = lot_map(ex, ix, led, horizon_min)
         opps, plan, cov = build_opportunities(ex, ix, hist, hist_dates, horizon_min,
                                               session, calendar, lots)
+        if side:
+            opps = [o for o in opps if ((o['view'] or {}).get('kind')) == side]
         session_end_slot = max([o['target_slot'] for o in opps] or [0])
         node = {'planned_opportunities': plan['planned_opportunities'],
                 'session_end_slot': session_end_slot,
@@ -776,6 +784,9 @@ def report(out):
                 if out.get('common_risk_budget_inr') is not None else
                 'UNCONSTRAINED; peak simultaneous commitment reported per arm instead'))
     L.append('        and realised after the exit; the decision never sees the realisation.')
+    if out.get('side'):
+        L.append('SIDE    %s only -- a ONE-SIDED population. Its coverage is of that side, not '
+                 'of the whole plan.' % out['side'])
     L.append('label   %s' % out['label'])
     L.append('        %s' % out['quote_clock'])
 
@@ -856,6 +867,9 @@ def main(argv=None):
     ap.add_argument('--margin-inr', type=float, default=REQUIRED_MARGIN_INR)
     ap.add_argument('--legacy-noncausal', action='store_true',
                     help='reproduce the superseded v1 defects, for reconciliation ONLY')
+    ap.add_argument('--side', choices=('CE', 'PE'), default=None,
+                    help='restrict the decision population to one side, so BUY CALL and BUY PUT '
+                         'are scored as separate alternatives rather than one blended arm')
     ap.add_argument('--risk-budget-inr', type=float, default=None,
                     help='a common cap on simultaneous capital at risk, applied identically to '
                          'every actionable arm in decision order; omitted means unconstrained, '
@@ -864,13 +878,16 @@ def main(argv=None):
     ap.add_argument('--json-only', action='store_true')
     a = ap.parse_args(argv)
     out = run(a.export, a.spots, a.ledger_root, a.horizon_min, a.margin_inr,
-              legacy_noncausal=a.legacy_noncausal, risk_budget_inr=a.risk_budget_inr)
+              legacy_noncausal=a.legacy_noncausal, risk_budget_inr=a.risk_budget_inr,
+              side=a.side)
     if not a.json_only:
         for line in report(out):
             print(line)
     if a.out:
         os.makedirs(a.out, exist_ok=True)
         tag = '_legacy_noncausal' if a.legacy_noncausal else ''
+        if a.side:
+            tag += '_%s' % a.side
         p = os.path.join(a.out, 'economic_check_%s%s.json'
                          % (out.get('session') or 'none', tag))
         with open(p, 'w') as f:

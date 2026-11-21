@@ -1,0 +1,16 @@
+######## NF ########
+attempted pairs 2
+  REFUSED  2026-11-12 -> 2026-11-13   no_observations_for_index_in_next_session
+  REFUSED  2026-11-13 -> 2026-11-16   no_observations_for_index_in_close_session
+
+refusals by reason:
+  no_observations_for_index_in_close_session 1
+  no_observations_for_index_in_next_session 1
+######## BNF ########
+attempted pairs 2
+  REFUSED  2026-11-12 -> 2026-11-13   no_observations_for_index_in_next_session
+  REFUSED  2026-11-13 -> 2026-11-16   no_observations_for_index_in_close_session
+
+refusals by reason:
+  no_observations_for_index_in_close_session 1
+  no_observations_for_index_in_next_session 1

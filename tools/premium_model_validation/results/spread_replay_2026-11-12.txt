@@ -1,0 +1,37 @@
+================================================================================================================
+TWO-LEG DEBIT SPREAD REPLAY   premium_two_leg_debit_spread_replay_v1
+================================================================================================================
+session 2026-11-12   horizon 60 min   tick 0.05
+fees    nse_equity_index_options_rates_20261116_v2, verified through 2026-11-16, legs=2 (four orders per round trip)
+tree    c73b28cd7358  MODIFIED: research/replay/fee_models.py
+COST BASIS  *** PROVISIONAL *** the fee revision is not committed
+label   PROXY_SIMULATED_FILL -- no order was placed
+
+REFUSED, not replayed:
+    BEAR_CALL_CREDIT   credit spread: no hedged-margin evidence in the export, so practical executability cannot be claimed
+    BULL_PUT_CREDIT    credit spread: no hedged-margin evidence in the export, so practical executability cannot be claimed
+
+--- BNF   expiry 2026-11-23   lot 30 ---
+    CE strikes [61100, 61200, 61300]   slots 54   with two usable legs 54
+    PE strikes [61100, 61200, 61300]   slots 54   with two usable legs 54
+    structure          legs                   scored  total INR  mean INR     worst    win%   net p10 mean maxloss
+    BEAR_PUT_DEBIT     buy 61300 / sell 61100 PE     41     -11848    -289.0      -660      0%      -532        3287
+        skipped: decision:leg_quote_missing_at_decision=1, exit:leg_quote_missing_at_exit=11, fill:leg_quote_missing_at_decision=1
+    BULL_CALL_DEBIT    buy 61100 / sell 61300 CE     42      -8137    -193.7      -377     19%      -354        2859
+        skipped: exit:leg_quote_missing_at_exit=11, fill:leg_quote_missing_at_decision=1
+
+--- NF   expiry 2026-11-17   lot 65 ---
+    CE strikes [25250, 25300, 25350]   slots 53   with two usable legs 53
+    PE strikes [25250, 25300, 25350]   slots 53   with two usable legs 53
+    structure          legs                   scored  total INR  mean INR     worst    win%   net p10 mean maxloss
+    BEAR_PUT_DEBIT     buy 25350 / sell 25250 PE     41      +1249     +30.5      -514     61%      -300        3226
+        skipped: exit:leg_quote_missing_at_exit=11, fill:leg_quote_missing_at_decision=1
+    BULL_CALL_DEBIT    buy 25250 / sell 25350 CE     41     -15316    -373.6      -738     10%      -697        3285
+        skipped: exit:leg_quote_missing_at_exit=11, fill:leg_quote_missing_at_decision=1
+
+================================================================================================================
+A debit vertical has DEFINED risk: the most it can lose is the net debit, which is
+what `mean maxloss` reports and what a budget would reserve. Credit verticals are
+refused above for want of margin evidence, not for want of legs.
+================================================================================================================
+wrote tools/premium_model_validation/results/spread_replay_2026-11-12.json
