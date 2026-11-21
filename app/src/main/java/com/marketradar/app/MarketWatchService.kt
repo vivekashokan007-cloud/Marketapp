@@ -2266,16 +2266,21 @@ class MarketWatchService : Service() {
      * policy BUY needs later-expiry evidence. Read-only broker requests through [ExpiryFallbackAcquirer]; the
      * Python planner re-plans at its own clock (the selection cutoff) and the result is patched in place.
      * Any failure leaves the analysis plan (already a named WAIT: EXPIRY_FALLBACK_EVIDENCE_PENDING).
+     * R4 (Codex R3 reply): returns the attempt when it is APPLY_ACCEPTED (patch applied in memory, not yet
+     * acknowledged); the caller decides it at the final publication gate ([ExpiryFallbackPublication.publishThroughGate])
+     * or fences it when the analysis ends first ([ExpiryFallbackPublication.fenceUnfinished]). Otherwise null.
      */
-    private fun applyExpiryFallback(brain: com.chaquo.python.PyObject, resultObj: JSONObject, ctxObj: JSONObject, openTradesJson: String) {
+    private fun applyExpiryFallback(brain: com.chaquo.python.PyObject, resultObj: JSONObject, ctxObj: JSONObject,
+                                    openTradesJson: String): ExpiryFallbackPublication.Attempt? {
+        var accepted: ExpiryFallbackPublication.Attempt? = null
         try {
             val needs = ExpiryFallbackAcquirer.needs(resultObj)
-            if (needs.isEmpty()) { ExpiryFallbackAcquirer.markWait(resultObj, "NOT_ACQUIRED"); return }
+            if (needs.isEmpty()) { ExpiryFallbackAcquirer.markWait(resultObj, "NOT_ACQUIRED"); return null }
             val tok = (prefs.getString("auth_token", "") ?: "").trim()
             if (tok.isEmpty()) {
                 ExpiryFallbackAcquirer.markWait(resultObj, "NO_TOKEN")
                 LogBuffer.add('W', TAG, "EXPIRY_FALLBACK_SKIP: reason=NO_TOKEN")
-                return
+                return null
             }
             val clocks = ManagedReadAdapters.Clocks({ System.currentTimeMillis() }, { android.os.SystemClock.elapsedRealtime() })
             val sess = IndexAuthorityContext.istSession(System.currentTimeMillis())
@@ -2311,29 +2316,40 @@ class MarketWatchService : Service() {
                         attempt.toString()).toString()
                 },
                 { attempt, state ->
-                    if (state == ExpiryFallbackPublication.State.PUBLISHED || state == ExpiryFallbackPublication.State.TIMED_OUT ||
-                        state == ExpiryFallbackPublication.State.CANCELLED) {
-                        val now = System.currentTimeMillis()
-                        expiryFallbackReconcileQueue.execute {
-                            try {
-                                brain.callAttr("single_leg_expiry_fallback_reconcile", slDir.absolutePath, attempt.id,
-                                    attempt.generation, state.name, now)
-                            } catch (e: Exception) {
-                                LogBuffer.add('W', TAG, "EXPIRY_FALLBACK_RECONCILE_FAIL: ${e.javaClass.simpleName}")
-                            }
-                        }
-                    }
+                    // R4: only apply-step decisions arrive here (TIMED_OUT / CANCELLED); APPLY_ACCEPTED is not sent
+                    queueExpiryFallbackReconcile(slDir, ExpiryFallbackPublication.Decision(attempt, state, null, null,
+                        System.currentTimeMillis()))
                 })
-            if (decision.state != ExpiryFallbackPublication.State.PUBLISHED) {
+            if (decision.state != ExpiryFallbackPublication.State.APPLY_ACCEPTED) {
                 LogBuffer.add('W', TAG, "EXPIRY_FALLBACK_FAIL: reason=${decision.state} gen=${decision.attempt.generation}")
-                return
+                return null
             }
+            accepted = decision.attempt
             val patch = decision.patch ?: JSONObject()
             val n = patch.optJSONObject("single_leg_by_index")?.length() ?: 0
             LogBuffer.add('I', TAG, "EXPIRY_FALLBACK: applied=$n ${ExpiryFallbackAcquirer.logLine(ev, patch)}")
         } catch (e: Exception) {
             ExpiryFallbackAcquirer.markWait(resultObj, "APPLY_ERROR")
             LogBuffer.add('W', TAG, "EXPIRY_FALLBACK_FAIL: ${e.javaClass.simpleName}")
+        }
+        return accepted
+    }
+
+    /** R3/R4: publication decisions go to Python in order on one background thread, never blocking a poll. Only
+     *  terminal native decisions are sent (PUBLISHED / NOT_PUBLISHED with reason / TIMED_OUT / CANCELLED). */
+    private fun queueExpiryFallbackReconcile(slDir: java.io.File, d: ExpiryFallbackPublication.Decision) {
+        val st = d.state
+        if (st != ExpiryFallbackPublication.State.PUBLISHED && st != ExpiryFallbackPublication.State.NOT_PUBLISHED &&
+            st != ExpiryFallbackPublication.State.TIMED_OUT && st != ExpiryFallbackPublication.State.CANCELLED) return
+        val now = d.decidedMs ?: System.currentTimeMillis()
+        expiryFallbackReconcileQueue.execute {
+            try {
+                val brain = Python.getInstance().getModule("brain")
+                brain.callAttr("single_leg_expiry_fallback_reconcile", slDir.absolutePath, d.attempt.id,
+                    d.attempt.generation, st.name, now, d.reason)
+            } catch (e: Exception) {
+                LogBuffer.add('W', TAG, "EXPIRY_FALLBACK_RECONCILE_FAIL: ${e.javaClass.simpleName}")
+            }
         }
     }
 
@@ -2437,6 +2453,9 @@ class MarketWatchService : Service() {
         var brainAnalyzeStartedAtMs = 0L
         // Evidence batch 1 (Item B): slot key of an in-flight Paper decision-menu capture attempt.
         var paperMenuAttemptSlot: String? = null
+        // R4 (Codex R3 reply): an APPLY_ACCEPTED expiry-fallback attempt carried by this result until the final gate
+        var efbAttempt: ExpiryFallbackPublication.Attempt? = null
+        var efbAbort: String? = null
 
         try {
             val ctxObj = JSONObject(prefs.getString("context", "{}") ?: "{}")
@@ -3038,7 +3057,7 @@ class MarketWatchService : Service() {
                 // R2: a refresh never acquires; a pending fallback plan is withdrawn with an explicit WAIT so a
                 // displayed fallback proposal cannot be tapped against a refreshed decision (stale tap rejected by
                 // admission's decision/instrument probe; the next qualifying poll re-plans from fresh evidence).
-                if (!isRefresh) applyExpiryFallback(brain, resultObj, ctxObj, openTradesJson)
+                if (!isRefresh) efbAttempt = applyExpiryFallback(brain, resultObj, ctxObj, openTradesJson)
                 else ExpiryFallbackAcquirer.markWait(resultObj, "REFRESH_NOT_ACQUIRED")
                 // R5 s2: authority state delta leaves the result; persisted by the serialized IO worker below
                 val iaPersist = try { IndexAuthorityContext.takePersist(resultObj) } catch (e: Exception) { null }
@@ -3425,9 +3444,12 @@ class MarketWatchService : Service() {
                 val candidates = resultObj.optJSONArray("generated_candidates")
                     ?: resultObj.optJSONArray("candidates")
                 // b507 R1 (F3/F4): validation and the result-reference commit are ONE guarded operation.
-                outcome = analysisAuthority.publish(identity) {
-                    BrainResultStore.save(this, prefs, finalBrainString, candidates?.toString())
-                }
+                // R4 (Codex R3 reply): the expiry-fallback attempt (if any) is decided HERE, after publish returns:
+                // PUBLISHED only for a successful guarded commit, otherwise NOT_PUBLISHED with the authority's reason.
+                outcome = ExpiryFallbackPublication.publishThroughGate(expiryFallbackPublication, efbAttempt,
+                    analysisAuthority, identity, { System.currentTimeMillis() },
+                    { BrainResultStore.save(this, prefs, finalBrainString, candidates?.toString()) },
+                    { d -> queueExpiryFallbackReconcile(IndexAuthorityContext.singleLegDir(filesDir), d) })
                 val publishNow = outcome == AnalysisAuthority.Outcome.PUBLISHED
                 // R5 s2: persist the authority delta off the analysis path; published_at only when PUBLISHED
                 if (iaPersist != null) {
@@ -3527,7 +3549,17 @@ class MarketWatchService : Service() {
             Log.e(TAG, "BRAIN_ERROR: ${e.message}\n${e.stackTraceToString()}")
             paperMenuAttemptSlot?.let { recordPaperMenuAttemptFailure(it, "brain_exception:${e.javaClass.simpleName}") }
             paperMenuAttemptSlot = null
+            efbAbort = "ABORTED_BEFORE_FINAL_PUBLISH:${e.javaClass.simpleName}"
         } finally {
+            // R4 finalizer: an attempt that never reached the final gate is fenced NOT_PUBLISHED; a decided attempt
+            // (PUBLISHED / NOT_PUBLISHED / GATE_UNRESOLVED) is never touched.
+            try {
+                ExpiryFallbackPublication.fenceUnfinished(expiryFallbackPublication, efbAttempt,
+                    efbAbort ?: "ANALYSIS_ENDED_BEFORE_FINAL_PUBLISH", { System.currentTimeMillis() },
+                    { d -> queueExpiryFallbackReconcile(IndexAuthorityContext.singleLegDir(filesDir), d) })
+            } catch (e: Exception) {
+                LogBuffer.add('W', TAG, "EXPIRY_FALLBACK_FENCE_FAIL: ${e.javaClass.simpleName}")
+            }
             // Keep the Binder payload empty. The WebView pulls the latest native
             // state directly, and sending the full brain payload here can exceed
             // Android's parcel limit and crash the poll loop.

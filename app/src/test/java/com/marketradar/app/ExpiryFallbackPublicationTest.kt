@@ -14,7 +14,7 @@ import java.nio.file.Files
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
-/** R3 (Codex R2 reply s3): publication reconciliation of the expiry-fallback apply. SYNTHETIC: fake broker transport,
+/** R3 (Codex R2 reply s3), R4 (Codex R3 reply: apply success is APPLY_ACCEPTED, see ExpiryFallbackFinalGateTest): publication reconciliation of the expiry-fallback apply. SYNTHETIC: fake broker transport,
  *  fake Python apply (sleeps / returns), deterministic native clock where needed. */
 class ExpiryFallbackPublicationTest {
     @Before fun quiet() { PyTimeout.logger = { } }
@@ -101,10 +101,15 @@ class ExpiryFallbackPublicationTest {
         val r2 = result()
         val d2 = ExpiryFallbackPublication.applyAndPublish(r2, pub, key, 2_000L, Long.MAX_VALUE, { 0L },
             { a -> patchFor(a) }, rec::add)
-        assertEquals(S.PUBLISHED, d2.state)
+        assertEquals(S.APPLY_ACCEPTED, d2.state)                 // R4: accepted in memory, not yet published
         assertEquals(d.attempt.generation + 1, d2.attempt.generation)
         assertEquals("NSE_FO|NF2026120124000CE", r2.getJSONObject("single_leg_by_index").getJSONObject("NF").getString("instrument_key"))
         assertEquals(d2.attempt.id, fb(r2, "NF").getJSONObject("attempt").getString("attempt_id"))
+        assertEquals(listOf(d.attempt.id to S.TIMED_OUT), rec.calls)  // R4: no acknowledgement before the final gate
+        val auth = AnalysisAuthority().apply { attachRevisionSource { "rev-1" } }
+        val out = ExpiryFallbackPublication.publishThroughGate(pub, d2.attempt, auth,
+            AnalysisAuthority.Identity("2026-11-23", "rev-1", 1_000L, "POLL"), { 5L }, { true }) { rec.add(it.attempt, it.state) }
+        assertEquals(AnalysisAuthority.Outcome.PUBLISHED, out)
         assertEquals(listOf(d.attempt.id to S.TIMED_OUT, d2.attempt.id to S.PUBLISHED), rec.calls)
     }
 
@@ -132,7 +137,7 @@ class ExpiryFallbackPublicationTest {
         assertEquals(S.CANCELLED, d.state)
         assertWaited(r, "APPLY_SUPERSEDED")
         assertEquals(S.CANCELLED, pub.tryAccept(d.attempt, 0L, Long.MAX_VALUE))
-        assertEquals(S.PUBLISHED, pub.tryAccept(newer!!, 0L, Long.MAX_VALUE))
+        assertEquals(S.APPLY_ACCEPTED, pub.tryAccept(newer!!, 0L, Long.MAX_VALUE))
         assertTrue(newer!!.generation > d.attempt.generation)
         // the cancel was reconciled once (by begin), the old attempt's own decision repeats the same final state
         assertEquals(listOf(d.attempt.id to S.CANCELLED, d.attempt.id to S.CANCELLED), rec.calls)
@@ -148,7 +153,7 @@ class ExpiryFallbackPublicationTest {
         val r = result()
         val d = ExpiryFallbackPublication.applyAndPublish(r, after, "test.efb.rst." + System.nanoTime(), 2_000L, Long.MAX_VALUE,
             { 0L }, { a -> patchFor(a) }, rec::add)
-        assertEquals(S.PUBLISHED, d.state)
+        assertEquals(S.APPLY_ACCEPTED, d.state)
         assertTrue(d.attempt.generation > old.generation)
         assertNotEquals(old.id, d.attempt.id)
     }

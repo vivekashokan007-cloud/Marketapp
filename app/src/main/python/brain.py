@@ -28284,16 +28284,18 @@ def single_leg_expiry_fallback_apply(sl_dir, result_json, ctx_json, evidence_jso
         return json.dumps({'error': 'EXPIRY_FALLBACK_APPLY_ERROR:' + type(exc).__name__})
 
 
-def single_leg_expiry_fallback_reconcile(sl_dir, attempt_id, generation, state, now_ms=None):
+def single_leg_expiry_fallback_reconcile(sl_dir, attempt_id, generation, state, now_ms=None, reason=None):
     """R3 (Codex R2 reply s3): native's publication decision for one apply attempt (PUBLISHED / TIMED_OUT /
-    CANCELLED).  A terminal state never changes; see expiry_fallback_v1.reconcile."""
+    CANCELLED).  R4 (Codex R3 reply): PUBLISHED only after the final gate committed; NOT_PUBLISHED + reason for a
+    refused / unfinished attempt.  A terminal state never changes; see expiry_fallback_v1.reconcile."""
     import time as _time
     import expiry_fallback_v1 as _efb
     import single_leg_store_v1 as _sls
     try:
         g = int(generation) if generation is not None else None
         return json.dumps(_efb.reconcile(_sls.check_dir(sl_dir), str(attempt_id or ''), g, str(state or ''),
-                                         int(now_ms) if now_ms is not None else int(_time.time() * 1000)))
+                                         int(now_ms) if now_ms is not None else int(_time.time() * 1000),
+                                         reason=str(reason) if reason else None))
     except Exception as exc:
         return json.dumps({'accepted': False, 'error': 'EXPIRY_FALLBACK_RECONCILE_ERROR:' + type(exc).__name__})
 

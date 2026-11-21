@@ -1,4 +1,4 @@
-"""expiry_fallback_v1: expiry-day Paper-BUY fallback evidence path (REVIEW DRAFT r3, Paper only).
+"""expiry_fallback_v1: expiry-day Paper-BUY fallback evidence path (REVIEW DRAFT r4, Paper only).
 
 Scope (and nothing else):
   * acts ONLY on an index's own expiry day (ctx trading expiry == session date) and ONLY when the existing
@@ -102,8 +102,14 @@ WAIT_CODES = (
 # ---- R3 publication reconciliation (Codex R2 reply s3) -------------------------------------------------------
 # Each native apply is one ATTEMPT (attempt_id, generation: native persisted monotonic counter).  A retained outcome
 # keeps the planner's COMPUTED verdict and clocks for diagnostics, and separately its publication state:
-#   UNCONFIRMED           retained and returned to native; no native acknowledgement (yet / ever: e.g. restart)
-#   PUBLISHED             native accepted it inside its deadline as the current attempt and published it
+#   UNCONFIRMED           retained and returned to native; no native acknowledgement (yet / ever: e.g. restart,
+#                         process death, a lost acknowledgement or a final gate that threw).  Never inferred away.
+#   PUBLISHED             R4: the app's final gate (AnalysisAuthority.publish) returned PUBLISHED from a successful
+#                         result-store commit; decided_ms = when publish returned.  It means the app COMMITTED the
+#                         result, not that it was rendered, notified or seen (separate display/transport evidence)
+#   NOT_PUBLISHED         R4: apply accepted, but the final gate refused it or the analysis ended/aborted before the
+#                         gate (reason = SUPERSEDED_INPUT / STALE_MARKET / MARKET_IDENTITY_UNAVAILABLE / PERSIST_FAILED /
+#                         ANALYSIS_ENDED_BEFORE_FINAL_PUBLISH / ABORTED_BEFORE_FINAL_PUBLISH:<exception>)
 #   TIMED_OUT             native timed out (PyTimeout) or found the native apply deadline passed before accepting
 #   CANCELLED             native cancelled it (superseded by a newer attempt, or an apply error)
 #   NOT_RETURNED_DEADLINE Python passed deadline_ms after this retention write and returned no plans
@@ -112,8 +118,10 @@ WAIT_CODES = (
 # refused), so late completion never promotes a timed-out / cancelled attempt and old work never overwrites newer.
 PUB_UNCONFIRMED, PUB_PUBLISHED, PUB_TIMED_OUT, PUB_CANCELLED = 'UNCONFIRMED', 'PUBLISHED', 'TIMED_OUT', 'CANCELLED'
 PUB_NOT_RETURNED, PUB_SUPERSEDED = 'NOT_RETURNED_DEADLINE', 'SUPERSEDED'
-PUB_STATES = (PUB_UNCONFIRMED, PUB_PUBLISHED, PUB_TIMED_OUT, PUB_CANCELLED, PUB_NOT_RETURNED, PUB_SUPERSEDED)
-PUB_NATIVE_STATES = (PUB_PUBLISHED, PUB_TIMED_OUT, PUB_CANCELLED)
+PUB_NOT_PUBLISHED = 'NOT_PUBLISHED'
+PUB_STATES = (PUB_UNCONFIRMED, PUB_PUBLISHED, PUB_TIMED_OUT, PUB_CANCELLED, PUB_NOT_RETURNED, PUB_SUPERSEDED,
+              PUB_NOT_PUBLISHED)
+PUB_NATIVE_STATES = (PUB_PUBLISHED, PUB_TIMED_OUT, PUB_CANCELLED, PUB_NOT_PUBLISHED)
 MAX_ATTEMPTS_RECORDED = 64
 # one interpreter, many native threads (apply worker, reconcile queue): every read-modify-write of the retention
 # file holds this lock, so a late apply and a reconcile can never interleave their writes.
@@ -1019,7 +1027,7 @@ def _write_doc(sl_dir, raw):
     os.replace(tmp, _retain_path(sl_dir))
 
 
-def reconcile(sl_dir, attempt_id, generation, state, now_ms=None, source='native'):
+def reconcile(sl_dir, attempt_id, generation, state, now_ms=None, source='native', reason=None):
     """R3 (Codex R2 reply s3): record native's publication decision for one attempt (all its indices).
 
     Allowed: UNCONFIRMED (or not yet retained) -> PUBLISHED / TIMED_OUT / CANCELLED (native) or
@@ -1027,10 +1035,13 @@ def reconcile(sl_dir, attempt_id, generation, state, now_ms=None, source='native
     be the newest generation of every index it covers.  A terminal state never changes: the call is refused and
     counted (late_acks_refused).  An attempt native times out BEFORE the late Python write is recorded first, so
     the late write inherits the terminal state (never UNCONFIRMED, never PUBLISHED).
+    R4 (Codex R3 reply): native sends PUBLISHED only after its final gate committed the result, and NOT_PUBLISHED
+    with `reason` (required) for a refused / unfinished attempt; the reason is stored on the attempt and outcomes.
     Returns {'accepted': bool, 'state': final state, 'reason'?}."""
     allowed = PUB_NATIVE_STATES if source == 'native' else (PUB_NOT_RETURNED,)
-    if state not in allowed or not attempt_id:
+    if state not in allowed or not attempt_id or (state == PUB_NOT_PUBLISHED and not reason):
         return {'accepted': False, 'state': None, 'reason': 'INVALID_TRANSITION_REQUEST'}
+    why = str(reason)[:96] if reason else None
     with _LOCK:
         doc = read_retained(sl_dir)
         if doc is None:
@@ -1046,6 +1057,8 @@ def reconcile(sl_dir, attempt_id, generation, state, now_ms=None, source='native
             else:
                 pub['attempts'][attempt_id] = {'generation': generation, 'state': state, 'indices': [],
                                                'retained': False, 'decided_ms': now_ms, 'decided_by': source}
+                if why:
+                    pub['attempts'][attempt_id]['reason'] = why
                 res.update(accepted=True, state=state)
         elif a.get('state') != PUB_UNCONFIRMED:
             if state != a.get('state'):        # a repeat of the same decision is idempotent, not a late ack
@@ -1062,6 +1075,8 @@ def reconcile(sl_dir, attempt_id, generation, state, now_ms=None, source='native
             res.update(state=PUB_SUPERSEDED, reason='NEWER_GENERATION_RETAINED')
         else:
             a.update(state=state, decided_ms=now_ms, decided_by=source)
+            if why:
+                a['reason'] = why
             res.update(accepted=True, state=state)
         if a is not None:
             for ix in a.get('indices') or []:
@@ -1070,6 +1085,8 @@ def reconcile(sl_dir, attempt_id, generation, state, now_ms=None, source='native
                     if po.get('attempt_id') == attempt_id:
                         po['state'] = a['state']
                         po['decided_ms'] = a.get('decided_ms')
+                        if a.get('reason'):
+                            po['reason'] = a['reason']
                         o['publication'] = po
         _bound_attempts(pub)
         _write_doc(sl_dir, json.dumps(doc, separators=(',', ':'), sort_keys=True))
