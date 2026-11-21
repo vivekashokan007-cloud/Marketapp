@@ -78,6 +78,10 @@ TICK_INR = 0.05
 #: The forecast arm buys only when the ESTIMATED net clears this margin. Declared, never tuned.
 REQUIRED_MARGIN_INR = 0.0
 RULE_VARIANTS = ('E0_TILT_0', 'E0_TILT_0p5', 'E0_TILT_1', 'IV_ONLY', 'HIST')
+#: the predeclared range-aware challenger runs on the distributions whose SHAPE is the thing the
+#: scoring study found valuable: the fully recentred tilt and the two same-centre references.
+RANGE_EV_VARIANTS = ('E0_TILT_0', 'IV_ONLY', 'HIST')
+RANGE_EV_PREDECLARATION = 'PREDECLARATION_RANGE_AWARE_RULE_20261121.md'
 
 LEDGER_RELPATH = os.path.join('tools', 'premium_followon', 'cost_ledger.py')
 
@@ -203,6 +207,77 @@ def estimate_round_trip(view, variant, fees_fn):
             'break_even_exit_price': pay + (fees['total'] / lot) + TICK_INR,
             'fee_basis': 'ESTIMATE_AT_DECISION',
             'rates_table_version': fees.get('rates_table_version')}, None
+
+
+def estimate_range_round_trip(view, variant, fees_fn):
+    """The decision-time estimate under the WHOLE forecast distribution.
+
+    Predeclared in `PREDECLARATION_RANGE_AWARE_RULE_20261121.md`, committed before this code
+    existed. Per scenario price p_i:
+
+        net_i = ( max(p_i - tick, 0) - pay ) * lot - fees
+
+    A long option cannot be sold for less than nothing, so the exit is floored at zero and the
+    number of floored scenarios is REPORTED -- it is not a clip applied to flatter the arm.
+
+    Expected net is the gate. Break-even probability, expected shortfall and the tenth-percentile
+    net are computed here and carried alongside, per Codex's instruction to keep them together,
+    but are deliberately not part of the decision.
+    """
+    if view is None:
+        return None, 'no_decision_view'
+    d = (view.get('forecast_distribution') or {}).get(variant)
+    if not d:
+        return None, 'variant_not_forecast_at_decision'
+    scen = d.get('scenarios')
+    if not scen:
+        return None, 'no_scenario_set_at_decision'
+    ask = (view.get('quote_at_decision') or {}).get('ask')
+    if ask is None:
+        return None, 'no_ask_at_decision'
+    lot = view.get('lot')
+    if not lot:
+        return None, 'lot_authority_unresolved_at_decision'
+    pay = ask + TICK_INR
+    try:
+        fees = fees_fn(view['session_date'], view['session_date'], lot,
+                       pay, max(d['point'] - TICK_INR, 0.0))
+    except Exception as exc:
+        return None, 'fee_rates_unknown_for_trade_date:%s' % type(exc).__name__
+    fee_total = fees['total']
+    nets, floored = [], 0
+    for p in scen:
+        got = p - TICK_INR
+        if got < 0.0:
+            got, floored = 0.0, floored + 1
+        nets.append((got - pay) * lot - fee_total)
+    n = len(nets)
+    be = pay + (fee_total / lot) + TICK_INR
+    losses = [x for x in nets if x < 0]
+    srt = sorted(nets)
+    return {'expected_net_inr': statistics.fmean(nets),
+            'break_even_exit_price': be,
+            'break_even_probability': sum(1 for p in scen if p - TICK_INR > be) / n,
+            'expected_shortfall_inr': (statistics.fmean(losses) if losses else None),
+            'net_p10_inr': srt[max(0, int(0.10 * (n - 1)))],
+            'worst_scenario_net_inr': srt[0],
+            'scenarios': n,
+            'floored_scenarios': floored,
+            'estimated_entry_price': pay,
+            'estimated_risk_inr': pay * lot,
+            'estimated_fees_inr': fee_total,
+            'fee_basis': 'ESTIMATE_AT_DECISION',
+            'rates_table_version': fees.get('rates_table_version')}, None
+
+
+def decide_range_ev(view, variant, fees_fn, margin=REQUIRED_MARGIN_INR):
+    """(decision, reason, estimate) -- the predeclared RANGE_EV rule. Zero free parameters."""
+    est, why = estimate_range_round_trip(view, variant, fees_fn)
+    if est is None:
+        return 'WAIT', 'UNDECIDABLE_%s' % why, None
+    if est['expected_net_inr'] > margin:
+        return 'BUY', 'EXPECTED_NET_CLEARS_MARGIN', est
+    return 'WAIT', 'EXPECTED_NET_BELOW_MARGIN', est
 
 
 def decide(view, variant, fees_fn, margin=REQUIRED_MARGIN_INR):
@@ -355,13 +430,23 @@ def arm_stats(decided, buys, outcomes, intervals, planned_intervals=()):
                     'worst_net_inr': None, 'win_rate': None, 'total_risk_inr': 0.0,
                     'return_on_risk': None})
         return out
+    srt = sorted(nets)
+    losses = [x for x in nets if x < 0]
+    mean_net = statistics.fmean(nets)
+    p10 = srt[max(0, int(0.10 * (len(srt) - 1)))]
     out.update({'total_net_inr': sum(nets),
-                'mean_net_inr': statistics.fmean(nets),
+                'mean_net_inr': mean_net,
                 'median_net_inr': statistics.median(nets),
                 'worst_net_inr': min(nets),
                 'win_rate': sum(1 for x in nets if x > 0) / len(nets),
                 'total_risk_inr': sum(risks),
-                'return_on_risk': (sum(nets) / sum(risks)) if sum(risks) else None})
+                'return_on_risk': (sum(nets) / sum(risks)) if sum(risks) else None,
+                # REALISED downside, against the bar set in the range-aware predeclaration
+                # before any figure was seen: net_p10 >= -2 x |mean net| on its own trades.
+                'net_p10_inr': p10,
+                'expected_shortfall_inr': (statistics.fmean(losses) if losses else None),
+                'downside_bar_inr': -2.0 * abs(mean_net),
+                'meets_declared_downside_bar': p10 >= -2.0 * abs(mean_net)})
     return out
 
 
@@ -375,6 +460,8 @@ def run(export_path, spots_path, ledger_root, horizon_min=60, margin=REQUIRED_MA
            'required_margin_inr': margin,
            'tick_inr': TICK_INR,
            'rule_variants': list(RULE_VARIANTS),
+           'range_ev_variants': list(RANGE_EV_VARIANTS),
+           'range_ev_predeclaration': RANGE_EV_PREDECLARATION,
            'label': 'PROXY_SIMULATED_FILL -- no order was placed',
            'quote_clock': TC.RECEIPT_PROXY,
            'legacy_noncausal': bool(legacy_noncausal),
@@ -437,6 +524,8 @@ def run(export_path, spots_path, ledger_root, horizon_min=60, margin=REQUIRED_MA
 
         arms_to_run = [('BUY_ALL_DIAGNOSTIC', None)]
         arms_to_run += [('FORECAST_RULE_%s' % v, v) for v in RULE_VARIANTS]
+        # the predeclared range-aware challenger, on the same population and the same costs
+        arms_to_run += [('RANGE_EV_%s' % v, v) for v in RANGE_EV_VARIANTS]
 
         for arm_name, variant in arms_to_run:
             buys, outcomes, intervals = [], [], []
@@ -470,6 +559,8 @@ def run(export_path, spots_path, ledger_root, horizon_min=60, margin=REQUIRED_MA
                 else:
                     if legacy_noncausal:
                         dec, reason, est = _legacy_decide(o, variant, fees_fn, margin, session)
+                    elif arm_name.startswith('RANGE_EV_'):
+                        dec, reason, est = decide_range_ev(view, variant, fees_fn, margin)
                     else:
                         dec, reason, est = decide(view, variant, fees_fn, margin)
                 # `reason` is a stable CODE, never a formatted number: bucketing on a string that
@@ -583,8 +674,9 @@ def report(out):
         L.append('    %-26s %7s %7s %8s %8s %11s %10s %10s %7s %8s %11s %11s' %
                  ('arm', 'decided', 'buys', 'buy%', 'scored', 'total INR', 'mean INR',
                   'worst INR', 'win%', 'peak pos', 'plan risk', 'real risk'))
-        order = ['WAIT', 'BUY_ALL_DIAGNOSTIC'] + ['FORECAST_RULE_%s' % v
-                                                  for v in out['rule_variants']]
+        order = (['WAIT', 'BUY_ALL_DIAGNOSTIC']
+                 + ['FORECAST_RULE_%s' % v for v in out['rule_variants']]
+                 + ['RANGE_EV_%s' % v for v in out.get('range_ev_variants') or ()])
         for name in order:
             a = n['arms'].get(name)
             if not a:

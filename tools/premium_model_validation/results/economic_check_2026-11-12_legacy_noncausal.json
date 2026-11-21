@@ -33,8 +33,12 @@
       "DIAGNOSTIC_BUY_ALL": 323
      },
      "decision_time_opportunities": 323,
+     "downside_bar_inr": -820.571992766138,
+     "expected_shortfall_inr": -1448.834881566583,
      "mean_net_inr": -410.285996383069,
      "median_net_inr": -446.2535780259966,
+     "meets_declared_downside_bar": false,
+     "net_p10_inr": -2279.2573687689987,
      "outcome_coverage": 0.7770897832817337,
      "outcome_status": {
       "NOT_FILLED_NO_QUOTE_AT_FILL_POLL": 6,
@@ -57,16 +61,19 @@
      "buys": 97,
      "decision_reasons": {
       "LEGACY_ESTIMATE_BELOW_MARGIN": 154,
-      "LEGACY_ESTIMATE_CLEARS_MARGIN": 97,
-      "UNDECIDABLE_legacy_inputs_absent": 72
+      "LEGACY_ESTIMATE_CLEARS_MARGIN": 97
      },
      "decision_time_opportunities": 323,
+     "downside_bar_inr": -725.8050444901389,
+     "expected_shortfall_inr": -1584.8300739273307,
      "mean_net_inr": -362.90252224506946,
      "median_net_inr": -362.6528277819973,
+     "meets_declared_downside_bar": false,
+     "net_p10_inr": -1997.8704270879953,
      "outcome_coverage": 1.0,
      "outcome_status": {
       "SCORED": 97,
-      "WAIT_NO_POSITION": 226
+      "WAIT_NO_POSITION": 154
      },
      "peak_concurrent_positions": 30,
      "peak_concurrent_positions_planned": 30,
@@ -84,16 +91,19 @@
      "buys": 106,
      "decision_reasons": {
       "LEGACY_ESTIMATE_BELOW_MARGIN": 145,
-      "LEGACY_ESTIMATE_CLEARS_MARGIN": 106,
-      "UNDECIDABLE_legacy_inputs_absent": 72
+      "LEGACY_ESTIMATE_CLEARS_MARGIN": 106
      },
      "decision_time_opportunities": 323,
+     "downside_bar_inr": -503.02064123044755,
+     "expected_shortfall_inr": -1585.8645905451083,
      "mean_net_inr": -251.51032061522378,
      "median_net_inr": -5.153930171499667,
+     "meets_declared_downside_bar": false,
+     "net_p10_inr": -2749.9892667159984,
      "outcome_coverage": 1.0,
      "outcome_status": {
       "SCORED": 106,
-      "WAIT_NO_POSITION": 217
+      "WAIT_NO_POSITION": 145
      },
      "peak_concurrent_positions": 33,
      "peak_concurrent_positions_planned": 33,
@@ -111,16 +121,19 @@
      "buys": 105,
      "decision_reasons": {
       "LEGACY_ESTIMATE_BELOW_MARGIN": 146,
-      "LEGACY_ESTIMATE_CLEARS_MARGIN": 105,
-      "UNDECIDABLE_legacy_inputs_absent": 72
+      "LEGACY_ESTIMATE_CLEARS_MARGIN": 105
      },
      "decision_time_opportunities": 323,
+     "downside_bar_inr": -346.3783474459949,
+     "expected_shortfall_inr": -1699.6609425151225,
      "mean_net_inr": -173.18917372299745,
      "median_net_inr": 22.57228767200067,
+     "meets_declared_downside_bar": false,
+     "net_p10_inr": -2749.9892667159984,
      "outcome_coverage": 1.0,
      "outcome_status": {
       "SCORED": 105,
-      "WAIT_NO_POSITION": 218
+      "WAIT_NO_POSITION": 146
      },
      "peak_concurrent_positions": 33,
      "peak_concurrent_positions_planned": 33,
@@ -138,16 +151,19 @@
      "buys": 97,
      "decision_reasons": {
       "LEGACY_ESTIMATE_BELOW_MARGIN": 154,
-      "LEGACY_ESTIMATE_CLEARS_MARGIN": 97,
-      "UNDECIDABLE_legacy_inputs_absent": 72
+      "LEGACY_ESTIMATE_CLEARS_MARGIN": 97
      },
      "decision_time_opportunities": 323,
+     "downside_bar_inr": -725.8050444901389,
+     "expected_shortfall_inr": -1584.8300739273307,
      "mean_net_inr": -362.90252224506946,
      "median_net_inr": -362.6528277819973,
+     "meets_declared_downside_bar": false,
+     "net_p10_inr": -1997.8704270879953,
      "outcome_coverage": 1.0,
      "outcome_status": {
       "SCORED": 97,
-      "WAIT_NO_POSITION": 226
+      "WAIT_NO_POSITION": 154
      },
      "peak_concurrent_positions": 30,
      "peak_concurrent_positions_planned": 30,
@@ -165,16 +181,109 @@
      "buys": 97,
      "decision_reasons": {
       "LEGACY_ESTIMATE_BELOW_MARGIN": 154,
-      "LEGACY_ESTIMATE_CLEARS_MARGIN": 97,
-      "UNDECIDABLE_legacy_inputs_absent": 72
+      "LEGACY_ESTIMATE_CLEARS_MARGIN": 97
      },
      "decision_time_opportunities": 323,
+     "downside_bar_inr": -725.8050444901389,
+     "expected_shortfall_inr": -1584.8300739273307,
      "mean_net_inr": -362.90252224506946,
      "median_net_inr": -362.6528277819973,
+     "meets_declared_downside_bar": false,
+     "net_p10_inr": -1997.8704270879953,
      "outcome_coverage": 1.0,
      "outcome_status": {
       "SCORED": 97,
-      "WAIT_NO_POSITION": 226
+      "WAIT_NO_POSITION": 154
+     },
+     "peak_concurrent_positions": 30,
+     "peak_concurrent_positions_planned": 30,
+     "peak_planned_risk_inr": 0.0,
+     "peak_realised_risk_inr": 716938.5,
+     "return_on_risk": -0.015343207325263127,
+     "scored_outcomes": 97,
+     "total_net_inr": -35201.54465777172,
+     "total_risk_inr": 2294275.5,
+     "win_rate": 0.44329896907216493,
+     "worst_net_inr": -5447.8049249589985
+    },
+    "RANGE_EV_E0_TILT_0": {
+     "buy_rate": 0.30030959752321984,
+     "buys": 97,
+     "decision_reasons": {
+      "LEGACY_ESTIMATE_BELOW_MARGIN": 154,
+      "LEGACY_ESTIMATE_CLEARS_MARGIN": 97
+     },
+     "decision_time_opportunities": 323,
+     "downside_bar_inr": -725.8050444901389,
+     "expected_shortfall_inr": -1584.8300739273307,
+     "mean_net_inr": -362.90252224506946,
+     "median_net_inr": -362.6528277819973,
+     "meets_declared_downside_bar": false,
+     "net_p10_inr": -1997.8704270879953,
+     "outcome_coverage": 1.0,
+     "outcome_status": {
+      "SCORED": 97,
+      "WAIT_NO_POSITION": 154
+     },
+     "peak_concurrent_positions": 30,
+     "peak_concurrent_positions_planned": 30,
+     "peak_planned_risk_inr": 0.0,
+     "peak_realised_risk_inr": 716938.5,
+     "return_on_risk": -0.015343207325263127,
+     "scored_outcomes": 97,
+     "total_net_inr": -35201.54465777172,
+     "total_risk_inr": 2294275.5,
+     "win_rate": 0.44329896907216493,
+     "worst_net_inr": -5447.8049249589985
+    },
+    "RANGE_EV_HIST": {
+     "buy_rate": 0.30030959752321984,
+     "buys": 97,
+     "decision_reasons": {
+      "LEGACY_ESTIMATE_BELOW_MARGIN": 154,
+      "LEGACY_ESTIMATE_CLEARS_MARGIN": 97
+     },
+     "decision_time_opportunities": 323,
+     "downside_bar_inr": -725.8050444901389,
+     "expected_shortfall_inr": -1584.8300739273307,
+     "mean_net_inr": -362.90252224506946,
+     "median_net_inr": -362.6528277819973,
+     "meets_declared_downside_bar": false,
+     "net_p10_inr": -1997.8704270879953,
+     "outcome_coverage": 1.0,
+     "outcome_status": {
+      "SCORED": 97,
+      "WAIT_NO_POSITION": 154
+     },
+     "peak_concurrent_positions": 30,
+     "peak_concurrent_positions_planned": 30,
+     "peak_planned_risk_inr": 0.0,
+     "peak_realised_risk_inr": 716938.5,
+     "return_on_risk": -0.015343207325263127,
+     "scored_outcomes": 97,
+     "total_net_inr": -35201.54465777172,
+     "total_risk_inr": 2294275.5,
+     "win_rate": 0.44329896907216493,
+     "worst_net_inr": -5447.8049249589985
+    },
+    "RANGE_EV_IV_ONLY": {
+     "buy_rate": 0.30030959752321984,
+     "buys": 97,
+     "decision_reasons": {
+      "LEGACY_ESTIMATE_BELOW_MARGIN": 154,
+      "LEGACY_ESTIMATE_CLEARS_MARGIN": 97
+     },
+     "decision_time_opportunities": 323,
+     "downside_bar_inr": -725.8050444901389,
+     "expected_shortfall_inr": -1584.8300739273307,
+     "mean_net_inr": -362.90252224506946,
+     "median_net_inr": -362.6528277819973,
+     "meets_declared_downside_bar": false,
+     "net_p10_inr": -1997.8704270879953,
+     "outcome_coverage": 1.0,
+     "outcome_status": {
+      "SCORED": 97,
+      "WAIT_NO_POSITION": 154
      },
      "peak_concurrent_positions": 30,
      "peak_concurrent_positions_planned": 30,
@@ -222,8 +331,12 @@
       "DIAGNOSTIC_BUY_ALL": 318
      },
      "decision_time_opportunities": 318,
+     "downside_bar_inr": -734.4173673107794,
+     "expected_shortfall_inr": -1687.1010665954236,
      "mean_net_inr": -367.2086836553897,
      "median_net_inr": -482.2580003315017,
+     "meets_declared_downside_bar": false,
+     "net_p10_inr": -2575.302536758501,
      "outcome_coverage": 0.7735849056603774,
      "outcome_status": {
       "NOT_FILLED_NO_QUOTE_AT_FILL_POLL": 6,
@@ -246,16 +359,19 @@
      "buys": 107,
      "decision_reasons": {
       "LEGACY_ESTIMATE_BELOW_MARGIN": 139,
-      "LEGACY_ESTIMATE_CLEARS_MARGIN": 107,
-      "UNDECIDABLE_legacy_inputs_absent": 72
+      "LEGACY_ESTIMATE_CLEARS_MARGIN": 107
      },
      "decision_time_opportunities": 318,
+     "downside_bar_inr": -589.2880338532273,
+     "expected_shortfall_inr": -1772.2396748102328,
      "mean_net_inr": -294.64401692661363,
      "median_net_inr": -174.10379601900038,
+     "meets_declared_downside_bar": false,
+     "net_p10_inr": -2829.3481086035013,
      "outcome_coverage": 1.0,
      "outcome_status": {
       "SCORED": 107,
-      "WAIT_NO_POSITION": 211
+      "WAIT_NO_POSITION": 139
      },
      "peak_concurrent_positions": 33,
      "peak_concurrent_positions_planned": 33,
@@ -273,16 +389,19 @@
      "buys": 106,
      "decision_reasons": {
       "LEGACY_ESTIMATE_BELOW_MARGIN": 140,
-      "LEGACY_ESTIMATE_CLEARS_MARGIN": 106,
-      "UNDECIDABLE_legacy_inputs_absent": 72
+      "LEGACY_ESTIMATE_CLEARS_MARGIN": 106
      },
      "decision_time_opportunities": 318,
+     "downside_bar_inr": -428.3364667808519,
+     "expected_shortfall_inr": -1644.5682772950754,
      "mean_net_inr": -214.16823339042594,
      "median_net_inr": -188.28099187650037,
+     "meets_declared_downside_bar": false,
+     "net_p10_inr": -2739.82516484,
      "outcome_coverage": 1.0,
      "outcome_status": {
       "SCORED": 106,
-      "WAIT_NO_POSITION": 212
+      "WAIT_NO_POSITION": 140
      },
      "peak_concurrent_positions": 33,
      "peak_concurrent_positions_planned": 33,
@@ -300,16 +419,19 @@
      "buys": 106,
      "decision_reasons": {
       "LEGACY_ESTIMATE_BELOW_MARGIN": 140,
-      "LEGACY_ESTIMATE_CLEARS_MARGIN": 106,
-      "UNDECIDABLE_legacy_inputs_absent": 72
+      "LEGACY_ESTIMATE_CLEARS_MARGIN": 106
      },
      "decision_time_opportunities": 318,
+     "downside_bar_inr": -275.85692269385197,
+     "expected_shortfall_inr": -1574.3257586730012,
      "mean_net_inr": -137.92846134692599,
      "median_net_inr": 43.23546121999852,
+     "meets_declared_downside_bar": false,
+     "net_p10_inr": -2266.953434613001,
      "outcome_coverage": 1.0,
      "outcome_status": {
       "SCORED": 106,
-      "WAIT_NO_POSITION": 212
+      "WAIT_NO_POSITION": 140
      },
      "peak_concurrent_positions": 32,
      "peak_concurrent_positions_planned": 32,
@@ -327,16 +449,19 @@
      "buys": 107,
      "decision_reasons": {
       "LEGACY_ESTIMATE_BELOW_MARGIN": 139,
-      "LEGACY_ESTIMATE_CLEARS_MARGIN": 107,
-      "UNDECIDABLE_legacy_inputs_absent": 72
+      "LEGACY_ESTIMATE_CLEARS_MARGIN": 107
      },
      "decision_time_opportunities": 318,
+     "downside_bar_inr": -589.2880338532273,
+     "expected_shortfall_inr": -1772.2396748102328,
      "mean_net_inr": -294.64401692661363,
      "median_net_inr": -174.10379601900038,
+     "meets_declared_downside_bar": false,
+     "net_p10_inr": -2829.3481086035013,
      "outcome_coverage": 1.0,
      "outcome_status": {
       "SCORED": 107,
-      "WAIT_NO_POSITION": 211
+      "WAIT_NO_POSITION": 139
      },
      "peak_concurrent_positions": 33,
      "peak_concurrent_positions_planned": 33,
@@ -354,16 +479,109 @@
      "buys": 107,
      "decision_reasons": {
       "LEGACY_ESTIMATE_BELOW_MARGIN": 139,
-      "LEGACY_ESTIMATE_CLEARS_MARGIN": 107,
-      "UNDECIDABLE_legacy_inputs_absent": 72
+      "LEGACY_ESTIMATE_CLEARS_MARGIN": 107
      },
      "decision_time_opportunities": 318,
+     "downside_bar_inr": -589.2880338532273,
+     "expected_shortfall_inr": -1772.2396748102328,
      "mean_net_inr": -294.64401692661363,
      "median_net_inr": -174.10379601900038,
+     "meets_declared_downside_bar": false,
+     "net_p10_inr": -2829.3481086035013,
      "outcome_coverage": 1.0,
      "outcome_status": {
       "SCORED": 107,
-      "WAIT_NO_POSITION": 211
+      "WAIT_NO_POSITION": 139
+     },
+     "peak_concurrent_positions": 33,
+     "peak_concurrent_positions_planned": 33,
+     "peak_planned_risk_inr": 0.0,
+     "peak_realised_risk_inr": 434772.0,
+     "return_on_risk": -0.022168515380359598,
+     "scored_outcomes": 107,
+     "total_net_inr": -31526.90981114764,
+     "total_risk_inr": 1422148.0,
+     "win_rate": 0.4953271028037383,
+     "worst_net_inr": -3589.4965299735027
+    },
+    "RANGE_EV_E0_TILT_0": {
+     "buy_rate": 0.33647798742138363,
+     "buys": 107,
+     "decision_reasons": {
+      "LEGACY_ESTIMATE_BELOW_MARGIN": 139,
+      "LEGACY_ESTIMATE_CLEARS_MARGIN": 107
+     },
+     "decision_time_opportunities": 318,
+     "downside_bar_inr": -589.2880338532273,
+     "expected_shortfall_inr": -1772.2396748102328,
+     "mean_net_inr": -294.64401692661363,
+     "median_net_inr": -174.10379601900038,
+     "meets_declared_downside_bar": false,
+     "net_p10_inr": -2829.3481086035013,
+     "outcome_coverage": 1.0,
+     "outcome_status": {
+      "SCORED": 107,
+      "WAIT_NO_POSITION": 139
+     },
+     "peak_concurrent_positions": 33,
+     "peak_concurrent_positions_planned": 33,
+     "peak_planned_risk_inr": 0.0,
+     "peak_realised_risk_inr": 434772.0,
+     "return_on_risk": -0.022168515380359598,
+     "scored_outcomes": 107,
+     "total_net_inr": -31526.90981114764,
+     "total_risk_inr": 1422148.0,
+     "win_rate": 0.4953271028037383,
+     "worst_net_inr": -3589.4965299735027
+    },
+    "RANGE_EV_HIST": {
+     "buy_rate": 0.33647798742138363,
+     "buys": 107,
+     "decision_reasons": {
+      "LEGACY_ESTIMATE_BELOW_MARGIN": 139,
+      "LEGACY_ESTIMATE_CLEARS_MARGIN": 107
+     },
+     "decision_time_opportunities": 318,
+     "downside_bar_inr": -589.2880338532273,
+     "expected_shortfall_inr": -1772.2396748102328,
+     "mean_net_inr": -294.64401692661363,
+     "median_net_inr": -174.10379601900038,
+     "meets_declared_downside_bar": false,
+     "net_p10_inr": -2829.3481086035013,
+     "outcome_coverage": 1.0,
+     "outcome_status": {
+      "SCORED": 107,
+      "WAIT_NO_POSITION": 139
+     },
+     "peak_concurrent_positions": 33,
+     "peak_concurrent_positions_planned": 33,
+     "peak_planned_risk_inr": 0.0,
+     "peak_realised_risk_inr": 434772.0,
+     "return_on_risk": -0.022168515380359598,
+     "scored_outcomes": 107,
+     "total_net_inr": -31526.90981114764,
+     "total_risk_inr": 1422148.0,
+     "win_rate": 0.4953271028037383,
+     "worst_net_inr": -3589.4965299735027
+    },
+    "RANGE_EV_IV_ONLY": {
+     "buy_rate": 0.33647798742138363,
+     "buys": 107,
+     "decision_reasons": {
+      "LEGACY_ESTIMATE_BELOW_MARGIN": 139,
+      "LEGACY_ESTIMATE_CLEARS_MARGIN": 107
+     },
+     "decision_time_opportunities": 318,
+     "downside_bar_inr": -589.2880338532273,
+     "expected_shortfall_inr": -1772.2396748102328,
+     "mean_net_inr": -294.64401692661363,
+     "median_net_inr": -174.10379601900038,
+     "meets_declared_downside_bar": false,
+     "net_p10_inr": -2829.3481086035013,
+     "outcome_coverage": 1.0,
+     "outcome_status": {
+      "SCORED": 107,
+      "WAIT_NO_POSITION": 139
      },
      "peak_concurrent_positions": 33,
      "peak_concurrent_positions_planned": 33,
@@ -421,6 +639,12 @@
  "legacy_noncausal": true,
  "provisional_cost_basis": true,
  "quote_clock": "receipt_proxy: every instant is the app acquisition receipt; the exchange quote event clock is UNVERIFIED in these exports",
+ "range_ev_predeclaration": "PREDECLARATION_RANGE_AWARE_RULE_20261121.md",
+ "range_ev_variants": [
+  "E0_TILT_0",
+  "IV_ONLY",
+  "HIST"
+ ],
  "required_margin_inr": 0.0,
  "rule_variants": [
   "E0_TILT_0",

@@ -22,9 +22,14 @@ label   PROXY_SIMULATED_FILL -- no order was placed
     FORECAST_RULE_E0_TILT_1        323     138      43%      111      -41491     -373.8      -5448     53%       32      748578      749228
     FORECAST_RULE_IV_ONLY          323       0       0%        0          +0          -          -       -        0           0           0
     FORECAST_RULE_HIST             323       0       0%        0          +0          -          -       -        0           0           0
+    RANGE_EV_E0_TILT_0             323     156      48%      119      -39111     -328.7      -4169     43%       39      942240      935500
+    RANGE_EV_IV_ONLY               323       0       0%        0          +0          -          -       -        0           0           0
+    RANGE_EV_HIST                  323     156      48%      119      -39111     -328.7      -4169     43%       39      942240      935500
       BUY_ALL_DIAGNOSTIC         outcomes: NOT_FILLED_NO_QUOTE_AT_FILL_POLL=6, NO_EXIT_QUOTE_AT_TARGET_INSTANT=66, SCORED=251
       FORECAST_RULE_E0_TILT_0p5  outcomes: NOT_FILLED_NO_QUOTE_AT_FILL_POLL=1, NO_EXIT_QUOTE_AT_TARGET_INSTANT=20, SCORED=86
       FORECAST_RULE_E0_TILT_1    outcomes: NOT_FILLED_NO_QUOTE_AT_FILL_POLL=1, NO_EXIT_QUOTE_AT_TARGET_INSTANT=26, SCORED=111
+      RANGE_EV_E0_TILT_0         outcomes: NOT_FILLED_NO_QUOTE_AT_FILL_POLL=3, NO_EXIT_QUOTE_AT_TARGET_INSTANT=34, SCORED=119
+      RANGE_EV_HIST              outcomes: NOT_FILLED_NO_QUOTE_AT_FILL_POLL=3, NO_EXIT_QUOTE_AT_TARGET_INSTANT=34, SCORED=119
 
 --- NF   60 min   planned 342   decision-time opportunities 318   lots resolved 318 ---
     arm                        decided    buys     buy%   scored   total INR   mean INR  worst INR    win% peak pos   plan risk   real risk
@@ -35,9 +40,14 @@ label   PROXY_SIMULATED_FILL -- no order was placed
     FORECAST_RULE_E0_TILT_1        318     128      40%       92        -283       -3.1      -2704     48%       33      453362      455221
     FORECAST_RULE_IV_ONLY          318       0       0%        0          +0          -          -       -        0           0           0
     FORECAST_RULE_HIST             318       0       0%        0          +0          -          -       -        0           0           0
+    RANGE_EV_E0_TILT_0             318     169      53%      128        -457       -3.6      -3452     52%       38      475660      453700
+    RANGE_EV_IV_ONLY               318       0       0%        0          +0          -          -       -        0           0           0
+    RANGE_EV_HIST                  318     170      53%      128        -457       -3.6      -3452     52%       39      492479      453700
       BUY_ALL_DIAGNOSTIC         outcomes: NOT_FILLED_NO_QUOTE_AT_FILL_POLL=6, NO_EXIT_QUOTE_AT_TARGET_INSTANT=66, SCORED=246
       FORECAST_RULE_E0_TILT_0p5  outcomes: NOT_FILLED_NO_QUOTE_AT_FILL_POLL=3, NO_EXIT_QUOTE_AT_TARGET_INSTANT=28, SCORED=79
       FORECAST_RULE_E0_TILT_1    outcomes: NOT_FILLED_NO_QUOTE_AT_FILL_POLL=3, NO_EXIT_QUOTE_AT_TARGET_INSTANT=33, SCORED=92
+      RANGE_EV_E0_TILT_0         outcomes: NOT_FILLED_NO_QUOTE_AT_FILL_POLL=3, NO_EXIT_QUOTE_AT_TARGET_INSTANT=38, SCORED=128
+      RANGE_EV_HIST              outcomes: NOT_FILLED_NO_QUOTE_AT_FILL_POLL=3, NO_EXIT_QUOTE_AT_TARGET_INSTANT=39, SCORED=128
 
 ================================================================================================================
 WAIT is a DECISION on every opportunity, not an absence of one: zero rupees, zero

@@ -24,6 +24,7 @@ With a ledger tree and real inputs, which enables the end-to-end classes:
 """
 import copy
 import os
+import statistics
 import sys
 import unittest
 
@@ -462,3 +463,140 @@ class EndToEnd(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)
+
+
+class RangeAwareRule(unittest.TestCase):
+    """The predeclared RANGE_EV challenger: expected net over the whole forecast distribution.
+
+    The point of the rule is convexity: a long option's payoff is convex in price, so
+    E[max(p-k,0)] is not max(E[p]-k,0) and a median-based rule cannot see a fat right tail.
+    These checks pin the arithmetic, the zero-parameter gate, and the three quantities Codex
+    asked to be carried alongside expected net rather than folded into it.
+    """
+
+    def dist_view(self, scenarios, ask=100.0, lot=50):
+        r = frow(0.0)
+        srt = sorted(scenarios)
+        r['distributions'] = {'V': {'point': srt[len(srt) // 2], 'p10': srt[0], 'p90': srt[-1],
+                                    'n_scenarios': len(srt), 'scenarios': srt}}
+        r['entry_ask'] = ask
+        return EC.decision_view(r, lot, SESSION)
+
+    def test_expected_net_is_the_mean_over_scenarios_not_a_function_of_the_median(self):
+        """Two distributions with the SAME median and different tails must price differently."""
+        tight = self.dist_view([100.0, 110.0, 120.0])
+        fat = self.dist_view([100.0, 110.0, 400.0])
+        a, _ = EC.estimate_range_round_trip(tight, 'V', flat_fees)
+        b, _ = EC.estimate_range_round_trip(fat, 'V', flat_fees)
+        self.assertEqual(tight['forecast_distribution']['V']['point'],
+                         fat['forecast_distribution']['V']['point'])
+        self.assertGreater(b['expected_net_inr'], a['expected_net_inr'],
+                           'the fat tail must raise expected net at an equal median')
+
+    def test_the_arithmetic_is_exact(self):
+        v = self.dist_view([100.0, 110.0, 120.0], ask=100.0, lot=50)
+        est, _ = EC.estimate_range_round_trip(v, 'V', flat_fees)
+        pay = 100.0 + EC.TICK_INR
+        want = statistics.fmean([(p - EC.TICK_INR - pay) * 50 - 70.0
+                                 for p in (100.0, 110.0, 120.0)])
+        self.assertAlmostEqual(est['expected_net_inr'], want, places=9)
+        self.assertAlmostEqual(est['estimated_entry_price'], pay, places=9)
+
+    def test_a_long_option_exit_is_floored_at_zero_and_the_floor_is_counted(self):
+        """A long option cannot be sold for less than nothing. The floor is reported so it can
+        never be mistaken for a clip that flatters the arm."""
+        v = self.dist_view([0.0, 0.02, 50.0], ask=10.0, lot=50)
+        est, _ = EC.estimate_range_round_trip(v, 'V', flat_fees)
+        self.assertEqual(est['floored_scenarios'], 2)
+        v2 = self.dist_view([100.0, 110.0, 120.0], ask=10.0, lot=50)
+        self.assertEqual(EC.estimate_range_round_trip(v2, 'V', flat_fees)[0]['floored_scenarios'],
+                         0)
+
+    def test_the_gate_has_no_free_parameter_beyond_the_declared_margin(self):
+        v = self.dist_view([100.0, 110.0, 400.0], ask=100.0, lot=50)
+        self.assertEqual(EC.decide_range_ev(v, 'V', flat_fees)[0], 'BUY')
+        self.assertEqual(EC.decide_range_ev(v, 'V', flat_fees)[1], 'EXPECTED_NET_CLEARS_MARGIN')
+        v2 = self.dist_view([99.0, 99.5, 100.0], ask=100.0, lot=50)
+        self.assertEqual(EC.decide_range_ev(v2, 'V', flat_fees)[0], 'WAIT')
+        self.assertEqual(EC.decide_range_ev(v2, 'V', flat_fees)[1], 'EXPECTED_NET_BELOW_MARGIN')
+
+    def test_break_even_probability_shortfall_and_p10_are_carried_not_gated(self):
+        """Codex: keep any break-even probability alongside expected net and loss size."""
+        v = self.dist_view([90.0, 100.0, 110.0, 400.0], ask=100.0, lot=50)
+        est, _ = EC.estimate_range_round_trip(v, 'V', flat_fees)
+        for k in ('break_even_probability', 'break_even_exit_price',
+                  'expected_shortfall_inr', 'net_p10_inr', 'worst_scenario_net_inr'):
+            self.assertIn(k, est)
+        self.assertGreaterEqual(est['break_even_probability'], 0.0)
+        self.assertLessEqual(est['break_even_probability'], 1.0)
+        self.assertLess(est['expected_shortfall_inr'], 0.0)
+        self.assertLessEqual(est['worst_scenario_net_inr'], est['net_p10_inr'])
+
+    def test_a_distribution_with_no_losing_scenario_reports_no_shortfall(self):
+        v = self.dist_view([500.0, 600.0, 700.0], ask=100.0, lot=50)
+        est, _ = EC.estimate_range_round_trip(v, 'V', flat_fees)
+        self.assertIsNone(est['expected_shortfall_inr'],
+                          'no losing scenario means no shortfall, not a shortfall of zero')
+
+    def test_it_reads_only_the_decision_view(self):
+        """Same structural guarantee as the median rule: the exit cannot reach it."""
+        base = frow(140.0)
+        base['distributions']['V']['scenarios'] = [130.0, 140.0, 150.0]
+        for exit_bid in (1.0, 101.0, 10_000.0, None):
+            r = copy.deepcopy(base)
+            r['exit_bid'] = exit_bid
+            d, _reason, est = EC.decide_range_ev(EC.decision_view(r, 50, SESSION), 'V',
+                                                 flat_fees)
+            self.assertEqual(d, 'BUY', 'exit_bid=%r moved the range decision' % exit_bid)
+
+    def test_a_missing_scenario_set_is_a_named_wait(self):
+        r = frow(140.0)
+        r['distributions'] = {'V': {'point': 140.0, 'p10': 1.0, 'p90': 2.0, 'n_scenarios': 0}}
+        self.assertEqual(EC.decide_range_ev(EC.decision_view(r, 50, SESSION), 'V',
+                                            flat_fees)[1],
+                         'UNDECIDABLE_no_scenario_set_at_decision')
+
+    def test_the_declared_downside_bar_is_computed_on_realised_trades(self):
+        outs = [{'net_inr': x, 'risk_inr': 100.0} for x in (10.0, 10.0, 10.0, -500.0)]
+        a = EC.arm_stats(10, [1, 2, 3, 4], outs, [], [])
+        self.assertAlmostEqual(a['downside_bar_inr'], -2.0 * abs(a['mean_net_inr']), places=9)
+        self.assertFalse(a['meets_declared_downside_bar'])
+        good = [{'net_inr': 10.0, 'risk_inr': 100.0}] * 4
+        self.assertTrue(EC.arm_stats(10, [1] * 4, good, [], [])['meets_declared_downside_bar'])
+
+    def test_the_predeclaration_exists_and_names_this_rule(self):
+        p = os.path.join(ROOT, EC.RANGE_EV_PREDECLARATION)
+        self.assertTrue(os.path.exists(p), EC.RANGE_EV_PREDECLARATION)
+        with open(p, encoding='utf-8') as fh:
+            text = fh.read()
+        self.assertIn('RANGE_EV', text)
+        self.assertIn('zero free parameters', text)
+        self.assertIn('net_p10', text)
+
+    def test_the_predeclaration_was_committed_before_this_implementation(self):
+        import subprocess
+
+        def first_commit(path):
+            r = subprocess.run(['git', 'log', '--format=%H', '--', path],
+                               cwd=ROOT, capture_output=True, text=True)
+            if r.returncode != 0:
+                self.skipTest('git log unavailable here')
+            out = [x for x in r.stdout.split() if x]
+            return out[-1] if out else None
+
+        decl = first_commit(os.path.join(ROOT, EC.RANGE_EV_PREDECLARATION))
+        if not decl:
+            self.skipTest('the predeclaration is not committed yet')
+        r = subprocess.run(['git', 'log', '--format=%H', '-S', 'decide_range_ev', '--',
+                            os.path.join(ROOT, 'economic_check.py')],
+                           cwd=ROOT, capture_output=True, text=True)
+        impl = [x for x in r.stdout.split() if x]
+        if not impl:
+            self.skipTest('the implementation is not committed yet')
+        order = subprocess.run(['git', 'rev-list', '--topo-order', 'HEAD'],
+                               cwd=ROOT, capture_output=True, text=True).stdout.split()
+        pos = {c: i for i, c in enumerate(order)}        # 0 is newest
+        if decl not in pos or impl[-1] not in pos:
+            self.skipTest('a commit is not an ancestor of HEAD')
+        self.assertGreater(pos[decl], pos[impl[-1]],
+                           'the predeclaration must be committed BEFORE the implementation')

@@ -143,8 +143,13 @@ def summarise_distribution(values):
     v = sorted(values)
     if not v:
         return None
+    # `scenarios` is the distribution itself, carried because a range-aware DECISION needs the
+    # whole thing and not three summary statistics: a long option's payoff is convex in price,
+    # so the expectation over scenarios is not a function of the median. It is causal -- these
+    # are forecast prices, with nothing of the outcome in them -- and it is never serialised,
+    # because only aggregates are written out.
     return {'point': R7.qtile(v, .5), 'p10': R7.qtile(v, .1), 'p90': R7.qtile(v, .9),
-            'n_scenarios': len(v)}
+            'n_scenarios': len(v), 'scenarios': v}
 
 
 def variant_names(lambdas=LAMBDA_CURVE):
