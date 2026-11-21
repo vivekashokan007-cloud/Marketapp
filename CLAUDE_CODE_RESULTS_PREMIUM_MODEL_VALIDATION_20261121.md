@@ -21,7 +21,7 @@ the value the v4 protocol claims
 | finding | evidence |
 | --- | --- |
 | **The distribution's shape is worth a lot.** Centre held equal, it improves CRPS in **16 of 16** index/horizon cells, by 1.8 to 14.8 points | §3, `shape value` column |
-| **The historical centre tilt is not.** It *costs* CRPS in **11 of 16** cells, and median absolute error rises monotonically with λ in 3 of the 4 primary cells | §3, §4 |
+| **The historical centre tilt is not.** It *costs* CRPS in **3 of the 4 primary cells** and in 9 of 16 overall, and its cost is **asymmetric**: the nine positives sum +23.834, the seven negatives only −4.931. Median absolute error rises monotonically with λ in 3 of the 4 primary cells | §3, §4 |
 | **The predeclared challenger is a SPLIT, not an improvement.** λ = 0.5 beats entry-midpoint persistence on CRPS in 4 of 4 primary cells and loses on **median MAE in 3 of 4** | §2 |
 | **Nothing here earns money.** WAIT beats every arm on both sessions and both indices. The forecast filter helps on 12 Nov and hurts on 16 Nov | §6 |
 | **And it structurally cannot.** A forecast centred on the entry midpoint never predicts a profitable buy, because the buy pays the ask. Only the *tilted* arms ever trade — and the tilt is the part that degrades accuracy | §6.1 |
@@ -130,8 +130,13 @@ no reader has to take the explanation on trust.
 (each cell: tilt cost / shape value)
 
 * **Shape value is negative in 16 of 16.** This is the one result that holds everywhere.
-* **Tilt cost is positive in 11 of 16**, and the five negatives are small (largest −1.794) while
-  the positives reach +6.372.
+* **Tilt cost is positive in 9 of 16 — a bare majority, so the count alone proves little. The
+  magnitudes do.** The nine positives sum **+23.834** and reach **+6.372**; the seven negatives
+  sum only **−4.931** and the largest is just **−1.794**. Across all sixteen cells the tilt costs
+  **+18.903** CRPS in total, **+1.181** per cell on average. At the primary 60-minute horizon it
+  is positive in **3 of 4**. (An earlier draft of this memo said 11 of 16; that was a miscount of
+  my own table, corrected here. It does not change the direction, and the magnitude asymmetry —
+  not the cell count — is what the conclusion rests on.)
 * **One cell has the frozen model losing to doing nothing outright**: 16 Nov NIFTY at 120
   minutes, total vs FLAT **+0.740** — the tilt cost (+4.480) exceeds the shape value (−3.739).
   Worth noting because it is the only cell where the frozen forecast is beaten by a point

@@ -23,8 +23,10 @@ is empty.
 
 1. **The range is worth a lot.** Holding the centre equal, the distribution's *shape* improves
    CRPS in **16 of 16** index/horizon cells, by 1.8 to 14.8 points.
-2. **The centre tilt is not.** It *costs* CRPS in **11 of 16** cells, and median absolute error
-   rises monotonically with λ almost everywhere. The predeclared challenger λ = 0.5 loses the
+2. **The centre tilt is not.** It *costs* CRPS in **3 of the 4 primary cells** and 9 of 16
+   overall, and asymmetrically: the nine positives sum **+23.834** and reach +6.372, the seven
+   negatives only **−4.931** with the largest just −1.794. Median absolute error rises
+   monotonically with λ in 3 of the 4 primary cells. The predeclared challenger λ = 0.5 loses the
    median-MAE half of its primary comparison in **3 of 4** cells, so the predeclared outcome is
    **split**, not an improvement.
 3. **Neither earns money here.** WAIT beats every arm on both sessions and both indices. Buying
