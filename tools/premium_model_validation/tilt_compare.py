@@ -133,6 +133,20 @@ def score_full(values, realised):
             'p10': lo, 'p90': hi}
 
 
+def summarise_distribution(values):
+    """The forecast distribution's own shape -- NOTHING about the outcome.
+
+    `score_full` mixes the forecast with the realised exit, so none of it may reach a
+    decision-time rule. This is the causal subset: the median, the nominal 80% bounds and the
+    scenario count, all properties of the forecast alone.
+    """
+    v = sorted(values)
+    if not v:
+        return None
+    return {'point': R7.qtile(v, .5), 'p10': R7.qtile(v, .1), 'p90': R7.qtile(v, .9),
+            'n_scenarios': len(v)}
+
+
 def variant_names(lambdas=LAMBDA_CURVE):
     """The scored variants, in report order. `FLAT` first: it is what must be beaten."""
     out = ['FLAT']
@@ -175,77 +189,94 @@ def rows_for(ex, ix, hist, hist_dates, horizon_min, session_date, calendar,
                 'expiry': c['expiry'], 'entry_mid': e['mid'], 'entry_bid': e['bid'],
                 'entry_ask': e['ask'], 'quoted_iv': e['quoted_iv'],
                 'event_clock_verified': e['event_clock_verified'],
-                'receipt_proxy': True, 'scores': {}, 'tilt_info': {}}
+                'receipt_proxy': True, 'scores': {}, 'distributions': {}, 'tilt_info': {}}
+
+        def mark(reason):
+            """Record the FIRST exclusion reason; later ones never overwrite it.
+
+            Before the causal split below, a row with no exit returned immediately and could
+            carry only `no_exit_quote_within_tolerance`. Keeping first-wins preserves that
+            field's meaning for every existing consumer now that the row continues further.
+            """
+            if not row.get('excluded'):
+                row['excluded'] = reason
 
         target = cutoff + __import__('datetime').timedelta(minutes=horizon_min)
         x, dev = R7.select_exit([z for z in by_contract[ikey] if z is not e], target,
                                RC.HORIZON_TOL_S)
-        if x is None:
-            row['excluded'] = 'no_exit_quote_within_tolerance'
-            rows.append(row)
-            continue
-        realised = x['mid']
-        row.update({'exit_mid': realised, 'exit_bid': x['bid'], 'exit_deviation_s': dev})
-        cov['matched_exit'] += 1
+        has_exit = x is not None
+        realised = None
+        if has_exit:
+            realised = x['mid']
+            row.update({'exit_mid': realised, 'exit_bid': x['bid'], 'exit_deviation_s': dev})
+            cov['matched_exit'] += 1
+        else:
+            mark('no_exit_quote_within_tolerance')
 
         T0 = R7.tte(cutoff, c['expiry'])
         T1 = R7.tte(target, c['expiry'])
         if T1 <= 0:
-            row['excluded'] = 'target_at_or_after_expiry'
+            mark('target_at_or_after_expiry')
             rows.append(row)
             continue
         row['days_to_expiry'] = T0 * 365.0
 
-        # FLAT: the entry midpoint, unchanged. What every variant must beat.
-        row['scores']['FLAT'] = score_full([e['mid']], realised)
+        # ── the forecast price sets. BUILT WITHOUT THE EXIT, so a decision-time rule can read
+        # them whether or not a later exit quote turns out to exist. Scoring, which needs the
+        # realised exit, happens once at the end and only when there is one.
+        price_sets = {'FLAT': [e['mid']]}     # the entry midpoint. What every variant must beat.
 
         g = (fwd_by_acq.get(e['aid']) or {}).get(R7.group_key(c, ix))
         if g is None:
             row['excluded_from_models'] = 'no_forward_in_entry_acquisition_group'
-            rows.append(row)
-            continue
-        F0 = g['F']
-        row['forward'] = F0
-        row['moneyness'] = (K - F0) / F0 if F0 else None
-
-        if e['quoted_iv'] is None:
+        elif e['quoted_iv'] is None:
+            row['forward'] = g['F']
+            row['moneyness'] = (K - g['F']) / g['F'] if g['F'] else None
             row['excluded_from_models'] = 'quoted_iv_absent'
-            rows.append(row)
-            continue
-        qs = float(e['quoted_iv']) / 100.0
-        row['quoted_iv_decimal'] = qs
+        else:
+            F0 = g['F']
+            row['forward'] = F0
+            row['moneyness'] = (K - F0) / F0 if F0 else None
+            qs = float(e['quoted_iv']) / 100.0
+            row['quoted_iv_decimal'] = qs
 
-        base, _acc = RC.hist_returns(hist, hist_dates, ix, e['slot'],
-                                     e['slot'] + horizon_min, RC.DEFAULT_SLOT_POLICY, cov)
-        if len(base) < RC.MIN_TRAIN:
-            row['excluded_from_models'] = 'insufficient_prior_sessions'
-            rows.append(row)
-            continue
-        row['hist_pairs'] = len(base)
-        row['hist_median_return'] = statistics.median(base)
+            base, _acc = RC.hist_returns(hist, hist_dates, ix, e['slot'],
+                                         e['slot'] + horizon_min, RC.DEFAULT_SLOT_POLICY, cov)
+            if len(base) < RC.MIN_TRAIN:
+                row['excluded_from_models'] = 'insufficient_prior_sessions'
+            else:
+                row['hist_pairs'] = len(base)
+                row['hist_median_return'] = statistics.median(base)
 
-        # the frozen scenario set, built exactly as R7 builds E0_FWD
-        scen0 = [R7.bs(F0 * math.exp(r), K, T1, qs, kind) for r in base]
-        for lam in lambdas:
-            px, info = tilt(scen0, e['mid'], lam, K, kind, cap=F0)
-            name = 'E0_TILT_%s' % ('%g' % lam).replace('.', 'p')
-            row['scores'][name] = score_full(px, realised)
-            row['tilt_info'][name] = info
+                # the frozen scenario set, built exactly as R7 builds E0_FWD
+                scen0 = [R7.bs(F0 * math.exp(r), K, T1, qs, kind) for r in base]
+                for lam in lambdas:
+                    px, info = tilt(scen0, e['mid'], lam, K, kind, cap=F0)
+                    name = 'E0_TILT_%s' % ('%g' % lam).replace('.', 'p')
+                    price_sets[name] = px
+                    row['tilt_info'][name] = info
 
-        # the existing same-centre range references, unchanged from the frozen range runner
-        sigma, why = RC.fit_iv(e['mid'], F0, K, T0, kind)
-        row['fitted_iv'] = sigma
-        row['iv_fit_failure'] = why
-        if sigma is not None:
-            hold = max(T0 - T1, 0.0)
-            iv_px, _a = RC.reprice(RC.iv_only_forwards(F0, sigma, hold), K, T1, sigma, kind)
-            if iv_px:
-                iv_px, _i = RC.recentre(iv_px, e['mid'], K, kind, underlying_cap=F0)
-                row['scores']['IV_ONLY'] = score_full(iv_px, realised)
-            h_px, _a = RC.reprice(RC.hist_forwards(F0, base), K, T1, sigma, kind)
-            if h_px:
-                h_px, _i = RC.recentre(h_px, e['mid'], K, kind, underlying_cap=F0)
-                row['scores']['HIST'] = score_full(h_px, realised)
+                # the existing same-centre range references, unchanged from the range runner
+                sigma, why = RC.fit_iv(e['mid'], F0, K, T0, kind)
+                row['fitted_iv'] = sigma
+                row['iv_fit_failure'] = why
+                if sigma is not None:
+                    hold = max(T0 - T1, 0.0)
+                    iv_px, _a = RC.reprice(RC.iv_only_forwards(F0, sigma, hold), K, T1,
+                                           sigma, kind)
+                    if iv_px:
+                        iv_px, _i = RC.recentre(iv_px, e['mid'], K, kind, underlying_cap=F0)
+                        price_sets['IV_ONLY'] = iv_px
+                    h_px, _a = RC.reprice(RC.hist_forwards(F0, base), K, T1, sigma, kind)
+                    if h_px:
+                        h_px, _i = RC.recentre(h_px, e['mid'], K, kind, underlying_cap=F0)
+                        price_sets['HIST'] = h_px
+
+        # `distributions` is causal and always present where computable; `scores` needs the exit
+        for name, px in price_sets.items():
+            row['distributions'][name] = summarise_distribution(px)
+            if has_exit:
+                row['scores'][name] = score_full(px, realised)
 
         rows.append(row)
 

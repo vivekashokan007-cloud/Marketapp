@@ -126,10 +126,34 @@ class ReportedEconomics(unittest.TestCase):
         cls.found = sorted(glob.glob(os.path.join(RESULTS, 'economic_check_*.json')))
         if not cls.found:
             raise unittest.SkipTest('no results/economic_check_*.json committed yet')
-        cls.runs = []
+        cls.runs, cls.legacy = [], []
         for p in cls.found:
             with open(p, encoding='utf-8') as fh:
-                cls.runs.append(json.load(fh))
+                o = json.load(fh)
+            # A `--legacy-noncausal` run reproduces the superseded defects ON PURPOSE. It is
+            # reconciliation evidence, never a result, and no claim may be read off it. Mixing
+            # the two is how a deliberately defective number becomes a reported one.
+            (cls.legacy if o.get('legacy_noncausal') else cls.runs).append(o)
+        if not cls.runs:
+            raise unittest.SkipTest('only legacy reconciliation runs are committed')
+
+    def test_a_legacy_run_is_never_mistaken_for_a_result(self):
+        for o in self.runs:
+            self.assertFalse(o.get('legacy_noncausal'), o.get('session'))
+
+    def test_the_legacy_runs_still_exhibit_the_defect_they_document(self):
+        """The reconciliation is only evidence if the superseded path really misbehaves. Under
+        the non-causal join a MID-CENTRED forecast buys, because the fill midpoint can sit above
+        the decision ask -- which is the leak, shown rather than described."""
+        if not self.legacy:
+            self.skipTest('no legacy reconciliation run committed')
+        bought = 0
+        for o in self.legacy:
+            for _ix, n in (o.get('indices') or {}).items():
+                a = n['arms'].get('FORECAST_RULE_E0_TILT_0') or {}
+                bought += a.get('buys', a.get('trades')) or 0
+        self.assertGreater(bought, 0,
+                           'the legacy path bought nothing, so it does not demonstrate the leak')
 
     def test_wait_is_never_beaten_in_any_cell(self):
         """The central economic claim. WAIT earns zero, so any arm beating it must earn > 0."""
@@ -149,8 +173,11 @@ class ReportedEconomics(unittest.TestCase):
             for ix, n in (o.get('indices') or {}).items():
                 for v in ('E0_TILT_0', 'IV_ONLY', 'HIST'):
                     a = n['arms'].get('FORECAST_RULE_%s' % v)
-                    if a:
-                        self.assertEqual(a['trades'], 0, '%s %s %s' % (o['session'], ix, v))
+                    if not a:
+                        continue
+                    # the causal v2 counts `buys`; v1 called the same thing `trades`
+                    taken = a.get('buys', a.get('trades'))
+                    self.assertEqual(taken, 0, '%s %s %s' % (o['session'], ix, v))
 
     def test_every_committed_economic_result_declares_its_tree_state(self):
         """These figures came from a patched working tree. The file must say so itself."""

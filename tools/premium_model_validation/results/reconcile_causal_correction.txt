@@ -1,0 +1,38 @@
+======================================================================================================================
+RECONCILIATION  superseded non-causal v1  ->  corrected causal v2
+======================================================================================================================
+defect A  the decision read the FILL-slot forecast, not the decision-slot one
+defect B  the decision priced costs with the REALISED exit fee
+defect C  only opportunities that later filled AND exited were ever offered to an arm
+
+All three are reproduced by --legacy-noncausal, so "old" is v1 and not a remembered
+number. WAIT and the buy-all diagnostic use no forecast, so only defect C can move
+them; it does not, because the diagnostic already required a decidable estimate.
+
+session     idx  arm                          buys old buys new     delta     net old     net new net delta
+  2026-11-12 BNF  --- decisions offered ---         251      323       +72
+                 FORECAST_RULE_E0_TILT_0p5         106      107        +1      -26660      -30997     -4337
+                 FORECAST_RULE_E0_TILT_1           105      138       +33      -18185      -41491    -23306
+                 BUY_ALL_DIAGNOSTIC                323      323        +0     -102982     -102982        +0
+                 WAIT                                0        0        +0           0           0        +0
+  2026-11-12 NF   --- decisions offered ---         246      318       +72
+                 FORECAST_RULE_E0_TILT_0p5         106      110        +4      -22702      -10475    +12227
+                 FORECAST_RULE_E0_TILT_1           106      128       +22      -14620        -283    +14337
+                 BUY_ALL_DIAGNOSTIC                318      318        +0      -90333      -90333        +0
+                 WAIT                                0        0        +0           0           0        +0
+  2026-11-16 BNF  --- decisions offered ---         342      414       +72
+                 FORECAST_RULE_E0_TILT_0p5         142      140        -2      -76258      -15604    +60654
+                 FORECAST_RULE_E0_TILT_1           137      162       +25      -81988      -26768    +55220
+                 BUY_ALL_DIAGNOSTIC                390      390        +0      -67292      -67292        +0
+                 WAIT                                0        0        +0           0           0        +0
+  2026-11-16 NF   --- decisions offered ---         342      414       +72
+                 FORECAST_RULE_E0_TILT_0p5         131      134        +3     -115512     -109366     +6147
+                 FORECAST_RULE_E0_TILT_1           131      154       +23     -115806      -96149    +19656
+                 BUY_ALL_DIAGNOSTIC                390      390        +0     -101795     -101795        +0
+                 WAIT                                0        0        +0           0           0        +0
+
+======================================================================================================================
+Every arm still loses to WAIT after the correction, so the direction of the 21
+November conclusion survives. The forecast-arm NUMBERS do not: they were produced
+with a forecast made after the decision, and are withdrawn rather than adjusted.
+======================================================================================================================

@@ -1,40 +1,49 @@
-========================================================================================================
-PREMIUM FORECAST ECONOMIC CHECK   premium_forecast_economic_check_v1
-========================================================================================================
-ledger premium_followon_stage_d_cost_ledger_v3_bound_authority_and_decision_clock
-fees  nse_equity_index_options_rates_20261116_v2, verified through 2026-11-16 -- a later trade date fails closed
-tree  c73b28cd7358  MODIFIED: research/replay/fee_models.py
-      the ledger tree is MODIFIED relative to its commit; these figures are not reproducible from the committed tree alone
-arms  WAIT (zero) | BUY_ALL_FEASIBLE (matched baseline) | FORECAST_RULE (under test)
-rule  buy iff (forecast median - one tick - ask paid) x lot - fees > 0.00 INR
-label PROXY_SIMULATED_FILL -- no order was placed
-receipt_proxy: every instant is the app acquisition receipt; the exchange quote event clock is UNVERIFIED in these exports
+================================================================================================================
+PREMIUM FORECAST ECONOMIC CHECK   premium_forecast_economic_check_v2_causal
+================================================================================================================
+ledger  premium_followon_stage_d_cost_ledger_v3_bound_authority_and_decision_clock
+fees    nse_equity_index_options_rates_20261116_v2, verified through 2026-11-16 -- a later trade date fails closed
+tree    c73b28cd7358  MODIFIED: research/replay/fee_models.py
+COST BASIS  *** PROVISIONAL *** PROVISIONAL: these rupees rest on a fee revision that is not committed in the ledger tree (research/replay/fee_models.py). Awaiting its own dated review.
+horizon 60 min, decision_anchored__forecast_target_equals_scored_exit
+        decision -> fill is 1 poll(s); hold from fill is 55 min; the forecast target instant IS the scored exit instant
+rule    BUY iff ESTIMATED net at the decision > 0.00 INR. Costs are estimated at the decision
+risk    UNCONSTRAINED; peak simultaneous commitment reported per arm instead
+        and realised after the exit; the decision never sees the realisation.
+label   PROXY_SIMULATED_FILL -- no order was placed
+        receipt_proxy: every instant is the app acquisition receipt; the exchange quote event clock is UNVERIFIED in these exports
 
---- BNF   60 min   feasible BUY rows 244   forecast joined 244 / unmatched 0 ---
-    refused: entry_quote_missing=6, exit_quote_missing=6, fill_poll_absent=6, hold_window_not_covered=73, lot_authority_unresolved=6
-    arm                           trades   take%   total INR   mean INR  worst INR     win% mean downside
-    WAIT                               0      0%          +0          -          -        -            -
-    BUY_ALL_FEASIBLE                 244    100%     -104915     -430.0      -4500      37%        -1647
-    FORECAST_RULE_E0_TILT_0            0      0%          +0          -          -        -            -
-    FORECAST_RULE_E0_TILT_0p5         83     34%       -7450      -89.8      -3537      49%        -1449
-    FORECAST_RULE_E0_TILT_1          107     44%      -16255     -151.9      -3537      46%        -1462
-    FORECAST_RULE_IV_ONLY              0      0%          +0          -          -        -            -
-    FORECAST_RULE_HIST                 0      0%          +0          -          -        -            -
+--- BNF   60 min   planned 342   decision-time opportunities 323   lots resolved 323 ---
+    arm                        decided    buys     buy%   scored   total INR   mean INR  worst INR    win% peak pos   plan risk   real risk
+    WAIT                           323       0       0%        0          +0          -          -       -        0           0           0
+    BUY_ALL_DIAGNOSTIC             323     323     100%      251     -102982     -410.3      -5448     39%       66     1589774     1585743
+    FORECAST_RULE_E0_TILT_0        323       0       0%        0          +0          -          -       -        0           0           0
+    FORECAST_RULE_E0_TILT_0p5      323     107      33%       86      -30997     -360.4      -5448     58%       30      726975      727962
+    FORECAST_RULE_E0_TILT_1        323     138      43%      111      -41491     -373.8      -5448     53%       32      748578      749228
+    FORECAST_RULE_IV_ONLY          323       0       0%        0          +0          -          -       -        0           0           0
+    FORECAST_RULE_HIST             323       0       0%        0          +0          -          -       -        0           0           0
+      BUY_ALL_DIAGNOSTIC         outcomes: NOT_FILLED_NO_QUOTE_AT_FILL_POLL=6, NO_EXIT_QUOTE_AT_TARGET_INSTANT=66, SCORED=251
+      FORECAST_RULE_E0_TILT_0p5  outcomes: NOT_FILLED_NO_QUOTE_AT_FILL_POLL=1, NO_EXIT_QUOTE_AT_TARGET_INSTANT=20, SCORED=86
+      FORECAST_RULE_E0_TILT_1    outcomes: NOT_FILLED_NO_QUOTE_AT_FILL_POLL=1, NO_EXIT_QUOTE_AT_TARGET_INSTANT=26, SCORED=111
 
---- NF   60 min   feasible BUY rows 240   forecast joined 240 / unmatched 0 ---
-    refused: entry_quote_missing=6, exit_quote_missing=6, fill_poll_absent=6, hold_window_not_covered=72, lot_authority_unresolved=6
-    arm                           trades   take%   total INR   mean INR  worst INR     win% mean downside
-    WAIT                               0      0%          +0          -          -        -            -
-    BUY_ALL_FEASIBLE                 240    100%      -92916     -387.1      -4428      41%        -1427
-    FORECAST_RULE_E0_TILT_0            0      0%          +0          -          -        -            -
-    FORECAST_RULE_E0_TILT_0p5         76     32%      -20683     -272.1      -3172      39%        -1288
-    FORECAST_RULE_E0_TILT_1           88     37%       -8416      -95.6      -3172      44%        -1255
-    FORECAST_RULE_IV_ONLY              0      0%          +0          -          -        -            -
-    FORECAST_RULE_HIST                 0      0%          +0          -          -        -            -
+--- NF   60 min   planned 342   decision-time opportunities 318   lots resolved 318 ---
+    arm                        decided    buys     buy%   scored   total INR   mean INR  worst INR    win% peak pos   plan risk   real risk
+    WAIT                           318       0       0%        0          +0          -          -       -        0           0           0
+    BUY_ALL_DIAGNOSTIC             318     318     100%      246      -90333     -367.2      -3589     45%       66      898719      894156
+    FORECAST_RULE_E0_TILT_0        318       0       0%        0          +0          -          -       -        0           0           0
+    FORECAST_RULE_E0_TILT_0p5      318     110      35%       79      -10475     -132.6      -2704     43%       28      385336      386188
+    FORECAST_RULE_E0_TILT_1        318     128      40%       92        -283       -3.1      -2704     48%       33      453362      455221
+    FORECAST_RULE_IV_ONLY          318       0       0%        0          +0          -          -       -        0           0           0
+    FORECAST_RULE_HIST             318       0       0%        0          +0          -          -       -        0           0           0
+      BUY_ALL_DIAGNOSTIC         outcomes: NOT_FILLED_NO_QUOTE_AT_FILL_POLL=6, NO_EXIT_QUOTE_AT_TARGET_INSTANT=66, SCORED=246
+      FORECAST_RULE_E0_TILT_0p5  outcomes: NOT_FILLED_NO_QUOTE_AT_FILL_POLL=3, NO_EXIT_QUOTE_AT_TARGET_INSTANT=28, SCORED=79
+      FORECAST_RULE_E0_TILT_1    outcomes: NOT_FILLED_NO_QUOTE_AT_FILL_POLL=3, NO_EXIT_QUOTE_AT_TARGET_INSTANT=33, SCORED=92
 
-========================================================================================================
-WAIT earns exactly zero and risks exactly zero. An arm only beats it by earning
-more than zero AFTER costs. Every figure is a simulated fill on receipt-clock
-quotes, with the ledger quantity-unit and quote-freshness items still open.
-========================================================================================================
+================================================================================================================
+WAIT is a DECISION on every opportunity, not an absence of one: zero rupees, zero
+risk. An unfilled BUY, a missing exit and an unscorable P&L are reported as their
+own outcome statuses and are never counted as WAIT. Arms are compared on the same
+decision-time population, and peak concurrent risk is shown because a 5-minute
+cadence with a 60-minute hold overlaps up to twelve positions per contract.
+================================================================================================================
 wrote tools/premium_model_validation/results/economic_check_2026-11-12.json
