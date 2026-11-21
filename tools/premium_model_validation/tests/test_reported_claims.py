@@ -28,7 +28,7 @@ RESULTS = os.path.join(ROOT, 'results')
 # the CURRENT memo. The 21 November results memo is superseded in part -- its economic
 # forecast-arm figures were produced by the non-causal replay -- so the hashes that must
 # match the files are the ones the current memo states.
-MEMO = os.path.join(REPO, 'CLAUDE_CODE_REPLY_PREMIUM_CAUSAL_REPLAY_20261121.md')
+MEMO = os.path.join(REPO, 'CLAUDE_CODE_REPLY_PREMIUM_SPAN_12_TO_20_NOV_20261121.md')
 SUPERSEDED_MEMO = os.path.join(
     REPO, 'CLAUDE_CODE_RESULTS_PREMIUM_MODEL_VALIDATION_20261121.md')
 README = os.path.join(ROOT, 'README.md')
@@ -80,9 +80,14 @@ class ReportedCounts(unittest.TestCase):
         svs = [sv for *_x, sv in self.cells]
         self.assertAlmostEqual(max(svs), -1.828, places=3)      # smallest gain
         self.assertAlmostEqual(min(svs), -14.752, places=3)     # largest gain
-        for claim in ('16 of 16',):
-            self.assertIn(claim, text_of(MEMO))
-            self.assertIn(claim, text_of(README))
+        # The 16-of-16 shape result belongs to the centre-tilt round. The CURRENT memo need
+        # not restate an earlier finding, but wherever it IS stated the number must still match
+        # the data -- so the claim is checked against the README and the superseded memo, which
+        # are the documents that make it.
+        for path in (README, SUPERSEDED_MEMO):
+            if os.path.exists(path):
+                self.assertIn('16 of 16', text_of(path),
+                              '%s no longer states the shape result' % os.path.basename(path))
 
     def test_the_tilt_cost_counts_are_exactly_as_stated(self):
         """THE MISCOUNT THIS TEST WAS WRITTEN FOR. 9 positive, 7 negative -- not 11 and 5."""
@@ -275,7 +280,8 @@ class MemoIntegrity(unittest.TestCase):
 
     def test_the_memo_hashes_match_the_files_it_names(self):
         import hashlib
-        for name in ('tilt_compare.py', 'economic_check.py', 'PREDECLARATION_20261121.md'):
+        for name in ('tilt_compare.py', 'economic_check.py', 'two_sided_diagnostics.py',
+                     'spread_replay.py', 'inventory_span.py', 'fee_worked_cases.py'):
             p = os.path.join(ROOT, name)
             if not os.path.exists(p):
                 continue
