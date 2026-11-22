@@ -436,8 +436,16 @@ def admit(ex, ix):
         if r['instrument_key'] not in pc:
             cov['rej_no_contract_identity'] += 1
             continue
-        b = (r['bbo'].get('bid_raw') or {}).get('raw')
-        k = (r['bbo'].get('ask_raw') or {}).get('raw')
+        # A record whose poll FAILED carries `bbo: null`, not an empty book -- on 20 November
+        # one poll at 13:25 did exactly that for all six contracts in both indices. The export
+        # records the failure faithfully; dereferencing it unguarded crashed admission for the
+        # whole session. It is rejected by name instead, like every other unusable quote.
+        bbo = r.get('bbo')
+        if not isinstance(bbo, dict):
+            cov['rej_bbo_absent'] += 1
+            continue
+        b = (bbo.get('bid_raw') or {}).get('raw')
+        k = (bbo.get('ask_raw') or {}).get('raw')
         idn = r.get('identity') or {}
         if idn.get('identity_verified') is not True:
             cov['rej_identity_unverified'] += 1

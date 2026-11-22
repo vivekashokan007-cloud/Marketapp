@@ -37,7 +37,7 @@
  "governed_sources": {
   "frozen_successor.py": "cc89d291116c865e180b44a4f81b32c7107e6942c3d9acb9cd402a76b9987357",
   "planned_schedule.py": "4b35e6e7e04dc5ab807f82f46f9566e358d6f6cea61209bca34a8b547efc2bd4",
-  "range_compare.py": "2965b2a9001f1b566637f7774a8c39b6ae3aaee233ac3d42bae2396cce229c0b",
+  "range_compare.py": "a691173311413b24a71e4c31d88611ddde714b674196fd86b0e5495f0314ed87",
   "stopping_rule.py": "8b89535a7d80a74e2bcfa25542ef46b5759dfcd3da09e510144456177482e24b",
   "tools/spot_path_baseline/premium_repricing_v2.py": "95e53e25d24ae0369f2c8d8ab63026a0cda499443ddae4041c6ee7ffb373233a"
  },
@@ -124,11 +124,11 @@
   }
  },
  "manifest_version": "premium_range_comparison_inputs_20261117_v4",
- "note": "Inputs are NOT committed: raw phone exports stay out of the repository. This manifest records what each run read, by SHA-256, so a result can be tied to its input without the input being in the tree. Revised 21 Nov 2026: 10.2 reproduced locally with both digests and the export-equivalence claim scoped to the score comparison actually performed; frozen_successor.py added as a governed source; section 13 freeze record proposed.",
+ "note": "Inputs are NOT committed: raw phone exports stay out of the repository. This manifest records what each run read, by SHA-256, so a result can be tied to its input without the input being in the tree. Revised 21 Nov 2026: 10.2 reproduced locally with both digests and the export-equivalence claim scoped to the score comparison actually performed; frozen_successor.py added as a governed source; section 13 freeze record proposed. 22 Nov 2026: range_compare.admit guards a null bbo, met on the 20 November capture where one poll returned MISSING_REQUEST_FAILED for all six contracts in both indices.",
  "protocol": {
   "file": "PROTOCOL_RANGE_TRIAL_DRAFT_v4.md",
   "hashes_checked_by": "tests/test_protocol_hashes.py",
-  "sha256": "2bb9fb267ef1c781e43917f901eadbba9eeb78f23bde3a79821973597d6383c6",
+  "sha256": "7924f31950de6361df4a51e30a1442449bc20e4283cd63a600daf08a21f377c8",
   "supersedes": "PROTOCOL_RANGE_TRIAL_DRAFT_v3.md (deleted)"
  },
  "runs_committed": {

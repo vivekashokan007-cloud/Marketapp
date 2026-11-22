@@ -14,7 +14,7 @@ the code. v3 claimed a stale hash for `stopping_rule.py`; a hash nobody checks i
 
 | file | sha256 |
 | --- | --- |
-| `tools/premium_range_compare/range_compare.py` | `2965b2a9001f1b566637f7774a8c39b6ae3aaee233ac3d42bae2396cce229c0b` |
+| `tools/premium_range_compare/range_compare.py` | `a691173311413b24a71e4c31d88611ddde714b674196fd86b0e5495f0314ed87` |
 | `tools/premium_range_compare/planned_schedule.py` | `4b35e6e7e04dc5ab807f82f46f9566e358d6f6cea61209bca34a8b547efc2bd4` |
 | `tools/premium_range_compare/stopping_rule.py` | `8b89535a7d80a74e2bcfa25542ef46b5759dfcd3da09e510144456177482e24b` |
 | `tools/premium_range_compare/frozen_successor.py` | `cc89d291116c865e180b44a4f81b32c7107e6942c3d9acb9cd402a76b9987357` |
