@@ -1203,9 +1203,9 @@ class MarketWatchService : Service() {
                 LogBuffer.add('W', TAG, "POLL_WARN: NF50 breadth missing; using empty context")
             }
             val quotesJson = parallel[1]
-            val bnfChainJson = parallel[2]
-            val bnfStocksJson = parallel[3]
-            val nfChainJson = parallel[4]
+            val bnfChainJson = parallel[2] ?: JSONObject().put("data", JSONArray()).put("input_failure", "CHAIN_FETCH_FAILED")
+            val bnfStocksJson = parallel[3] ?: JSONObject().put("data", JSONObject()).put("input_failure", "BNF_BREADTH_FETCH_FAILED")
+            val nfChainJson = parallel[4] ?: JSONObject().put("data", JSONArray()).put("input_failure", "CHAIN_FETCH_FAILED")
 
             // Premium evidence capture, DEFAULT OFF. Placed deliberately here: immediately after
             // the already-fetched chain results are available, and BEFORE every early return
@@ -1228,12 +1228,12 @@ class MarketWatchService : Service() {
                     PremiumCapturePollAdapter.declaredSlotFromSlotKey(slotKey),
                     PremiumCapturePollAdapter.acquisitions(listOf(
                         PremiumCapturePollAdapter.IndexResult(
-                            index = "BNF", chain = bnfChainJson,
+                            index = "BNF", chain = parallel[2],
                             requestStartedMs = m0BnfFetchStartMs,
                             completedAtMs = capBnfCompletedAtMs,
                             underlyingKey = "NSE_INDEX|Nifty Bank", expiry = bnfExpiry),
                         PremiumCapturePollAdapter.IndexResult(
-                            index = "NF", chain = nfChainJson,
+                            index = "NF", chain = parallel[4],
                             requestStartedMs = m0NfFetchStartMs,
                             completedAtMs = capNfCompletedAtMs,
                             underlyingKey = "NSE_INDEX|Nifty 50", expiry = nfExpiry),
@@ -1252,15 +1252,23 @@ class MarketWatchService : Service() {
                 val coStatus = CloseOpenCapture.onPoll(filesDir, today,
                     PremiumCapturePollAdapter.declaredSlotFromSlotKey(slotKey),
                     listOf(
-                        CloseOpenCapture.Acquisition("BNF", bnfChainJson, m0BnfFetchStartMs, capBnfCompletedAtMs),
-                        CloseOpenCapture.Acquisition("NF", nfChainJson, m0NfFetchStartMs, capNfCompletedAtMs)))
+                        CloseOpenCapture.Acquisition("BNF", parallel[2], m0BnfFetchStartMs, capBnfCompletedAtMs),
+                        CloseOpenCapture.Acquisition("NF", parallel[4], m0NfFetchStartMs, capNfCompletedAtMs)))
                 val coS = coStatus.optString("status")
                 if (coS != "DISABLED" && coS != "OUTSIDE_WINDOWS")
                     LogBuffer.add('I', TAG, "CLOSE_OPEN_CAPTURE: $coS kind=${coStatus.optString("kind")}")
             }
 
+            // Persist each successful raw chain before unrelated shared-quote or breadth returns.
+            val (chainEvidenceRef, chainEvidenceCoverage) = persistFetchedChainEvidenceBeforeBrain(bnfChainJson, nfChainJson)
+            m0RecordCaptures(mapOf(
+                "BNF" to Triple(parallel[2], m0BnfFetchStartMs, x1BnfChainFetchedAtMs),
+                "NF" to Triple(parallel[4], m0NfFetchStartMs, x1NfChainFetchedAtMs)
+            ), chainEvidenceRef)
             if (quotesJson == null) {
-                Log.e(TAG, "POLL_FAIL: Quotes fetch returned null — network or auth error")
+                prefs.edit().putBoolean("paper_shared_inputs_unavailable", true).apply()
+                lastAnalysisInputs = null
+                Log.e(TAG, "POLL_FAIL: SHARED_QUOTES_FETCH_FAILED")
                 return
             }
 
@@ -1313,10 +1321,6 @@ class MarketWatchService : Service() {
                 LogBuffer.add('E', TAG, "BREADTH_HTTP_BODY: null response for breadth stocks")
             }
 
-            if (bnfChainJson == null || bnfStocksJson == null || nfChainJson == null) {
-                Log.e(TAG, "POLL_FAIL: Chain or stocks fetch returned null")
-                return
-            }
 
             // Evidence batch 1 (Item C): per-index spot provenance. Evidence only; it never changes the
             // spot values, the abort behaviour below, ranking, gates, sizing or exits. An unchanged LTP is
@@ -1343,7 +1347,16 @@ class MarketWatchService : Service() {
                 null
             }
 
-            val data = quotesJson.getJSONObject("data")
+            val data = quotesJson.optJSONObject("data")
+            val missingShared = listOf("NSE_INDEX:Nifty Bank", "NSE_INDEX:Nifty 50", "NSE_INDEX:India VIX")
+                .filter { key -> val value = data?.optJSONObject(key)?.optDouble("last_price", Double.NaN)
+                    value == null || !value.isFinite() || value <= 0.0 }
+            if (data == null || missingShared.isNotEmpty()) {
+                prefs.edit().putBoolean("paper_shared_inputs_unavailable", true).apply()
+                lastAnalysisInputs = null
+                LogBuffer.add('E', TAG, "POLL_SHARED_QUOTES_UNAVAILABLE: ${missingShared.joinToString()}")
+                return
+            }
             val bnfSpot = data.getJSONObject("NSE_INDEX:Nifty Bank").getDouble("last_price")
             val nfSpot = data.getJSONObject("NSE_INDEX:Nifty 50").getDouble("last_price")
             val vix = data.getJSONObject("NSE_INDEX:India VIX").getDouble("last_price")
@@ -1362,11 +1375,6 @@ class MarketWatchService : Service() {
             // timed-out, or failed Python call cannot erase the 15:15-15:40 marks
             // required by the post-close teacher. The database write is
             // idempotent on (poll_ts,index_key,strike,option_type).
-            val (chainEvidenceRef, chainEvidenceCoverage) = persistFetchedChainEvidenceBeforeBrain(bnfChainJson, nfChainJson)
-            m0RecordCaptures(mapOf(
-                "BNF" to Triple(bnfChainJson, m0BnfFetchStartMs, x1BnfChainFetchedAtMs),
-                "NF" to Triple(nfChainJson, m0NfFetchStartMs, x1NfChainFetchedAtMs)
-            ), chainEvidenceRef)
 
             // D9 repair: on an index's OWN expiry day the front (trading) chain cannot price a forward
             // session move, which removed that index's direction for the entire session (NF, 3 Nov 2026:
@@ -1411,6 +1419,30 @@ class MarketWatchService : Service() {
         } finally {
             // M0: an attempt that ended before its capture was recorded (fetch failure, early return) is closed
             // against its ORIGINAL slot here, so it is never left looking like a live attempt.
+            // Open positions use their own exact-contract quotes, including when analysis failed.
+            try {
+                IndexAuthorityIo.monitorSingleLeg(filesDir, "{}",
+                    ManagedReadAdapters.HttpTransport { (prefs.getString("auth_token", "") ?: "").trim() }) { out ->
+                    val events = JSONObject(out).optJSONArray("events") ?: JSONArray()
+                    for (i in 0 until events.length()) {
+                        val event = events.getJSONObject(i)
+                        val account = event.optJSONObject("account")
+                        val id = event.optString("position_id")
+                        val status = event.optString("event")
+                        val dedupe = "single_leg_exit_notice_$id"
+                        if (prefs.getString(dedupe, "") != status) {
+                            val delivery = NotificationHelper.send(this, "Paper exit: ${account?.optString("index") ?: event.optString("index")}",
+                                if (status == "EXIT") "Closed simulated position $id · ${account?.optString("exit_reason")} · net ₹${account?.opt("net_pnl") ?: "see Trade"}"
+                                else "Exit pending for $id · ${event.optString("reason")} · ${event.optString("pending")}. Open Trade to review.",
+                                "urgent", "trade")
+                            LogBuffer.add('I', TAG, "SINGLE_LEG_EXIT_NOTIFICATION: position=$id status=$status delivery=${delivery.outcome}")
+                            if (delivery.postedToOs) prefs.edit().putString(dedupe, status).apply()
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                LogBuffer.add('W', TAG, "SINGLE_LEG_MONITOR_ENQUEUE_FAIL: ${e.javaClass.simpleName}")
+            }
             m0CloseOpenAttempts()
             pollInProgress.set(false)
         }
@@ -1630,7 +1662,7 @@ class MarketWatchService : Service() {
         var atmDist = Double.MAX_VALUE
         var atmStrike = 0.0
         
-        val chainData = bnfChain.getJSONArray("data")
+        val chainData = bnfChain.optJSONArray("data") ?: JSONArray()
         for (i in 0 until chainData.length()) {
             val item = chainData.getJSONObject(i)
             val strikePrice = item.getDouble("strike_price")
@@ -2575,6 +2607,12 @@ class MarketWatchService : Service() {
                 val liveCw = if (cwPoll > 0.0) cwPoll else formattedLive.optDouble("callWallStrike", 0.0)
                 val livePw = if (pwPoll > 0.0) pwPoll else formattedLive.optDouble("putWallStrike", 0.0)
                 val livePcr = if (pcrPoll > 0.0) pcrPoll else formattedLive.optDouble("pcr", 0.0)
+                // A failed acquisition must erase inherited chain context, never reuse an older poll.
+                if (liveChainRaw.has("input_failure")) {
+                    ctxObj.put(key, JSONObject().put("strikes", JSONObject())
+                        .put("input_failure", liveChainRaw.getString("input_failure")))
+                    return
+                }
                 val existingChain = ctxObj.optJSONObject(key)
                 
                 if (existingChain != null && existingChain.has("atm")) {
@@ -2674,9 +2712,16 @@ class MarketWatchService : Service() {
             }
 
             // Data Parity Overlays
-            val breadth = calculateBreadth(stocksJson)
+            val breadth = if (stocksJson.has("input_failure")) JSONObject()
+                .put("status", "UNAVAILABLE").put("reason", stocksJson.getString("input_failure"))
+                else calculateBreadth(stocksJson)
             ctxObj.put("bnfBreadth", breadth)
             ctxObj.put("nf50Breadth", nf50Breadth)
+            ctxObj.put("pollInputStatus", JSONObject()
+                .put("NF", nfChain.optString("input_failure", "AVAILABLE"))
+                .put("BNF", bnfChain.optString("input_failure", "AVAILABLE"))
+                .put("bnf_breadth", stocksJson.optString("input_failure", "AVAILABLE"))
+                .put("breadth_used_in_direction", false))
             
             // Phase B: populate morning input + yesterday history for brain.py
             // b507 (conditions 1-3): scrub every inherited session input from the persisted context and inject
@@ -3479,14 +3524,27 @@ class MarketWatchService : Service() {
                         IndexAuthorityContext.publishedMs(publishNow, System.currentTimeMillis()))
                 }
                 if (publishNow && sideEffects) {
-                    try {
-                        val spots = JSONObject().put("NF", nfSpot).put("BNF", bnfSpot)
-                        val tok = (prefs.getString("auth_token", "") ?: "").trim()
-                        IndexAuthorityIo.monitorSingleLeg(filesDir, spots.toString(),
-                            if (tok.isNotEmpty()) ManagedReadAdapters.HttpTransport { (prefs.getString("auth_token", "") ?: "").trim() } else null)
-                    } catch (e: Exception) {
-                        LogBuffer.add('W', TAG, "SINGLE_LEG_MONITOR_CTX_FAIL: ${e.javaClass.simpleName}")
+                    prefs.edit().putBoolean("paper_shared_inputs_unavailable", false).apply()
+                    // Research owns a bounded independent ledger; no admission/capture clock substitution.
+                    val evidenceResult = JSONObject().put("single_leg_by_index", resultObj.optJSONObject("single_leg_by_index"))
+                        .put("input_identity", resultObj.optJSONObject("input_identity"))
+                        .put("direction_authority", resultObj.optJSONObject("direction_authority"))
+                        .put("brain_version", resultObj.opt("brain_version"))
+                        .put("producer_versions", JSONObject().put("app", "${BuildConfig.VERSION_NAME}/${BuildConfig.VERSION_CODE}")
+                            .put("native_source", BuildConfig.SOURCE_HEAD).put("bundled_pwa_source", BuildConfig.PWA_SOURCE_HEAD))
+                    val evidenceChains = JSONObject().put("NF", nfChain).put("BNF", bnfChain).toString()
+                    val evidenceClocks = JSONObject()
+                        .put("NF", JSONObject().put("receipt_ms", x1NfChainFetchedAtMs))
+                        .put("BNF", JSONObject().put("receipt_ms", x1BnfChainFetchedAtMs)).toString()
+                    IndexAuthorityIo.executor.execute {
+                        try {
+                            com.chaquo.python.Python.getInstance().getModule("proposal_evidence_v1").callAttr("record",
+                                filesDir.absolutePath, evidenceResult.toString(), evidenceChains, evidenceClocks)
+                        } catch (e: Exception) { LogBuffer.add('W', TAG, "PROPOSAL_EVIDENCE_FAIL: ${e.javaClass.simpleName}") }
                     }
+                    val readinessToken = (prefs.getString("auth_token", "") ?: "").trim()
+                    if (readinessToken.isNotEmpty()) IndexAuthorityIo.verifySingleLegReadiness(filesDir, prefs,
+                        ManagedReadAdapters.HttpTransport { (prefs.getString("auth_token", "") ?: "").trim() })
                     // C1 capture pilot: opt-in research capture (default OFF); never admits or writes single_leg_v1
                     try {
                         C1PilotIo.offer(filesDir, prefs, resultObj, System.currentTimeMillis())

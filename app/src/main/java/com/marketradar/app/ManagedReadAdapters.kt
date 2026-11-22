@@ -123,7 +123,9 @@ object ManagedReadAdapters {
 
     // ── C1 capture pilot: same exact-instrument endpoints and bounds, with the failure reason kept ─────────
     /** fetch != null on success; otherwise an explicit failure (never a silent null) and whether a retry may help. */
-    data class QuoteOutcome(val fetch: QuoteFetch?, val failure: String?, val retryable: Boolean)
+    data class QuoteOutcome(val fetch: QuoteFetch?, val failure: String?, val retryable: Boolean,
+                            val httpStatus: Int? = null, val requestStartMs: Long? = null,
+                            val receiptMs: Long? = null, val receiptMonoMs: Long? = null)
     data class MarginOutcome(val fetch: MarginFetch?, val failure: String?, val retryable: Boolean)
 
     private fun failureOf(e: Exception) =
@@ -136,14 +138,15 @@ object ManagedReadAdapters {
         if (exact.isEmpty()) return QuoteOutcome(null, "NO_KEYS", false)
         val start = clocks.wallMs()
         val r = try { transport.call("GET", quoteUrl(exact), null) } catch (e: Exception) {
-            return QuoteOutcome(null, failureOf(e), true)
+            return QuoteOutcome(null, failureOf(e), true, requestStartMs = start, receiptMs = clocks.wallMs(), receiptMonoMs = clocks.monoMs())
         }
         val receipt = clocks.wallMs()
         val mono = clocks.monoMs()
-        val body = r.body ?: return QuoteOutcome(null, "BODY_MISSING:HTTP_${r.code}", true)
-        if (r.code != 200) return QuoteOutcome(null, "HTTP_${r.code}", httpRetryable(r.code))
-        if (body.length > MAX_BODY_BYTES) return QuoteOutcome(null, "BODY_TOO_LARGE", false)
-        return QuoteOutcome(QuoteFetch(JSONArray(exact).toString(), body, start, receipt, mono), null, false)
+        if (r.code != 200) return QuoteOutcome(null, "HTTP_${r.code}", httpRetryable(r.code), r.code, start, receipt, mono)
+        val body = r.body?.takeIf { it.isNotBlank() } ?: return QuoteOutcome(null, "BODY_MISSING:HTTP_${r.code}", true, r.code, start, receipt, mono)
+        if (body.length > MAX_BODY_BYTES) return QuoteOutcome(null, "BODY_TOO_LARGE", false, r.code, start, receipt, mono)
+        return QuoteOutcome(QuoteFetch(JSONArray(exact).toString(), body, start, receipt, mono), null, false,
+            r.code, start, receipt, mono)
     }
 
     fun fetchShortMarginOutcome(action: String, instrumentKey: String, quantity: Int, transport: Transport,

@@ -175,6 +175,8 @@ def _single_leg(files_dir, session):
         from daily_review_v1 import _trade_session
         part['positions'] = [p for p in (doc.get('positions') or []) if sd(p) == session or _trade_session(p) == session]
         part['closed'] = [c for c in (doc.get('closed') or []) if sd(c) == session or _trade_session(c) == session]
+        part['hold_observations'] = [r for r in (doc.get('hold_observations') or [])
+                                     if sd(r) == session or r.get('next_session') == session]
         part['requests'] = {k: v for k, v in sorted((doc.get('requests') or {}).items())
                             if sd(v) == session or str((v or {}).get('at') or '')[:10] == session}
     if isinstance(snaps, dict):
@@ -193,12 +195,13 @@ TRACE_DIR = 'single_leg_trace_v1'
 EXPIRY_FALLBACK_READ_CAP = 3 * 1024 * 1024
 TRACE_READ_CAP = 512 * 1024
 TRACE_KINDS = ('CONFIG', 'RENDER', 'TAP', 'REFUSED', 'SUBMITTED', 'OUTCOME', 'RECOVERY_STARTED', 'RECOVERY_BRIDGE_WAIT',
-               'RECOVERY_OUTCOME', 'N_SUBMIT', 'N_QUOTE_STARTED', 'N_OUTCOME')
+               'RECOVERY_OUTCOME', 'N_SUBMIT', 'N_QUOTE_STARTED', 'N_QUOTE_RESULT', 'N_ADMISSION_PENDING', 'N_READINESS', 'N_EXIT', 'N_OUTCOME')
 TRACE_FIELDS = ('kind', 't_ms', 'index', 'source', 'app', 'pwa', 'session_date', 'index_selector', 'decision_id',
                 'instrument_key', 'row_state', 'branch', 'index_action', 'request_id', 'phase', 'status', 'reason',
                 'origin', 'stage', 'action', 'pending_request_id', 'outcome_status', 'enabled', 'capital_set',
                 'paper_mode', 'trade_visible', 'action_exposed', 'quote_requested', 'requires_new_tap', 'reconciled',
-                'recovered', 'bridge_ready', 'reasons')
+                'recovered', 'bridge_ready', 'reasons', 'source_poll_ts', 'acquisition_id', 'position_id',
+                'http_status', 'request_start_ms', 'receipt_ms', 'receipt_mono_ms', 'runtime_ms')
 TRACE_DOC_FIELDS = ('schema', 'session_date', 'dropped_renders', 'dropped_other', 'deduped_renders', 'rejected_records',
                     'truncated', 'limits', 'reset_unreadable', 'page_queue_dropped')
 _TRACE_TOKENISH = re.compile(r'(?i)(bearer|token|secret|password|eyJ[A-Za-z0-9_-]{8,})')
@@ -216,7 +219,8 @@ def _trace_clean(r):
         v = r[k]
         if k == 'reasons':
             v = [str(x)[:120] for x in (v if isinstance(v, list) else [])][:8]
-        elif isinstance(v, bool) or (k == 't_ms' and isinstance(v, int)):
+        elif isinstance(v, bool) or (k in ('t_ms', 'http_status', 'request_start_ms', 'receipt_ms',
+                                           'receipt_mono_ms', 'runtime_ms') and isinstance(v, int)):
             pass
         elif isinstance(v, (int, float)):
             continue                                   # no free numbers (a capital amount can never ride along)
@@ -623,4 +627,31 @@ def build(files_dir, session_date, closed_trades_json=None, meta=None, versions=
                 else:
                     entries.pop('expiry_fallback', None)
                     raw = assemble()
+    # Optional selected-contract ledger. Never displace pre-existing export parts.
+    proposal_path = _contained(os.path.join(files_dir, 'proposal_evidence_v1'), sess + '.json')
+    if proposal_path and os.path.isfile(proposal_path):
+        status, document = _json_part(proposal_path, 1024 * 1024)
+        if status == 'PRESENT' and isinstance(document, dict):
+            parts['proposal_evidence'] = document
+            entries['proposal_evidence'] = _part_entry('PRESENT', document)
+            candidate = assemble()
+            if len(candidate) <= MAX_BUNDLE_BYTES:
+                raw = candidate
+            else:
+                parts.pop('proposal_evidence', None)
+                entries['proposal_evidence'] = _part_entry('OMITTED_FOR_CAP', None)
+                candidate = assemble()
+                if len(candidate) <= MAX_BUNDLE_BYTES:
+                    raw = candidate
+                else:
+                    entries.pop('proposal_evidence', None)
+                    raw = assemble()
+        else:
+            entries['proposal_evidence'] = _part_entry(status, None)
+            candidate = assemble()
+            if len(candidate) <= MAX_BUNDLE_BYTES:
+                raw = candidate
+            else:
+                entries.pop('proposal_evidence', None)
+                raw = assemble()
     return {'manifest': man, 'parts': parts}, raw

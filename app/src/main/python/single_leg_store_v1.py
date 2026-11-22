@@ -14,6 +14,7 @@ import os
 
 import index_authority_v1 as _ia
 import index_single_leg_v1 as _sl
+import strong_hold_observer_v1 as _holds
 from daily_review_v1 import _atomic_write, _canon, _trade_session
 from local_lock_v1 import FileLock
 
@@ -207,7 +208,7 @@ def request_status(d, request_id):
 
 def admit(d, result, index, *, clock=None, open_trades=None, enabled=False, paper_mode=False, selector='BOTH',
           snapshot=None, evidence=None, lot_resolver=None, lock_timeout_s=5.0, capital=None, max_risk_pct=None,
-          config=None, state_probe=None, request_id=None, deadline_ms=None):
+          config=None, state_probe=None, request_id=None, deadline_ms=None, quote_failure=None, require_strong_pilot=False):
     """Admit the CURRENT published single-leg proposal for `index` (R6 s3, R7 s1/s2/s4).
 
     Under the store lock, AFTER any lock wait: read the clock; if a native state_probe is supplied, RE-READ the
@@ -283,6 +284,8 @@ def admit(d, result, index, *, clock=None, open_trades=None, enabled=False, pape
             return done({'status': 'REJECTED', 'reason': 'AUTHORITY_NOT_ACTIVE'})
         if not plan or plan.get('decision_id') != dec.get('decision_id') or not dec.get('decision_id'):
             return done({'status': 'REJECTED', 'reason': 'DECISION_MISMATCH'})
+        if require_strong_pilot and plan.get('paper_pilot') != _sl.STRONG_PILOT:
+            return done({'status': 'REJECTED', 'reason': 'PAPER_PILOT_CURRENT_PROPOSAL_REQUIRED'})
         key = idempotency_key(plan)
         for p in doc.get('positions') or []:
             if p.get('position_id') == key:
@@ -290,6 +293,9 @@ def admit(d, result, index, *, clock=None, open_trades=None, enabled=False, pape
         cr, cwhy = _valid_config(capital, max_risk_pct)
         if cwhy:
             return done({'status': 'REJECTED', 'reason': cwhy, 'reasons': [cwhy]})
+        # A known rejected tap response can never fall back to the proposal's cached snapshot.
+        if quote_failure:
+            return done({'status': 'REJECTED', 'reason': quote_failure, 'reasons': [quote_failure]})
         live = [p for p in doc.get('positions') or [] if p.get('status') in NON_TERMINAL]
         at = _ia.parse_ts(dec.get('analysis_ts'))
         # R8 review: every time-dependent gate (decision age, entry window, quote age, margin age) is evaluated at
@@ -308,6 +314,8 @@ def admit(d, result, index, *, clock=None, open_trades=None, enabled=False, pape
             if expired(now_dt):
                 return done({'status': 'REJECTED', 'reason': 'ADMISSION_EXPIRED_BEFORE_COMMIT',
                              'reasons': ['DEADLINE_PASSED_DURING_REVALIDATION']})
+            if accepted is not None and accepted.get('paper_pilot') == _sl.STRONG_PILOT and _sl.pilot_deadline(now_dt) is None:
+                return done({'status': 'REJECTED', 'reason': 'PAPER_PILOT_60M_HOLD_UNAVAILABLE'})
             if accepted is None or (now_dt - t0).total_seconds() <= REVALIDATE_DRIFT_S:
                 break
         else:
@@ -333,7 +341,11 @@ def admit(d, result, index, *, clock=None, open_trades=None, enabled=False, pape
                                                      'admission_checked_at', 'margin_identity')}
         doc.setdefault('positions', []).append(pos)
         doc.setdefault('history', []).append({'index': index, 'position_id': key, 'entry_ts': pos['entry_ts'],
-                                              'exit_ts': None, 'action': pos['action']})
+                                              'exit_ts': None, 'action': pos['action'],
+                                              'paper_pilot': pos.get('paper_pilot')})
+        if pos.get('paper_pilot') == _sl.STRONG_PILOT:
+            observations = doc.get('hold_observations') or []
+            doc['hold_observations'] = (observations + [_holds.new_observation(pos, accepted.get('research_vix'))])[-_holds.MAX_ROWS:]
         out = {'status': 'ADMITTED', 'position_id': key, 'position': pos}
         try:
             out = done(out, write=False)
@@ -412,6 +424,11 @@ def open_instruments(d):
     return sorted({p['instrument_key'] for p in ps if p.get('status') in ('OPEN', 'EXIT_PENDING') and p.get('instrument_key')})
 
 
+def hold_observation_targets(d, *, clock=None):
+    doc = read(d) or {}
+    return _holds.targets(doc.get('hold_observations') or [], (clock or _wall_clock)())
+
+
 def monitor(d, snapshots, observations_by_index, *, clock=None, spots=None):
     """Advance every open/exit-pending position once.  clock() is read when the WORK EXECUTES (inside the lock),
     never at enqueue time.  Quotes: ONLY the source-specific paper_broker_snapshot_v1 object for the position's
@@ -425,7 +442,7 @@ def monitor(d, snapshots, observations_by_index, *, clock=None, spots=None):
         doc = read(d)
         if doc is None:
             return {'status': 'STORE_CORRUPT', 'events': []}
-        changed = False
+        changed = _holds.advance(doc.get('hold_observations') or [], snapshots or {}, now_dt)
         for i, p in enumerate(doc.get('positions') or []):
             if p.get('status') not in ('OPEN', 'EXIT_PENDING'):
                 continue
@@ -453,7 +470,7 @@ def monitor(d, snapshots, observations_by_index, *, clock=None, spots=None):
                         h['exit_ts'] = np_['exit_ts']
                 events.append({'position_id': np_['position_id'], 'event': 'EXIT', 'account': acc})
             elif ev == 'EXIT_PENDING':
-                events.append({'position_id': np_['position_id'], 'event': 'EXIT_PENDING',
+                events.append({'position_id': np_['position_id'], 'index': ix, 'event': 'EXIT_PENDING',
                                'reason': np_.get('exit_reason'), 'pending': np_.get('exit_pending_reason')})
         if changed:
             _write(d, doc)
@@ -476,7 +493,8 @@ def outcomes(d, session_date):
                     'net_pnl': a.get('net_pnl'), 'exit_ts': a.get('exit_ts'), 'entry_ts': a.get('entry_ts'),
                     'strategy_type': a.get('action'), 'entry_decision_id': a.get('entry_decision_id'),
                     'exit_reason': a.get('exit_reason'), 'net_basis': 'NET_OF_FEES_FEE_CONTRACT_DATED',
-                    'action': a.get('action'), 'fees': a.get('fees'), 'policy_version': _sl.POLICY_ID,
+                    'action': a.get('action'), 'fees': a.get('fees'),
+                    'signal_strength': a.get('signal_strength'), 'policy_version': a.get('paper_pilot') or _sl.POLICY_ID,
                     'capital_required': a.get('capital_required'), 'capital_basis': a.get('capital_basis'),
                     'source': 'ACTUAL_PAPER'})
     for p in doc.get('positions') or []:
@@ -484,6 +502,7 @@ def outcomes(d, session_date):
             out.append({'id': p.get('position_id'), 'index_key': p.get('index'), 'policy_id': _sl.POLICY_ID,
                         'status': p.get('status'), 'net_pnl': None, 'entry_ts': p.get('entry_ts'),
                         'strategy_type': p.get('action'), 'entry_decision_id': p.get('entry_decision_id'),
-                        'action': p.get('action'), 'policy_version': _sl.POLICY_ID, 'source': 'ACTUAL_PAPER',
+                        'action': p.get('action'), 'signal_strength': p.get('signal_strength'),
+                        'policy_version': p.get('paper_pilot') or _sl.POLICY_ID, 'source': 'ACTUAL_PAPER',
                         'capital_required': p.get('capital_required'), 'capital_basis': p.get('capital_basis')})
     return out

@@ -32,14 +32,15 @@ class SingleLegTradeTraceStore(
         const val MAX_RECORDS = 1500
         const val MAX_BYTES = 384 * 1024
         const val KEEP_SESSIONS = 7
+        private val GLOBAL_LOCK = Any()
         private const val STR_MAX = 120
         private val IST: ZoneId = ZoneId.of("Asia/Kolkata")
         val KINDS = setOf("CONFIG", "RENDER", "TAP", "REFUSED", "SUBMITTED", "OUTCOME", "RECOVERY_STARTED",
-            "RECOVERY_BRIDGE_WAIT", "RECOVERY_OUTCOME", "N_SUBMIT", "N_QUOTE_STARTED", "N_OUTCOME", "PAGE_QUEUE_LOSS")
+            "RECOVERY_BRIDGE_WAIT", "RECOVERY_OUTCOME", "N_SUBMIT", "N_QUOTE_STARTED", "N_QUOTE_RESULT", "N_ADMISSION_PENDING", "N_READINESS", "N_EXIT", "N_OUTCOME", "PAGE_QUEUE_LOSS")
         private val INDEXES = setOf("NF", "BNF")
         private val STRING_FIELDS = listOf("source", "app", "pwa", "session_date", "index_selector", "decision_id",
             "instrument_key", "row_state", "branch", "index_action", "request_id", "phase", "status", "reason",
-            "origin", "stage", "action", "pending_request_id", "outcome_status")
+            "origin", "stage", "action", "pending_request_id", "outcome_status", "source_poll_ts", "acquisition_id", "position_id")
         private val BOOL_FIELDS = listOf("enabled", "capital_set", "paper_mode", "trade_visible", "action_exposed",
             "quote_requested", "requires_new_tap", "reconciled", "recovered", "bridge_ready")
         private val LIST_FIELDS = listOf("reasons")
@@ -51,7 +52,7 @@ class SingleLegTradeTraceStore(
         private val TOKENISH = Regex("""(?i)(bearer|token|secret|password|eyJ[A-Za-z0-9_-]{8,})""")
     }
 
-    private val lock = Any()
+    private val lock = GLOBAL_LOCK
 
     fun sessionDate(ms: Long): String = Instant.ofEpochMilli(ms).atZone(IST).toLocalDate().toString()
 
@@ -80,6 +81,10 @@ class SingleLegTradeTraceStore(
                 out.put(k, "[INVALID]"); continue
             }
             out.put(k, s)
+        }
+        for (k in listOf("http_status", "request_start_ms", "receipt_ms", "receipt_mono_ms", "runtime_ms")) {
+            val n = raw.opt(k) as? Number
+            if (n != null && n.toDouble().isFinite() && n.toLong() >= 0) out.put(k, n.toLong())
         }
         for (k in BOOL_FIELDS) if (raw.has(k) && !raw.isNull(k)) {
             val b = raw.opt(k); if (b is Boolean) out.put(k, b)

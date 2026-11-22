@@ -167,6 +167,7 @@ class SingleLegAdmissionCoordinator(
             var q: ManagedReadAdapters.QuoteFetch? = null
             var m: ManagedReadAdapters.MarginFetch? = null
             val tr = transport()
+            if (s0.gatesOpen() && tr == null) return done(id, rej("BROKER_TRANSPORT_UNAVAILABLE").put("stage", "QUOTE_FETCH"))
             if (s0.gatesOpen() && tr != null) {
                 put(id, JSONObject().put("status", "PENDING").put("phase", "FETCHING").put("index", ix))
                 val keys = s0.quoteNeeded.take(1)
@@ -175,12 +176,21 @@ class SingleLegAdmissionCoordinator(
                     emit("N_QUOTE_STARTED", id) { it.put("instrument_key", keys.first()) }
                     tr.call(method, url, body)
                 }
-                q = ManagedReadAdapters.fetchQuotes(keys, tracedTransport, clocks)
+                val outcome = ManagedReadAdapters.fetchQuotesOutcome(keys, tracedTransport, clocks)
+                emit("N_QUOTE_RESULT", id) { t -> t.put("decision_id", s0.decisionId).put("instrument_key", s0.instrumentKey)
+                    .put("http_status", outcome.httpStatus ?: JSONObject.NULL)
+                    .put("request_start_ms", outcome.requestStartMs ?: JSONObject.NULL)
+                    .put("receipt_ms", outcome.receiptMs ?: JSONObject.NULL)
+                    .put("receipt_mono_ms", outcome.receiptMonoMs ?: JSONObject.NULL)
+                    .put("reason", outcome.failure ?: "RESPONSE_RECEIVED") }
+                if (outcome.failure != null) return done(id, rej(outcome.failure).put("stage", "QUOTE_FETCH"))
+                q = outcome.fetch
                 m = ManagedReadAdapters.fetchShortMargin(s0.action ?: "", s0.instrumentKey, s0.lotSize, tr, clocks)
             }
             val s1 = readState(ix)                      // re-read AFTER the fetch
             s0.diff(s1)?.let { return done(id, rej("STATE_CHANGED_DURING_FETCH:$it")) }
             val deadline = clocks.wallMs() + commitWindowMs
+            emit("N_ADMISSION_PENDING", id) { it.put("decision_id", s1.decisionId).put("instrument_key", s1.instrumentKey) }
             put(id, JSONObject().put("status", "PENDING").put("phase", "COMMITTING").put("index", ix))
             val probe = StateProbe { readState(ix).probeJson() }
             val out = admit(Call(s1, q, m, id, deadline, probe))

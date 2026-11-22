@@ -32,12 +32,15 @@ from __future__ import annotations
 import math
 from datetime import datetime, timedelta
 
+import ev_v12_calendar as _calendar
 import ev_v12_fees as _fees
 import index_authority_v1 as _ia
 import managed_evidence_v1 as _me
 import paper_broker_snapshot_v1 as _pbs
 
 POLICY_ID = 'index_single_leg_v1'
+STRONG_PILOT = 'paper_strong_buy_60m_v1'
+PILOT_HOLD_MINUTES = 60
 ER_SWITCH = 0.30
 ENTRY_START, ENTRY_END = (9, 30), (14, 30)
 TIME_EXIT = (15, 5)
@@ -235,9 +238,45 @@ def _snapshot_for(evidence, instrument_key):
     return (ev.get('snapshots') or {}).get(instrument_key) if instrument_key else None
 
 
+def pilot_deadline(now):
+    if not isinstance(now, datetime) or now.utcoffset() is None:
+        return None
+    local = now.astimezone(_calendar.IST)
+    try:
+        if not _calendar.DEFAULT_CALENDAR.is_session(local.date()):
+            return None
+    except _calendar.CalendarUnavailable:
+        return None
+    midnight = local.replace(hour=0, minute=0, second=0, microsecond=0)
+    deadline = local + timedelta(minutes=PILOT_HOLD_MINUTES)
+    if (local >= midnight + timedelta(seconds=_calendar.SESSION_OPEN_S)
+            and deadline < midnight + timedelta(seconds=_calendar.SESSION_CLOSE_S)):
+        return deadline
+    return None
+
+
+def _pilot_signal_reason(direction, action):
+    if (direction or {}).get('strength') != 'STRONG':
+        return 'PAPER_PILOT_WAIT_FOR_STRONG'
+    if action not in ('BUY_CE', 'BUY_PE'):
+        return 'PAPER_PILOT_BUY_ONLY'
+    return None
+
+
+def _pilot_entry_reasons(session, now, history):
+    reasons = []
+    deadline = pilot_deadline(now)
+    if deadline is None or deadline.date().isoformat() != session:
+        reasons.append('PAPER_PILOT_60M_HOLD_UNAVAILABLE')
+    if any(row.get('paper_pilot') == STRONG_PILOT and str(row.get('entry_ts') or '')[:10] == session
+           for row in history or []):
+        reasons.append('PAPER_PILOT_SESSION_CAP')
+    return reasons
+
+
 def plan_entry(index, decision, chain, spot, *, session_date, decision_dt, expiry, captured_lot=None,
                open_trades=None, single_leg_positions=None, reservations=None, history=None, capital=250000.0,
-               max_risk_pct=10.0, evidence=None, lot_resolver=None, history_supplied=True):
+               max_risk_pct=10.0, evidence=None, lot_resolver=None, history_supplied=True, strong_pilot=False):
     """One managed single-leg Paper entry PROPOSAL (or every named reason it is blocked).
     decision_dt is the trusted analysis clock.  Quotes: paper_broker_snapshot_v1 only (dedicated v3 response in
     evidence['snapshots']); the chain bid/ask is never a fill price.  `quote_needed` names the exact instrument
@@ -252,6 +291,11 @@ def plan_entry(index, decision, chain, spot, *, session_date, decision_dt, expir
     d = decision if isinstance(decision, dict) else {}
     action, why = choose_action(d.get('direction'))
     out['action'] = action
+    if strong_pilot:
+        out.update(paper_pilot=STRONG_PILOT, signal_strength=(d.get('direction') or {}).get('strength'))
+        why = why or _pilot_signal_reason(d.get('direction'), action)
+        if why:
+            out['action'] = None
     if why:
         out['reasons'].append(why)
         out['status'] = 'BLOCKED'
@@ -259,7 +303,11 @@ def plan_entry(index, decision, chain, spot, *, session_date, decision_dt, expir
     if not history_supplied:
         out['reasons'].append('SINGLE_LEG_HISTORY_NOT_SUPPLIED')
     hm = _hm(decision_dt)
-    if hm is None or not (ENTRY_START <= hm <= ENTRY_END):
+    if strong_pilot:
+        out['reasons'] += _pilot_entry_reasons(out['session_date'], decision_dt, history)
+        out['holding_contract'] = {'hold_minutes': PILOT_HOLD_MINUTES, 'clock_anchor': 'admission_time',
+                                   'deadline_session': out['session_date'], 'policy_version': STRONG_PILOT}
+    elif hm is None or not (ENTRY_START <= hm <= ENTRY_END):
         out['reasons'].append('ENTRY_WINDOW_CLOSED')
     ex_reasons, exp = exposure_state(index, session_date, decision_dt, open_trades=open_trades,
                                      single_leg_positions=single_leg_positions, reservations=reservations,
@@ -347,7 +395,14 @@ def revalidate_for_admission(plan, decision, now_dt, *, snapshot=None, evidence=
     if now_dt.date().isoformat() != session:
         reasons.append('SESSION_CHANGED')
     hm = _hm(now_dt)
-    if not (ENTRY_START <= hm <= ENTRY_END):
+    if p.get('paper_pilot') == STRONG_PILOT:
+        direction = (decision or {}).get('direction') or {}
+        current_action, _ = choose_action(direction)
+        why = _pilot_signal_reason(direction, current_action)
+        if why or current_action != action:
+            reasons.append(why or 'PAPER_PILOT_ACTION_CHANGED')
+        reasons += _pilot_entry_reasons(session, now_dt, history)
+    elif not (ENTRY_START <= hm <= ENTRY_END):
         reasons.append('ENTRY_WINDOW_CLOSED_AT_ADMISSION')
     ex, exp = exposure_state(ix, session, now_dt, open_trades=open_trades, single_leg_positions=store_positions,
                              history=history)
@@ -409,6 +464,15 @@ def open_position(plan, entry_ts, entry_direction):
     if not (isinstance(plan, dict) and plan.get('admit')):
         raise ValueError('plan not admitted')
     pos = _open_position(plan, entry_ts, entry_direction)
+    if plan.get('paper_pilot') == STRONG_PILOT:
+        deadline = pilot_deadline(_ia.parse_ts(entry_ts))
+        if deadline is None:
+            raise ValueError('Paper pilot hold no longer fits')
+        pos.update(paper_pilot=STRONG_PILOT, signal_strength=plan.get('signal_strength'))
+        pos['exit_contract'].update(id=STRONG_PILOT + '_exit', deadline_ts=deadline.isoformat())
+        pos['exit_contract'].pop('time_exit', None)
+        pos['holding_plan'].update(version=STRONG_PILOT, policy_version=STRONG_PILOT,
+                                   intended_hold='60_minutes_or_early_exit', exit_deadline=deadline.isoformat())
     fb = plan.get('expiry_fallback')
     if isinstance(fb, dict) and fb.get('status') == 'APPLIED':
         # expiry_fallback_v1 provenance (small, bounded); absent on every ordinary-day position
@@ -433,7 +497,13 @@ def _open_position(plan, entry_ts, entry_direction):
             'margin_identity': plan.get('margin_identity'), 'entry_snapshot': plan.get('entry_snapshot'),
             'entry_contract': ENTRY_CONTRACT, 'quote_contract': plan.get('quote_contract'),
             'status': 'OPEN', 'contrary_valid_polls': 0, 'max_ask_seen': None, 'max_adverse_spot': None,
-            'exit_contract': exit_contract()}
+            'exit_contract': exit_contract(),
+            'holding_plan': {'version': 'paper_fixed_hold_v1', 'clock_anchor': 'admission_time',
+                'anchor_ts': entry_ts, 'intended_hold': 'until_same_session_deadline_or_early_exit',
+                'exit_deadline': str(entry_ts)[:10] + 'T' + exit_contract()['time_exit'] + ':00+05:30',
+                'early_exit_conditions': ['buy_bid_at_or_below_70pct_entry', 'two_confirmed_opposite_observations'],
+                'policy_version': POLICY_ID}}
+
 
 
 def quote_validity(pos, quote, analysis_dt, contract=None):
@@ -482,6 +552,16 @@ def evaluate_exit(pos, leg_quote, direction_observations, analysis_dt, spot=None
         ok, qwhy, q = _pbs.validate(leg_quote, p.get('instrument_key'), analysis_dt)
     else:
         ok, qwhy, q = quote_validity(p, leg_quote, analysis_dt, c)   # historical v1 contract, unchanged
+    if c.get('id') == STRONG_PILOT + '_exit' and isinstance(analysis_dt, datetime):
+        local = analysis_dt.astimezone(_calendar.IST)
+        seconds = local.hour * 3600 + local.minute * 60 + local.second
+        try:
+            tradable = (_calendar.DEFAULT_CALENDAR.is_session(local.date())
+                        and _calendar.SESSION_OPEN_S <= seconds < _calendar.SESSION_CLOSE_S)
+        except _calendar.CalendarUnavailable:
+            tradable = False
+        if not tradable:
+            ok, qwhy, q = False, 'PAPER_PILOT_MARKET_CLOSED', None
     raw = leg_quote if isinstance(leg_quote, dict) else {}
     if raw.get('instrument_key') == p.get('instrument_key'):
         a_ = _num(raw.get('ask'))
@@ -510,14 +590,22 @@ def evaluate_exit(pos, leg_quote, direction_observations, analysis_dt, spot=None
         elif entry_day is None:
             p.update(status='EXIT_PENDING', exit_pending_reason='ENTRY_SESSION_UNAVAILABLE')
             return p, 'EXIT_PENDING'
+        elif c.get('id') == STRONG_PILOT + '_exit':
+            deadline = _ia.parse_ts(c.get('deadline_ts'))
+            if deadline is None:
+                p.update(status='EXIT_PENDING', exit_pending_reason='PAPER_PILOT_EXIT_DEADLINE_UNAVAILABLE')
+                return p, 'EXIT_PENDING'
+            if isinstance(analysis_dt, datetime) and analysis_dt >= deadline:
+                reason = 'TIME_EXIT'
         elif hm is not None and hm >= te:
             reason = 'TIME_EXIT'
-        elif ok and p['action'].startswith('BUY') and q['bid'] <= float(c.get('buy_stop_frac', BUY_STOP_FRAC)) * ef:
+        if reason is None and ok and p['action'].startswith('BUY') and q['bid'] <= float(c.get('buy_stop_frac', BUY_STOP_FRAC)) * ef:
             reason = 'STOP_PLANNED'
-        elif ok and p['action'].startswith('SELL') and q['ask'] >= float(c.get('sell_stop_frac', SELL_STOP_FRAC)) * ef:
+        elif reason is None and ok and p['action'].startswith('SELL') and q['ask'] >= float(c.get('sell_stop_frac', SELL_STOP_FRAC)) * ef:
             reason = 'STOP_PLANNED'
-        elif confirmed:
+        elif reason is None and confirmed:
             reason = 'INVALIDATION_OPPOSITE_CONFIRMED'
+
     if reason is None:
         p['mark'] = 'STALE' if not ok else ((q['bid'] + q['ask']) / 2.0)
         p['mark_quote_status'] = qwhy or 'VALID'
@@ -553,6 +641,10 @@ def account(pos, trade_date=None, intrinsic_at=None):
            'instrument_key': pos.get('instrument_key'), 'entry_ts': pos.get('entry_ts'),
            'exit_ts': pos.get('exit_ts'), 'side': 'LONG' if side > 0 else 'SHORT',
            'capital_basis': pos.get('capital_basis'), 'capital_required': pos.get('capital_required')}
+    if pos.get('paper_pilot') == STRONG_PILOT:
+        out.update(paper_pilot=STRONG_PILOT, signal_strength=pos.get('signal_strength'),
+                   contract_expiry=pos.get('expiry'), strike=pos.get('strike'),
+                   option_type=pos.get('option_type'), holding_plan=pos.get('holding_plan'))
     if pos.get('status') != 'CLOSED' or pos.get('exit_fill') is None:
         out.update(status='UNRESOLVED_EXIT', net_pnl=None)
         if side > 0:

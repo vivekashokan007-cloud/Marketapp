@@ -133,7 +133,7 @@ object IndexAuthorityIo {
      * dedicated v3 quotes for OPEN positions first (exact instruments, bounded), stores them with their original
      * receipt times, then monitors. Direction observations are read from the persisted authority history.
      */
-    fun monitorSingleLeg(filesDir: File, spotsJson: String, transport: ManagedReadAdapters.Transport?) {
+    fun monitorSingleLeg(filesDir: File, spotsJson: String, transport: ManagedReadAdapters.Transport?, onEvents: (String) -> Unit = {}) {
         val sl = IndexAuthorityContext.singleLegDir(filesDir)
         if (!File(sl, "positions.json").exists()) return
         if (!slCoalescer.offer(spotsJson)) return
@@ -144,8 +144,10 @@ object IndexAuthorityIo {
                 if (transport != null) {
                     val tgt = JSONObject(brain.callAttr("single_leg_quote_targets", sl.absolutePath, "null").toString())
                     val keys = (0 until (tgt.optJSONArray("open")?.length() ?: 0)).map { tgt.getJSONArray("open").getString(it) }
+                    val research = tgt.optJSONArray("research")
+                    val researchKeys = (0 until (research?.length() ?: 0)).mapNotNull { research?.optString(it) }
                     val clocks = ManagedReadAdapters.Clocks({ System.currentTimeMillis() }, { android.os.SystemClock.elapsedRealtime() })
-                    ManagedReadAdapters.fetchQuotes(keys, transport, clocks)?.let { q ->
+                    ManagedReadAdapters.fetchQuotes(keys + researchKeys, transport, clocks)?.let { q ->
                         brain.callAttr("single_leg_put_quotes", sl.absolutePath, q.requestedJson, q.body,
                             q.requestStartMs, q.receiptMs, q.receiptMonoMs)
                     }
@@ -153,9 +155,71 @@ object IndexAuthorityIo {
                 val session = IndexAuthorityContext.istSession(System.currentTimeMillis())   // at execution
                 val out = brain.callAttr("single_leg_monitor", sl.absolutePath,
                     IndexAuthorityContext.stateDir(filesDir).absolutePath, session, spots).toString()
+                val events = JSONObject(out).optJSONArray("events") ?: org.json.JSONArray()
+                for (i in 0 until events.length()) {
+                    val event = events.getJSONObject(i)
+                    val account = event.optJSONObject("account")
+                    SingleLegTradeTraceStore(filesDir).append(JSONObject().put("kind", "N_EXIT")
+                        .put("position_id", event.optString("position_id"))
+                        .put("index", account?.optString("index") ?: event.optString("index"))
+                        .put("status", event.optString("event"))
+                        .put("reason", account?.optString("exit_reason") ?: event.optString("reason"))
+                        .put("source", "monitor").toString())
+                }
+                if (events.length() > 0) onEvents(out)
                 LogBuffer.add('I', TAG, "SINGLE_LEG_MONITOR: ${out.take(160)}")
             } catch (e: Exception) {
                 LogBuffer.add('W', TAG, "SINGLE_LEG_MONITOR_FAIL: ${e.javaClass.simpleName}")
+            }
+        }
+    }
+
+    private val readinessExecutor = Executors.newSingleThreadExecutor { r ->
+        Thread(r, "paper-quote-readiness").apply { isDaemon = true }
+    }
+    private val readinessPending = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /** Coalesced, read-only preflight on its own worker; open exit work suppresses candidate GETs. */
+    fun verifySingleLegReadiness(filesDir: File, prefs: android.content.SharedPreferences,
+                                transport: ManagedReadAdapters.Transport) {
+        if (!prefs.getBoolean(IndexAuthorityContext.PREF_SINGLE_LEG_PAPER, false)
+            || EvAcceptance.executionMode(prefs) != "paper") return
+        if (!readinessPending.compareAndSet(false, true)) return
+        readinessExecutor.execute {
+            try {
+                fun current(): String {
+                    if (!prefs.getBoolean(IndexAuthorityContext.PREF_SINGLE_LEG_PAPER, false)
+                        || EvAcceptance.executionMode(prefs) != "paper") return "{}"
+                    if (prefs.getBoolean("paper_shared_inputs_unavailable", false)) return "{}"
+                    return SessionInputs.currentResultOrNull(BrainResultStore.readBrainResultIn(File(filesDir, "brain_results"), prefs),
+                        SessionInputs.inputRevision(SessionInputs.read(prefs.getString(SessionInputs.PREF_KEY, null)),
+                            IndexAuthorityContext.istSession(System.currentTimeMillis()))) ?: "{}"
+                }
+                val module = com.chaquo.python.Python.getInstance().getModule("single_leg_readiness_v1")
+                val directory = IndexAuthorityContext.singleLegDir(filesDir).absolutePath
+                val request = module.callAttr("begin", directory, current()).toString()
+                val body = JSONObject(request)
+                val keys = body.getJSONArray("keys").let { a -> (0 until a.length()).map { a.getString(it) } }
+                if (keys.isNotEmpty()) {
+                    val clocks = ManagedReadAdapters.Clocks({ System.currentTimeMillis() },
+                        { android.os.SystemClock.elapsedRealtime() })
+                    val outcome = ManagedReadAdapters.fetchQuotesOutcome(keys, transport, clocks)
+                    val quote = outcome.fetch
+                    val recorded = JSONObject(module.callAttr("complete", directory, request, current(), quote?.body,
+                        outcome.requestStartMs, outcome.receiptMs, outcome.receiptMonoMs, outcome.failure,
+                        System.currentTimeMillis(), outcome.httpStatus).toString())
+                    val rows = recorded.optJSONObject("by_index") ?: JSONObject()
+                    for (ix in listOf("NF", "BNF")) rows.optJSONObject(ix)?.let { row ->
+                        SingleLegTradeTraceStore(filesDir).append(JSONObject(row.toString())
+                            .put("kind", "N_READINESS").put("index", ix).put("status", row.optString("state"))
+                            .put("source", "readiness").toString())
+                    }
+                    LogBuffer.add('I', TAG, "SINGLE_LEG_READINESS: keys=${keys.size} transport=${outcome.failure ?: "RECEIVED"}")
+                }
+            } catch (e: Exception) {
+                LogBuffer.add('W', TAG, "SINGLE_LEG_READINESS_FAIL: ${e.javaClass.simpleName}")
+            } finally {
+                readinessPending.set(false)
             }
         }
     }

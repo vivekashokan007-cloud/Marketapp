@@ -7209,7 +7209,7 @@ _CONST = {
 # ═══════════════════════════════════════════════════════════════
 
 # TASK 5.1 — Version + schema markers
-BRAIN_VERSION = "2.6.103"
+BRAIN_VERSION = "2.6.104"
 # G6 shadow variants: log-only. Never mutate active recommendation / live p_ml gate.
 G6_SHADOW_A_ENABLED = True   # corrected net-cal baseline + existing ML entry integration
 G6_SHADOW_B_ENABLED = True   # log uncapped p_ml confidence counterfactual; live gate unchanged
@@ -27283,6 +27283,15 @@ def compute_index_authority(polls, ctx):
             available, why = False, 'ANALYSIS_CLOCK_MISSING'
         elif _ia._parse_date(expiry) is None:
             available, why = False, 'EXPIRY_INVALID'
+        elif chain.get('input_failure'):
+            available, why = False, str(chain['input_failure'])
+        elif ((ctx.get('pollInputStatus') or {}).get(ix) not in (None, 'AVAILABLE')):
+            available, why = False, str(ctx['pollInputStatus'][ix])
+        elif not chain.get('strikes'):
+            available, why = False, 'CHAIN_EMPTY'
+        elif not any(isinstance(v, dict) and v.get('CE') and v.get('PE')
+                     for v in chain['strikes'].values()):
+            available, why = False, 'CHAIN_ONE_SIDED'
         # D9 repair: the direction scale may read a SEPARATELY supplied next-expiry chain on this
         # index's own expiry day, when the front (trading) chain cannot price a forward session move.
         # The trading chain resolved above is never substituted or modified.
@@ -27549,6 +27558,8 @@ def _ia_single_leg_plan(ix, dec, chain, spot, ctx, session, decision_dt, open_tr
                               expiry=ctx.get('nfExpiry' if ix == 'NF' else 'bnfExpiry'), captured_lot=_ia_lot(chain),
                               open_trades=open_trades, single_leg_positions=single_leg_positions,
                               history=hist or [], history_supplied=hist is not None,
+                              strong_pilot=bool(ctx.get('singleLegPaperEnabled'))
+                                  and _explicit_execution_mode(ctx) == 'paper',
                               capital=float(ctx.get('capital') or _CONST['CAPITAL']),
                               max_risk_pct=float(_CONST['MAX_RISK_PCT']),
                               evidence=_ia_managed_evidence(ctx, d))
@@ -27658,6 +27669,16 @@ def _ia_apply_cutover(result, ctx, polls, open_trades, authority, single_leg_pos
             single_leg[ix] = _ia_single_leg_plan(ix, dec, chain, spot, ctx, session, decision_dt, open_trades,
                                                  single_leg_positions)
     if single_leg:
+        import strong_hold_observer_v1 as _holds
+        import paper_proposal_policy_v1 as _pp
+        for _plan in single_leg.values():
+            _plan['permitted_proposal'] = _pp.view(_plan)
+            import index_single_leg_v1 as _holding
+            if _plan.get('paper_pilot'):
+                _plan['research_vix'] = _holds.vix_context(polls, session, decision_dt)
+            else:
+                _plan['holding_contract'] = dict(_holding.exit_contract(), clock_anchor='admission_time',
+                    intended_hold='until_same_session_deadline_or_early_exit', deadline_session=_plan.get('session_date'))
         result['single_leg_by_index'] = single_leg
     legacy_verdict = result.get('verdict') if isinstance(result.get('verdict'), dict) else {}
     legacy_wl = [w for w in (result.get('watchlist') or []) if isinstance(w, dict)]
@@ -27846,6 +27867,15 @@ def _ia_index_alerts(result, ctx):
                            'decision_id': dec.get('decision_id'),
                            'title': f'{ix}: alternatives available (your choice)',
                            'body': f"{dec.get('display', '')} · allowed: {', '.join((dec.get('structure_policy') or {}).get('allowed') or [])}"})
+    import paper_proposal_policy_v1 as _pp
+    for ix, plan in (result.get('single_leg_by_index') or {}).items():
+        permitted = _pp.view(plan)
+        if plan.get('paper_enabled') and permitted['readiness_allowed'] and sel in ('BOTH', ix):
+            alerts.append({'key': f"IDX_BUY_{ix}_{plan.get('decision_id')}", 'category': 'INDEX',
+                'priority': 'entry', 'index': ix, 'decision_id': plan.get('decision_id'),
+                'instrument_key': plan.get('instrument_key'),
+                'title': f"{ix}: {permitted['action']} Paper proposal",
+                'body': f"{plan.get('instrument_key')} · quote and admission checks required · tap in Trade"})
     result['alerts'] = alerts
     return alerts
 
@@ -28094,16 +28124,19 @@ def _sl_snapshot_from(requested_json, quote_json, request_start_ms, receipt_ms, 
     import paper_broker_snapshot_v1 as _pbs
     if not quote_json:
         return {}, []
-    req = json.loads(requested_json or '[]')
-    return _pbs.parse_v3_response(req, json.loads(quote_json), request_start_ms=request_start_ms,
-                                  receipt_ms=receipt_ms, receipt_mono_ms=receipt_mono_ms)
+    try:
+        req = json.loads(requested_json or '[]')
+        return _pbs.parse_v3_response(req, json.loads(quote_json), request_start_ms=request_start_ms,
+                                      receipt_ms=receipt_ms, receipt_mono_ms=receipt_mono_ms)
+    except (ValueError, TypeError, AttributeError):
+        return {}, [{'reason': 'MALFORMED_QUOTE_RESPONSE'}]
 
 
 def single_leg_admit(sl_dir, result_json, index, open_trades_json='[]', enabled=False, paper_mode=False,
                      selector='BOTH', requested_json='[]', quote_json=None, request_start_ms=None, receipt_ms=None,
                      receipt_mono_ms=None, margin_request_json=None, margin_response_json=None,
                      margin_receipt_ms=None, capital=None, max_risk_pct=None, config_json=None, state_probe=None,
-                     request_id=None, deadline_ms=None):
+                     request_id=None, deadline_ms=None, require_strong_pilot=False):
     """R7/R8: explicit admission.  The dedicated v3 quote (and, for SELL, the margin) were fetched natively for
     the exact instrument at tap time.  The final check reads the clock itself AFTER the store lock wait and,
     through `state_probe` (native object with current() -> JSON), RE-READS the published decision identity,
@@ -28133,7 +28166,9 @@ def single_leg_admit(sl_dir, result_json, index, open_trades_json='[]', enabled=
         out = _sls.admit(sl_dir, res, ix, open_trades=ot, enabled=bool(enabled), paper_mode=bool(paper_mode),
                          selector=str(selector or 'BOTH').upper(), snapshot=snap, evidence=ev,
                          capital=capital, max_risk_pct=max_risk_pct, config=cfg, state_probe=probe,
-                         request_id=request_id, deadline_ms=deadline_ms)
+                         request_id=request_id, deadline_ms=deadline_ms,
+                         quote_failure=rej[0].get('reason') if rej and snap is None else None,
+                         require_strong_pilot=bool(require_strong_pilot))
         if rej:
             out['quote_rejections'] = rej
         return json.dumps(out)
@@ -28237,6 +28272,8 @@ def single_leg_expiry_fallback_apply(sl_dir, result_json, ctx_json, evidence_jso
                                    capital_source=cap_src,
                                    acquisition=((evn[ix] or {}).get('stats') or {}).get('acquisition'))
             p['paper_enabled'] = bool(ctx.get('singleLegPaperEnabled'))
+            if p.get('paper_pilot'):
+                p['research_vix'] = base.get('research_vix')
             out['single_leg_by_index'][ix] = p
             did = dec.get('decision_id')
             if did in persist_why:
@@ -28320,13 +28357,14 @@ def single_leg_quote_targets(sl_dir, result_json='null', max_keys=4):
     try:
         res = json.loads(result_json or 'null') or {}
         opens = _sls.open_instruments(sl_dir) or []
+        research = _sls.hold_observation_targets(sl_dir)
         cands = []
         for ix in ('NF', 'BNF'):
             p = (res.get('single_leg_by_index') or {}).get(ix) or {}
             if p.get('status') in ('ADMISSIBLE', 'ELIGIBLE_PENDING_SNAPSHOT'):
                 cands += [k for k in p.get('quote_needed') or [] if k not in opens]
         keys = (opens + [k for k in cands if k not in opens])[:int(max_keys)]
-        return json.dumps({'open': opens, 'candidates': cands, 'keys': keys})
+        return json.dumps({'open': opens, 'candidates': cands, 'keys': keys, 'research': research})
     except Exception as exc:
         return json.dumps({'open': [], 'candidates': [], 'keys': [], 'error': type(exc).__name__})
 
@@ -28417,7 +28455,10 @@ def single_leg_read(sl_dir):
     import single_leg_store_v1 as _sls
     try:
         doc = _sls.read(sl_dir)
-        return json.dumps(doc if doc is not None else {'status': 'STORE_CORRUPT'})
+        import single_leg_readiness_v1 as readiness
+        doc = doc if doc is not None else {'status': 'STORE_CORRUPT'}
+        doc['quote_readiness'] = readiness.view(sl_dir)
+        return json.dumps(doc)
     except Exception as exc:
         return json.dumps({'status': 'ERROR', 'reason': type(exc).__name__})
 

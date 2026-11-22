@@ -1394,6 +1394,7 @@ class NativeBridge(private val context: Context) {
     fun getBrainResult(): String {
         clearStaleSessionStateIfNeeded()
         if (!hasTodaySession()) return "null"
+        if (prefs.getBoolean("paper_shared_inputs_unavailable", false)) return "null"
         // b507 R1 (F3 defence in depth): never hand out a result computed for other acknowledged inputs.
         return SessionInputs.currentResultOrNull(BrainResultStore.readBrainResult(context, prefs),
             SessionInputs.inputRevision(SessionInputs.read(prefs.getString(SessionInputs.PREF_KEY, null)), todayIstDate()))
@@ -1943,7 +1944,7 @@ class NativeBridge(private val context: Context) {
                         c.state.resultJson, c.state.index, c.state.openTrades, c.state.enabled, c.state.paper, c.state.selector,
                         c.quote?.requestedJson ?: "[]", c.quote?.body, c.quote?.requestStartMs, c.quote?.receiptMs,
                         c.quote?.receiptMonoMs, c.margin?.requestJson, c.margin?.body, c.margin?.receiptMs,
-                        c.state.capital, c.state.maxRiskPct, c.configJson(), c.probe, c.requestId, c.deadlineMs).toString()
+                        c.state.capital, c.state.maxRiskPct, c.configJson(), c.probe, c.requestId, c.deadlineMs, true).toString()
                 }
             },
             reconcile = { id ->

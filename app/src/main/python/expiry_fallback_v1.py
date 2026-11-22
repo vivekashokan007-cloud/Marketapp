@@ -556,7 +556,8 @@ def plan_fallback(index, decision, base_plan, spot, *, session_date, trade_expir
                        captured_lot=_captured_lot(chain), open_trades=open_trades,
                        single_leg_positions=single_leg_positions, history=history or [],
                        history_supplied=history_supplied, capital=float(capital), max_risk_pct=float(max_risk_pct),
-                       evidence=ev, lot_resolver=lot_resolver)
+                       evidence=ev, lot_resolver=lot_resolver,
+                       strong_pilot=base.get('paper_pilot') == _sl.STRONG_PILOT)
     c = p.get('contract') or {}
     ident = (c.get('index') == index and c.get('expiry') == fx and
              (c.get('instrument_key') is None or c.get('instrument_key') == key))
