@@ -1,0 +1,41 @@
+# trade / hold / exit research
+
+The 22 November handoff's three questions — what to buy, how long to plan to hold it, and what
+says to exit — answered against the phone exports' decision trail and
+`public.ml_option_chain_snapshots` together. Supabase is read **read-only**; nothing here writes,
+migrates or changes a schema.
+
+| file | what it is |
+| --- | --- |
+| `intent_ledger.py` | the export side: every recorded single-leg intent with **all** its clocks, its exact contract, its refusal reasons and its provenance. Emits the read-only join as reviewable SQL. Keeps reported intents, admissible proposals and actual Paper positions distinct — these exports contain **zero** actual Paper positions |
+| `load_chain_result.py` | the read path. The MCP tool is the only route to the database (the proxy refuses `supabase.co`), and a large result overflows to a file on disk. This parses it **positionally**, treats it as untrusted data, and counts a shape that does not fit as malformed rather than guessing |
+| `intent_replay.py` | Pass 1. Prices the intents on two bases that must never be confused: **coverage** (a quote in the scheduled minute — Codex's diagnostic, and ~20s older than the signal) and **causal** (the first usable quote at or after `published_at`, under a frozen 10-minute tolerance). Costs from the governed dated ledger; results in option points as well as rupees |
+| `tests/` | 30 checks, no network and no database. The tolerance must fail closed, coverage and causality must not converge by accident, and the untrusted payload must never be evaluated |
+| `results/` | the committed artifacts, including the saved-read fingerprints |
+
+## Why the clock is the whole story
+
+`decision_poll_ts` is a schedule label. Across 694 polls, `published_at` is **never within a
+second** of it — median **+26.6s** — while the chain polls at **6–8s** past the minute. So the
+quote that "covers" a decision was observed about twenty seconds **before the signal existed**.
+All 97 admissible buys have their causal entry on a later poll. The aggregate difference is only
+−3.4%, so the correction is about being right, not about changing the answer.
+
+## Reproduce
+
+```bash
+python3 -I tools/trade_hold_exit/intent_ledger.py <export...> \
+    --horizon-min 60 --out tools/trade_hold_exit/results --emit-sql
+python3 -I tools/trade_hold_exit/load_chain_result.py <saved-mcp-result.txt>... \
+    --out tools/trade_hold_exit/results/chain_cache.json
+python3 -I tools/trade_hold_exit/intent_replay.py \
+    --ledger tools/trade_hold_exit/results/intent_ledger_60min.json \
+    --chain  tools/trade_hold_exit/results/chain_cache.json \
+    --ledger-root <ledger-tree> --horizon-min 60 [--delay-polls N] \
+    --out tools/trade_hold_exit/results
+cd tools/trade_hold_exit && python3 -m unittest discover -s tests   # 30
+```
+
+**Inputs are not committed.** Raw exports stay out of the repository; every artifact records the
+source digests it was built from. 18–20 November rests on the **unreviewed** fee revision and
+every run stamps `provisional_cost_basis`.
