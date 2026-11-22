@@ -1713,6 +1713,15 @@ class NativeBridge(private val context: Context) {
     /** close_open_capture_v1 control: its own flag, default OFF; the premium flag never implies it. */
     @JavascriptInterface
     fun setCloseOpenCapture(enabled: Boolean): String = try {
+        // candidate-only, like the C1 pilot switch: a production build cannot turn it on
+        if (!BuildConfig.PWA_CANDIDATE) JSONObject().put("ok", false).put("status", "NOT_CANDIDATE_BUILD")
+            .put("state", CloseOpenCapture.controlState(context.filesDir)).toString()
+        else setCloseOpenCaptureCandidate(enabled)
+    } catch (t: Throwable) {
+        JSONObject().put("ok", false).put("status", "CONTROL_ERROR").put("error", t.javaClass.simpleName).toString()
+    }
+
+    private fun setCloseOpenCaptureCandidate(enabled: Boolean): String = try {
         val ok = CloseOpenCapture.setEnabled(context.filesDir, enabled)
         LogBuffer.add('I', "NativeBridge", "CLOSE_OPEN_CAPTURE_CONTROL: requested=$enabled ok=$ok")
         JSONObject().put("ok", ok).put("state", CloseOpenCapture.controlState(context.filesDir))
@@ -1720,6 +1729,16 @@ class NativeBridge(private val context: Context) {
             .put("takes_effect", "NEXT_POLL").toString()
     } catch (t: Throwable) {
         JSONObject().put("ok", false).put("status", "CONTROL_ERROR").put("error", t.javaClass.simpleName).toString()
+    }
+
+    /** close_open_capture_v1 owner-visible status (control, rule, calendar, today's stages, queue). Read-only. */
+    @JavascriptInterface
+    fun getCloseOpenCaptureStatus(): String = try {
+        CloseOpenCapture.statusSummary(context.filesDir,
+            java.time.LocalDate.now(java.time.ZoneId.of("Asia/Kolkata")).toString())
+            .put("available", true).put("candidate_build", BuildConfig.PWA_CANDIDATE).toString()
+    } catch (t: Throwable) {
+        JSONObject().put("available", false).put("reason", "STATUS_ERROR").put("error", t.javaClass.simpleName).toString()
     }
 
     @JavascriptInterface

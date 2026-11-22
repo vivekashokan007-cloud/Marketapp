@@ -86,6 +86,27 @@ object CloseOpenCapture {
     const val R_CHAIN_EXPIRY_DIFFERS = "response_expiry_differs_from_queued_contract"
     const val R_NO_TWO_SIDED = "no_two_sided_quote_in_reopen_window"
     const val R_NO_ATTEMPT = "no_poll_in_reopen_window"
+    const val R_NO_QUALIFYING_CLOSE = "no_qualifying_close_quote"
+
+    /**
+     * Quote eligibility, R2. The SLOT is scheduling intent only; the RECEIPT instant decides
+     * whether the quote was in hand inside the agreed window. Boundary convention: the receipt,
+     * in IST, truncated to the minute (HH:MM), must lie in the window INCLUSIVE at both ends —
+     * close [15:10, 15:30] = receipt in [15:10:00.000, 15:31:00.000); reopen [09:15, 09:45] =
+     * receipt in [09:15:00.000, 09:46:00.000) — and on the session date. This is the matcher's own
+     * minute-truncated receipt convention (`rec.hour * 60 + rec.minute`). A late final poll (a
+     * 15:30 slot received at 15:31:00 or later; a 09:45 slot at 09:46:00 or later) is recorded
+     * as a diagnostic with its reason and never qualifies; the close then rests on the latest
+     * earlier qualifying slot, if any. A qualifying observation additionally needs an exact
+     * verified identity (no disagreement), a TWO_SIDED book, and — before it moves the queue —
+     * a durable record. Receipt-only quotes keep FRESHNESS_RECEIPT_ONLY.
+     */
+    const val ELIGIBILITY_RULE = "close_open_eligibility_v2_receipt_minute_inclusive"
+    const val LOT_AUTHORITY_STATE = "ABSENT_NOT_CAPTURED_BY_THIS_PATH"
+
+    /** Test seams (never set in production): simulate a crash after the session write, or a failed queue write. */
+    @JvmField @Volatile var testHookAfterSessionWrite: ((String, String, String) -> Unit)? = null
+    @JvmField @Volatile var testFailQueueWrite: Boolean = false
 
     data class Acquisition(val index: String, val chain: JSONObject?,
                            val requestStartedMs: Long, val completedAtMs: Long)
@@ -219,6 +240,145 @@ object CloseOpenCapture {
         return CLOSE_LAST_MIN <= minOf(a, b)
     }
 
+    // ---------------------------------------------------------------- enqueue decision
+    /**
+     * The one enqueue rule, used both at close and when [reconcile] rebuilds a missing entry, so
+     * recovery can never bypass the calendar or expiry refusals.
+     */
+    private fun applyEnqueueDecision(e: JSONObject, d: LocalDate, pin: JSONObject, cal: CalendarView) {
+        val expiry = pin.getString("expiry")
+        val next = cal.next
+        when {
+            next == null -> e.put("state", Q_REFUSED).put("reason", cal.reason ?: R_CAL_NOT_COVERED)
+            next.toString() >= expiry -> e.put("state", Q_REFUSED).put("reason", R_NEXT_ON_OR_AFTER_EXPIRY)
+                .put("target_session", next.toString())
+            else -> e.put("state", Q_QUEUED).put("target_session", next.toString())
+                .put("calendar_gap_days", cal.nextGap ?: JSONObject.NULL)
+        }
+    }
+
+    private fun newEntry(ix: String, d: LocalDate, pin: JSONObject, slot: String): JSONObject =
+        JSONObject().put("key", d.toString() + "|" + pin.getString("instrument_key"))
+            .put("index", ix).put("close_session", d.toString())
+            .put("contract", JSONObject(pin.toString())).put("enqueued_slot", slot)
+
+    /** A record that is in a durable session file AND met the receipt-window/identity/book rule. */
+    private fun qualifies(rec: JSONObject?): Boolean =
+        rec?.optJSONObject("eligibility")?.optBoolean("quote_ready", false) == true
+
+    /** Write the queue and SAY whether it reached disk; a failure is put on the slot outcome and counted. */
+    private fun writeQueueReported(filesDir: File, d: LocalDate, ix: String, q: JSONObject,
+                                   sess: JSONObject?, so: JSONObject?): Boolean {
+        val ok = !testFailQueueWrite && writeQueue(filesDir, ix, q)
+        if (so != null && sess != null) {
+            // The session file is written BEFORE the queue, so only a FAILURE is re-saved into it
+            // (the in-memory outcome and the returned status carry WRITTEN as well).
+            so.put("queue_write", if (ok) "WRITTEN" else "FAILED")
+            if (!ok) {
+                bump(sess, "queue_write_failed")
+                // best effort: the session file must carry the failure even though the queue does not
+                atomicWrite(sessionFile(filesDir, d, ix), sess.toString())
+            }
+        }
+        return ok
+    }
+
+    // ---------------------------------------------------------------- restart recovery
+    /** How far back [reconcile] looks for close sessions whose carry may need rebuilding. */
+    const val RECONCILE_LOOKBACK_DAYS = 14L
+
+    /**
+     * Rebuild the carry queue from DURABLE session evidence, before any window logic runs.
+     *
+     * The session file and the queue are separate writes, and the phone never replays a slot
+     * (dispatch dedup is persisted), so a crash between the two must be repaired from what is
+     * on disk, not from a retry:
+     *  - a close cohort contract with NO queue entry gets one, through the same enqueue rule
+     *    (calendar and expiry refusals preserved) -> recovered MISSING_ENTRY;
+     *  - a QUEUED entry whose ready marker is missing or older than the latest durable QUALIFYING
+     *    close record is brought up to it -> READY_MARKER;
+     *  - an entry refused `no_qualifying_close_quote` while a durable qualifying close exists is
+     *    restored to QUEUED -> REFUSED_WITHOUT_DURABLE_VIEW;
+     *  - a carried entry whose qualifying opening record is already durable becomes OPEN_CAPTURED
+     *    with the EARLIEST such slot, writing no observation -> OPEN_SAVED.
+     * Only a qualifying record counts; a cap-refused record is not on disk and so cannot. Running
+     * it twice changes nothing the second time.
+     */
+    fun reconcile(filesDir: File, ix: String, today: LocalDate, queue: JSONObject): JSONObject {
+        val out = JSONObject()
+        fun note(k: String) { out.put(k, out.optInt(k, 0) + 1) }
+        val root = root(filesDir)
+        val dates = (root.listFiles() ?: emptyArray())
+            .filter { it.isDirectory }.mapNotNull { parseDate(it.name) }
+            .filter { !it.isAfter(today) && !it.isBefore(today.minusDays(RECONCILE_LOOKBACK_DAYS)) }
+            .sorted()
+        val sessions = HashMap<LocalDate, JSONObject>()
+        for (d in dates) {
+            val f = sessionFile(filesDir, d, ix)
+            val s = try { if (f.isFile) JSONObject(f.readText()) else null } catch (t: Throwable) { note("session_unreadable"); null }
+            if (s != null) sessions[d] = s
+        }
+        // close side
+        for ((d, s) in sessions.toSortedMap()) {
+            val pins = s.optJSONObject("close_cohort")?.optJSONArray("pinned_contracts") ?: continue
+            val obs = s.optJSONObject("observations") ?: JSONObject()
+            val cal by lazy { calendarFor(d) }
+            for (i in 0 until pins.length()) {
+                val pin = pins.getJSONObject(i)
+                val key = pin.getString("instrument_key")
+                var lastQ: String? = null
+                for (k in obs.keys()) obs.optJSONObject(k)?.let { r ->
+                    if (r.optString("role") == "CLOSE" && r.optString("instrument_key") == key && qualifies(r)) {
+                        val sl = r.optString("slot"); if (lastQ == null || sl > lastQ!!) lastQ = sl } }
+                val ekey = d.toString() + "|" + key
+                var e = findEntry(queue, ekey)
+                if (e == null) {
+                    e = newEntry(ix, d, pin, s.optJSONObject("close_cohort")?.optString("selected_at_slot") ?: "?")
+                    applyEnqueueDecision(e, d, pin, cal)
+                    e.put("recovered", "MISSING_ENTRY")
+                    queue.getJSONArray("entries").put(e)
+                    note("recovered_missing_entry")
+                }
+                if (lastQ == null) continue
+                val st = e.optString("state")
+                if (st == Q_REFUSED && e.optString("reason") == R_NO_QUALIFYING_CLOSE) {
+                    e.put("state", Q_QUEUED).remove("reason")
+                    e.put("recovered", "REFUSED_WITHOUT_DURABLE_VIEW"); note("recovered_refused_without_durable_view")
+                }
+                if (e.optString("state") == Q_QUEUED || e.optString("state") == Q_OPEN_CAPTURED) {
+                    val cur = e.optString("close_last_qualifying_slot", "")
+                    if (cur.isEmpty() || cur < lastQ!!) {
+                        e.put("close_last_qualifying_slot", lastQ)
+                        if (!e.has("recovered")) e.put("recovered", "READY_MARKER")
+                        note("recovered_ready_marker")
+                    }
+                }
+            }
+        }
+        // open side: an opening record already durable for a carried entry
+        val ents = queue.getJSONArray("entries")
+        for (i in 0 until ents.length()) {
+            val e = ents.getJSONObject(i)
+            val st = e.optString("state")
+            if (st != Q_QUEUED && st != Q_OPEN_NOT_CAPTURED && st != Q_TARGET_PASSED) continue
+            if (!e.has("close_last_qualifying_slot")) continue
+            val t = parseDate(e.optString("target_session")) ?: continue
+            val s = sessions[t] ?: continue
+            val key = e.getJSONObject("contract").getString("instrument_key")
+            val obs = s.optJSONObject("observations") ?: continue
+            var firstQ: String? = null
+            for (k in obs.keys()) obs.optJSONObject(k)?.let { r ->
+                if (r.optString("role") == "REOPEN" && r.optString("instrument_key") == key &&
+                    r.optString("carried_from_session") == e.optString("close_session") && qualifies(r)) {
+                    val sl = r.optString("slot"); if (firstQ == null || sl < firstQ!!) firstQ = sl } }
+            if (firstQ != null) {
+                e.put("state", Q_OPEN_CAPTURED).put("open_first_qualifying_slot", firstQ).remove("reason")
+                e.put("recovered_open", "OPEN_SAVED"); note("recovered_open_saved")
+            }
+        }
+        return out
+    }
+
     // ---------------------------------------------------------------- close slot
     private fun closeSlot(filesDir: File, d: LocalDate, slot: String, ix: String,
                           acq: Acquisition?, overlapSince: Long): JSONObject {
@@ -227,24 +387,29 @@ object CloseOpenCapture {
         bump(sess, "scheduled")
         val cal = calendarFor(d)
         val queue = loadQueue(filesDir, ix)
+        val rec = reconcile(filesDir, ix, d, queue)
+        if (rec.length() > 0) so.put("reconcile", rec)
         finalize(queue, d, minuteOf(slot)!!)
         val out = JSONObject().put("kind", "CLOSE")
 
         fun done(status: String): JSONObject {
             so.put("result", status)
             writeSession(filesDir, d, ix, sess, so)
-            // The queue's close evidence moves only for a TWO_SIDED observation that is durably on
-            // disk: newly WRITTEN, or a DUPLICATE_NO_OP of one written earlier (e.g. a restart between
-            // the session write and the queue write). A cap-refused or failed write never marks it.
+            testHookAfterSessionWrite?.invoke("CLOSE", slot, ix)
+            // The ready marker moves only for a QUALIFYING observation (receipt inside the close
+            // window, exact verified identity, two-sided book) that is durably on disk: newly
+            // WRITTEN, or a DUPLICATE_NO_OP of a qualifying one written earlier.
             so.optJSONArray("observations")?.let { a ->
                 for (i in 0 until a.length()) a.optJSONObject(i)?.let { o ->
                     val durable = o.optString("durable")
-                    if (o.optString("book_quality") == "TWO_SIDED" && (durable == "WRITTEN" || durable == "DUPLICATE_NO_OP"))
+                    if (o.optBoolean("quote_ready") && (durable == "WRITTEN" || durable == "DUPLICATE_NO_OP"))
                         findEntry(queue, d.toString() + "|" + o.optString("instrument_key"))?.let { e ->
-                            if (!e.has("close_last_two_sided_slot") || e.optString("close_last_two_sided_slot") < slot)
-                                e.put("close_last_two_sided_slot", slot) } } }
-            writeQueue(filesDir, ix, queue)
+                            if (e.optString("state") == Q_QUEUED &&
+                                (!e.has("close_last_qualifying_slot") || e.optString("close_last_qualifying_slot") < slot))
+                                e.put("close_last_qualifying_slot", slot) } } }
+            writeQueueReported(filesDir, d, ix, queue, sess, so)
             return out.put("status", status).put("durable_write", so.optString("durable_write"))
+                .put("queue_write", so.optString("queue_write"))
         }
         if (cal.isSession == null) { refuse(sess, R_CAL_NOT_COVERED); return done(R_CAL_NOT_COVERED) }
         if (!cal.regular) { refuse(sess, R_NOT_REGULAR); return done(R_NOT_REGULAR) }
@@ -275,34 +440,22 @@ object CloseOpenCapture {
         }
         val env = envelope(d, ix, slot, acq, parsed)
         val pins = cohort.getJSONArray("pinned_contracts")
-        val (next, nextWhy) = cal.next to cal.reason
         val obsResults = JSONArray()
-        var twoSided = 0
+        var ready = 0
         for (i in 0 until pins.length()) {
             val pin = pins.getJSONObject(i)
-            val r = observe(sess, env, pin, parsed, "CLOSE", null).put("instrument_key", pin.getString("instrument_key"))
+            val r = observe(sess, env, pin, parsed, "CLOSE", null, d)
             obsResults.put(r)
-            if (r.optString("book_quality") == "TWO_SIDED") twoSided++
-            // enqueue / refresh the exact contract for the next regular session
+            if (r.optBoolean("quote_ready")) ready++
             val key = d.toString() + "|" + pin.getString("instrument_key")
-            val e = findEntry(queue, key) ?: JSONObject().put("key", key).also { queue.getJSONArray("entries").put(it) }
+            val e = findEntry(queue, key) ?: newEntry(ix, d, pin, slot).also { queue.getJSONArray("entries").put(it) }
             if (!e.has("state")) {
-                e.put("index", ix).put("close_session", d.toString())
-                    .put("contract", JSONObject(pin.toString()))
-                    .put("enqueued_slot", slot)
-                val expiry = pin.getString("expiry")
-                when {
-                    next == null -> e.put("state", Q_REFUSED).put("reason", nextWhy ?: R_CAL_NOT_COVERED)
-                    next.toString() >= expiry -> e.put("state", Q_REFUSED).put("reason", R_NEXT_ON_OR_AFTER_EXPIRY)
-                        .put("target_session", next.toString())
-                    else -> e.put("state", Q_QUEUED).put("target_session", next.toString())
-                        .put("calendar_gap_days", cal.nextGap ?: JSONObject.NULL)
-                }
+                applyEnqueueDecision(e, d, pin, cal)
                 if (e.optString("state") == Q_REFUSED) bump(sess, "queue_refused_" + e.optString("reason"))
                 else bump(sess, "queue_enqueued")
             }
         }
-        so.put("quote_receipt", if (twoSided == pins.length()) "ALL_TWO_SIDED" else "PARTIAL_$twoSided/${pins.length()}")
+        so.put("quote_receipt", if (ready == pins.length()) "ALL_QUALIFYING" else "QUALIFYING_$ready/${pins.length()}")
             .put("observations", obsResults)
         return done("OBSERVED")
     }
@@ -311,17 +464,24 @@ object CloseOpenCapture {
     private fun reopenSlot(filesDir: File, d: LocalDate, slot: String, ix: String,
                            acq: Acquisition?, overlapSince: Long): JSONObject {
         val queue = loadQueue(filesDir, ix)
+        val rec = reconcile(filesDir, ix, d, queue)
         val changedByFinalize = finalize(queue, d, minuteOf(slot)!!)
+        // only an entry with a durable QUALIFYING close is ever looked up in the morning
         val due = (0 until queue.getJSONArray("entries").length()).map { queue.getJSONArray("entries").getJSONObject(it) }
-            .filter { it.optString("target_session") == d.toString() &&
+            .filter { it.optString("target_session") == d.toString() && it.has("close_last_qualifying_slot") &&
                 (it.optString("state") == Q_QUEUED || it.optString("state") == Q_OPEN_CAPTURED) }
         val out = JSONObject().put("kind", "REOPEN").put("due", due.size)
         if (due.isEmpty()) {
-            if (changedByFinalize) writeQueue(filesDir, ix, queue)
+            if (changedByFinalize || rec.length() > 0) {
+                val ok = !testFailQueueWrite && writeQueue(filesDir, ix, queue)
+                out.put("queue_write", if (ok) "WRITTEN" else "FAILED")
+            }
+            if (rec.length() > 0) out.put("reconcile", rec)
             return out.put("status", "NOTHING_DUE")
         }
         val sess = loadSession(filesDir, d, ix)
         val so = slotOutcome(sess, slot, "REOPEN", overlapSince)
+        if (rec.length() > 0) so.put("reconcile", rec)
         bump(sess, "scheduled")
         val chain = acq?.chain
         val parsed = chain?.let { parseChain(it, ix) }
@@ -337,30 +497,37 @@ object CloseOpenCapture {
                     val carried = sess.optJSONObject("carried_pins") ?: JSONObject().also { sess.put("carried_pins", it) }
                     if (!carried.has(pin.getString("instrument_key")))
                         carried.put(pin.getString("instrument_key"), JSONObject(pin.toString()).put("carried_from_session", e.optString("close_session")))
-                    observe(sess, env!!, pin, parsed, "REOPEN", e.optString("close_session"))
+                    observe(sess, env!!, pin, parsed, "REOPEN", e.optString("close_session"), d)
                 }
             }
             if (!r.optBoolean("present")) bump(sess, "quote_contract_missing_" + r.optString("reason"))
-            e.put("last_open_outcome", r.optString("reason", r.optString("book_quality")))
+            e.put("last_open_outcome", when {
+                !r.optBoolean("present") -> r.optString("reason")
+                r.optBoolean("quote_ready") -> "QUALIFYING"
+                else -> (r.optJSONArray("reasons")?.let { a -> (0 until a.length()).joinToString("+") { a.getString(it) } } ?: "not_qualifying")
+            })
             results.put(r.put("instrument_key", pin.getString("instrument_key")))
         }
         so.put("quote_receipt", if (chain == null) R_CHAIN_MISSING else "ATTEMPTED").put("observations", results)
         so.put("result", "OBSERVED")
         writeSession(filesDir, d, ix, sess, so)
-        // OPEN_CAPTURED only for a TWO_SIDED observation that is durably on disk (see closeSlot)
+        testHookAfterSessionWrite?.invoke("REOPEN", slot, ix)
+        // OPEN_CAPTURED only for a QUALIFYING observation that is durably on disk (see closeSlot)
         for (i in 0 until results.length()) results.getJSONObject(i).let { o ->
             val durable = o.optString("durable")
-            if (o.optString("book_quality") == "TWO_SIDED" && (durable == "WRITTEN" || durable == "DUPLICATE_NO_OP"))
+            if (o.optBoolean("quote_ready") && (durable == "WRITTEN" || durable == "DUPLICATE_NO_OP"))
                 due.firstOrNull { it.getJSONObject("contract").optString("instrument_key") == o.optString("instrument_key") }
                     ?.let { e -> if (e.optString("state") == Q_QUEUED)
-                        e.put("state", Q_OPEN_CAPTURED).put("open_first_two_sided_slot", slot) } }
-        writeQueue(filesDir, ix, queue)
+                        e.put("state", Q_OPEN_CAPTURED).put("open_first_qualifying_slot", slot) } }
+        writeQueueReported(filesDir, d, ix, queue, sess, so)
         return out.put("status", "OBSERVED").put("durable_write", so.optString("durable_write"))
+            .put("queue_write", so.optString("queue_write"))
     }
 
     /**
      * Terminal states for entries whose window has gone: a later session -> TARGET_PASSED (or
      * OPEN_NOT_CAPTURED if it was attempted); the target session past 09:45 -> OPEN_NOT_CAPTURED.
+     * Runs AFTER [reconcile], so it never judges a stale queue.
      */
     fun finalize(queue: JSONObject, today: LocalDate, minute: Int): Boolean {
         var changed = false
@@ -369,24 +536,22 @@ object CloseOpenCapture {
             val e = arr.getJSONObject(i)
             if (e.optString("state") != Q_QUEUED) continue
             val t = e.optString("target_session")
-            if (t <= today.toString() && !e.has("close_last_two_sided_slot")) {
-                // nothing usable was seen near close, so an opening mark could never be paired
-                e.put("state", Q_REFUSED).put("reason", "no_two_sided_close_quote"); changed = true; continue
+            if (t <= today.toString() && !e.has("close_last_qualifying_slot")) {
+                // no durable qualifying close: an opening mark could never be paired, so no lookup
+                e.put("state", Q_REFUSED).put("reason", R_NO_QUALIFYING_CLOSE); changed = true; continue
             }
             val passed = t < today.toString() || (t == today.toString() && minute > REOPEN_LAST_MIN)
             if (!passed) continue
             if (e.optInt("open_attempts", 0) == 0) e.put("state", Q_TARGET_PASSED).put("reason", R_NO_ATTEMPT)
-            else e.put("state", Q_OPEN_NOT_CAPTURED).put("reason", e.optString("last_open_outcome").let {
-                if (it == "ONE_SIDED" || it == "NO_BOOK" || it == "CROSSED" || it == "NON_POSITIVE") R_NO_TWO_SIDED else it })
+            else e.put("state", Q_OPEN_NOT_CAPTURED).put("reason", e.optString("last_open_outcome").ifEmpty { "not_qualifying" })
             changed = true
         }
         return changed
     }
-
     // ---------------------------------------------------------------- observation
     /** One observation per (contract, slot). A retry is a DUPLICATE_NO_OP or a counted conflict. */
     private fun observe(sess: JSONObject, env: JSONObject, pin: JSONObject, parsed: Parsed,
-                        role: String, carriedFrom: String?): JSONObject {
+                        role: String, carriedFrom: String?, session: LocalDate): JSONObject {
         val key = pin.getString("instrument_key")
         val r = JSONObject().put("instrument_key", key)
         val row = parsed.byKey[key]
@@ -408,6 +573,8 @@ object CloseOpenCapture {
         bump(sess, "quote_received_" + quality.lowercase())
         val slot = env.getString("slot")
         val obsKey = "$slot|$key"
+        val receiptMs = env.getJSONObject("clocks").optLong("acquisition_response_ms", 0L).takeIf { it > 0L }
+        val elig = eligibility(role, session, slot, receiptMs, disagreements, quality)
         val rec = JSONObject()
             .put("instrument_key", key)
             .put("acquisition_id", env.getString("acquisition_id"))
@@ -424,7 +591,10 @@ object CloseOpenCapture {
             .put("identity", JSONObject().put("identity_verified", disagreements.length() == 0)
                 .put("identity_disagreements", disagreements))
             .put("freshness", FRESHNESS_RECEIPT_ONLY)
+            .put("eligibility", elig)
         if (carriedFrom != null) rec.put("carried_from_session", carriedFrom)
+        val ready = elig.getBoolean("quote_ready")
+        if (!ready) bump(sess, "quote_not_qualifying")
         val obs = sess.getJSONObject("observations")
         val prior = obs.optJSONObject(obsKey)
         val pending = sess.optJSONObject("_pending") ?: JSONObject().also { sess.put("_pending", it) }
@@ -432,14 +602,47 @@ object CloseOpenCapture {
             val same = prior.getJSONObject("bbo").toString() == rec.getJSONObject("bbo").toString() &&
                 prior.optJSONObject("iv").toString() == rec.optJSONObject("iv").toString()
             bump(sess, if (same) "durable_duplicate_no_op" else "durable_duplicate_conflict_kept_first")
+            // the KEPT (first) record decides readiness, never the retry
+            val pe = prior.optJSONObject("eligibility")
             return r.put("present", true).put("book_quality", quality)
                 .put("durable", if (same) "DUPLICATE_NO_OP" else "DUPLICATE_CONFLICT_KEPT_FIRST")
+                .put("quote_ready", pe?.optBoolean("quote_ready", false) == true)
+                .put("reasons", pe?.optJSONArray("reasons") ?: JSONArray().put("prior_record_has_no_eligibility"))
         }
         pending.put(obsKey, rec)
         val envs = sess.getJSONObject("envelopes")
         val aid = env.getString("acquisition_id")
         if (!envs.has(aid)) pending.put("env|$aid", env)
         return r.put("present", true).put("book_quality", quality).put("durable", "PENDING")
+            .put("quote_ready", ready).put("reasons", elig.getJSONArray("reasons"))
+    }
+
+    /** The R2 eligibility verdict for one received quote; see [ELIGIBILITY_RULE]. */
+    fun eligibility(role: String, session: LocalDate, slot: String, receiptMs: Long?,
+                    disagreements: JSONArray, quality: String): JSONObject {
+        val reasons = JSONArray()
+        val first = if (role == "CLOSE") CLOSE_FIRST_MIN else REOPEN_FIRST_MIN
+        val last = if (role == "CLOSE") CLOSE_LAST_MIN else REOPEN_LAST_MIN
+        val w = if (role == "CLOSE") "close" else "open"
+        var receiptMin: Int? = null
+        if (receiptMs == null) reasons.put("receipt_clock_missing")
+        else {
+            val z = Instant.ofEpochMilli(receiptMs).atZone(IST)
+            receiptMin = z.hour * 60 + z.minute
+            if (z.toLocalDate() != session) reasons.put("receipt_date_not_session")
+            else if (receiptMin < first) reasons.put("receipt_before_${w}_window")
+            else if (receiptMin > last) reasons.put("receipt_after_${w}_window")
+        }
+        if (disagreements.length() > 0) reasons.put("identity_disagreement")
+        if (quality != "TWO_SIDED") reasons.put("book_" + quality.lowercase())
+        val slotMin = minuteOf(slot)
+        return JSONObject().put("rule", ELIGIBILITY_RULE)
+            .put("window", "%s %02d:%02d-%02d:%02d receipt minute inclusive".format(w, first / 60, first % 60, last / 60, last % 60))
+            .put("receipt_minute", receiptMin?.let { "%02d:%02d".format(it / 60, it % 60) } ?: JSONObject.NULL)
+            .put("slot_intent", slot)
+            .put("slot_agrees_with_receipt", if (slotMin != null && receiptMin != null) Math.abs(slotMin - receiptMin) <= 5 else JSONObject.NULL)
+            .put("freshness", FRESHNESS_RECEIPT_ONLY)
+            .put("reasons", reasons).put("quote_ready", reasons.length() == 0)
     }
 
     fun bookQuality(bid: Double?, ask: Double?): String = when {
@@ -641,7 +844,8 @@ object CloseOpenCapture {
         return null
     }
 
-    private fun writeQueue(filesDir: File, ix: String, q: JSONObject) {
+    /** @return whether the queue file reached disk (the caller must surface a false). */
+    private fun writeQueue(filesDir: File, ix: String, q: JSONObject): Boolean {
         val a = q.getJSONArray("entries")
         if (a.length() > MAX_QUEUE_ENTRIES) {
             val live = ArrayList<JSONObject>(); val term = ArrayList<JSONObject>()
@@ -652,7 +856,7 @@ object CloseOpenCapture {
             val na = JSONArray(); (keepTerm + live).sortedBy { it.optString("key") }.forEach { na.put(it) }
             q.put("entries", na).put("pruned_terminal_entries", q.optInt("pruned_terminal_entries", 0) + (term.size - keepTerm.size))
         }
-        atomicWrite(queueFile(filesDir, ix), q.toString())
+        return atomicWrite(queueFile(filesDir, ix), q.toString())
     }
 
     // ---------------------------------------------------------------- export
@@ -665,8 +869,9 @@ object CloseOpenCapture {
             .put("kind", "CLOSE_TO_NEXT_SESSION_RESEARCH_CAPTURE")
             .put("independent_of_intraday_pilot", true)
             .put("capture_windows", JSONObject()
-                .put("close", "15:10-15:30 inclusive (scheduler slot)")
-                .put("reopen", "09:15-09:45 inclusive (scheduler slot)"))
+                .put("close", "15:10-15:30 receipt minute inclusive (IST); scheduler slots 15:10-15:30 are when it looks")
+                .put("reopen", "09:15-09:45 receipt minute inclusive (IST); scheduler slots 09:15-09:45 are when it looks")
+                .put("convention", "receipt instant truncated to the minute, both ends inclusive; the slot is intent only"))
             .put("control_state", controlState(filesDir))
         val d = parseDate(date) ?: return out.put("state", "SESSION_DATE_INVALID").put("has_data", false)
         val indices = JSONObject(); val co = JSONObject().put("version", VERSION).put("session_date", date)
@@ -704,16 +909,20 @@ object CloseOpenCapture {
             if (recs.length() > 0) any = true
             indices.put(ix, JSONObject().put("cohort", JSONObject().put("pinned_contracts", pins)
                 .put("close_cohort_rule", sess.optJSONObject("close_cohort")?.optString("rule") ?: JSONObject.NULL))
-                .put("slot_envelopes", envs).put("records", recs))
+                .put("slot_envelopes", envs).put("records", recs)
+                .put("lot_authority", lotAuthorityBlock()))
             stages.put(ix, JSONObject().put("session_file", "PRESENT")
                 .put("counters", sess.getJSONObject("counters"))
                 .put("refusals", sess.getJSONObject("refusals"))
                 .put("slots", sess.getJSONObject("slots"))
-                .put("export_included_records", recs.length()))
+                .put("export_included_records", recs.length())
+                .put("export_qualifying_records", (0 until recs.length()).count { qualifies(recs.optJSONObject(it)) }))
         }
         val section = JSONObject().put("section_version", SECTION_VERSION).put("requested_session_date", date)
             .put("state", if (any) "PRESENT" else "NO_CLOSE_OPEN_DATA").put("has_data", any).put("indices", indices)
         co.put("stages", stages).put("queue", queues)
+            .put("eligibility_rule", ELIGIBILITY_RULE)
+            .put("lot_authority", lotAuthorityBlock())
             .put("labels", JSONObject().put("freshness", FRESHNESS_RECEIPT_ONLY)
                 .put("book_quality", JSONArray(listOf("TWO_SIDED", "ONE_SIDED", "NO_BOOK", "CROSSED", "NON_POSITIVE"))))
             .put("bounds", JSONObject().put("max_store_bytes", MAX_STORE_BYTES).put("control_reserve_bytes", CONTROL_RESERVE_BYTES)
@@ -731,6 +940,61 @@ object CloseOpenCapture {
             out.put("has_data", false)
         }
         return out
+    }
+
+    /** Quantity evidence is NOT captured here, so no pair may become an after-cost result from this section alone. */
+    fun lotAuthorityBlock(): JSONObject = JSONObject().put("state", LOT_AUTHORITY_STATE)
+        .put("after_cost_use", "REFUSED_UNTIL_QUANTITY_EVIDENCE")
+        .put("why", "this path records quotes only; it writes no production lot authority")
+
+    /**
+     * Owner-visible status for the opt-in card: control, rule, calendar coverage, today's per-index
+     * stage outcomes and the queue by state. Reads only this capture's own files.
+     */
+    fun statusSummary(filesDir: File, today: String): JSONObject {
+        val out = JSONObject().put("version", VERSION).put("control_state", controlState(filesDir))
+            .put("enabled", isEnabled(filesDir)).put("default", "OFF")
+            .put("producer_key", SECTION_KEY)
+            .put("windows", JSONObject().put("close", "15:10-15:30").put("reopen", "09:15-09:45")
+                .put("convention", "receipt minute inclusive (IST); slot is scheduling intent only"))
+            .put("eligibility_rule", ELIGIBILITY_RULE)
+            .put("expiry_scope", "NEAREST_EXPIRY_ONLY_AS_POLLED; refused when the next session is on or after expiry")
+            .put("lot_authority", lotAuthorityBlock())
+            .put("independent_of", JSONArray(listOf("intraday premium pilot window and denominator", "Paper controls", "Real (disabled)")))
+            .put("makes_requests", false)
+        val d = parseDate(today)
+        out.put("calendar", JSONObject().put("calendar_version", ResearchCalendar.VERSION)
+            .put("covered_years", JSONArray(ResearchCalendar.COVERED_YEARS.sorted()))
+            .put("today_covered", d?.let { ResearchCalendar.isSession(it) != null } ?: false)
+            .put("next_regular_session", d?.let { nextRegularSession(it).first?.toString() } ?: JSONObject.NULL)
+            .put("next_reason", d?.let { nextRegularSession(it).second } ?: "SESSION_DATE_INVALID")
+            .put("uncovered_dates", "REFUSED calendar_not_covered"))
+        val idx = JSONObject()
+        for (ix in UNDERLYING.keys) {
+            val b = JSONObject()
+            val f = d?.let { sessionFile(filesDir, it, ix) }
+            val sess = try { if (f != null && f.isFile) JSONObject(f.readText()) else null } catch (t: Throwable) { null }
+            b.put("today_session_file", if (sess != null) "PRESENT" else if (f?.isFile == true) "UNREADABLE" else "NOT_WRITTEN")
+            if (sess != null) {
+                b.put("counters", sess.optJSONObject("counters") ?: JSONObject())
+                b.put("refusals", sess.optJSONObject("refusals") ?: JSONObject())
+                val slots = sess.optJSONObject("slots")
+                val lastSlot = slots?.keys()?.asSequence()?.sorted()?.lastOrNull()
+                if (lastSlot != null) slots.optJSONObject(lastSlot)?.let { so ->
+                    b.put("last_slot", JSONObject().put("slot", lastSlot).put("result", so.optString("result"))
+                        .put("quote_receipt", so.optString("quote_receipt")).put("durable_write", so.optString("durable_write"))
+                        .put("queue_write", so.optString("queue_write").ifEmpty { "NO_FAILURE_RECORDED" })) }
+            }
+            val q = loadQueue(filesDir, ix).getJSONArray("entries")
+            val byState = JSONObject(); val reasons = JSONObject()
+            for (i in 0 until q.length()) q.getJSONObject(i).let { e ->
+                byState.put(e.optString("state"), byState.optInt(e.optString("state"), 0) + 1)
+                if (e.has("reason")) reasons.put(e.optString("reason"), reasons.optInt(e.optString("reason"), 0) + 1) }
+            b.put("queue", JSONObject().put("entries", q.length()).put("by_state", byState).put("by_reason", reasons))
+            idx.put(ix, b)
+        }
+        return out.put("indices", idx).put("store_bytes", dirBytes(root(filesDir)))
+            .put("bounds", JSONObject().put("max_store_bytes", MAX_STORE_BYTES).put("max_session_file_bytes", MAX_SESSION_FILE_BYTES))
     }
 
     /** Prepend `"premium_followon": …` to a bundle without reparsing it; other keys keep their bytes. */

@@ -98,11 +98,11 @@ class CloseOpenCaptureTest {
         assertEquals(6, q.size)
         assertTrue(q.all { it.getString("state") == CloseOpenCapture.Q_QUEUED })
         assertTrue(q.all { it.getString("target_session") == "2026-11-26" })
-        assertTrue(q.all { it.getString("close_last_two_sided_slot") == "15:30" })
+        assertTrue(q.all { it.getString("close_last_qualifying_slot") == "15:30" })
         reopenDay(fd, "2026-11-26")                // Thu, spot moved
         val after = entries(fd, "NF")
         assertTrue(after.all { it.getString("state") == CloseOpenCapture.Q_OPEN_CAPTURED })
-        assertTrue(after.all { it.getString("open_first_two_sided_slot") == "09:15" })
+        assertTrue(after.all { it.getString("open_first_qualifying_slot") == "09:15" })
         val dExp = CloseOpenCapture.exportSection(fd, "2026-11-25")
         val tExp = CloseOpenCapture.exportSection(fd, "2026-11-26")
         assertEquals(30, records(dExp, "NF").length())          // 5 slots x 6 contracts
@@ -206,7 +206,7 @@ class CloseOpenCaptureTest {
         poll(fd, "2026-11-26", "09:15", null, null)
         poll(fd, "2026-11-26", "09:20", chain("NF", 24600.0, NF_EXP), chain("BNF", 55100.0, BNF_EXP))
         assertTrue(entries(fd, "NF").all { it.getString("state") == CloseOpenCapture.Q_OPEN_CAPTURED &&
-            it.getString("open_first_two_sided_slot") == "09:20" && it.getInt("open_attempts") == 2 })
+            it.getString("open_first_qualifying_slot") == "09:20" && it.getInt("open_attempts") == 2 })
     }
 
     // ───────────── 5. missing close and open quotes ─────────────
@@ -222,12 +222,12 @@ class CloseOpenCaptureTest {
         poll(fd, "2026-11-26", "15:10", chain("NF", 24500.0, NF_EXP), chain("BNF", 55000.0, BNF_EXP))   // finalizes
         val nf = entries(fd, "NF").filter { it.getString("close_session") == "2026-11-25" }
         val ce = nf.filter { it.getJSONObject("contract").getString("option_type") == "CE" }
-        assertTrue(ce.all { it.getString("state") == CloseOpenCapture.Q_REFUSED && it.getString("reason") == "no_two_sided_close_quote" })
+        assertTrue(ce.all { it.getString("state") == CloseOpenCapture.Q_REFUSED && it.getString("reason") == CloseOpenCapture.R_NO_QUALIFYING_CLOSE })
         val pe500 = nf.first { it.getJSONObject("contract").getString("instrument_key") == key("NF", NF_EXP, 24500.0, "PE") }
         assertEquals(CloseOpenCapture.Q_OPEN_NOT_CAPTURED, pe500.getString("state"))
         assertEquals(CloseOpenCapture.R_CONTRACT_ABSENT, pe500.getString("reason"))
         val bnf = entries(fd, "BNF").filter { it.getString("close_session") == "2026-11-25" }
-        assertTrue(bnf.all { it.getString("state") == CloseOpenCapture.Q_OPEN_NOT_CAPTURED && it.getString("reason") == CloseOpenCapture.R_NO_TWO_SIDED })
+        assertTrue(bnf.all { it.getString("state") == CloseOpenCapture.Q_OPEN_NOT_CAPTURED && it.getString("reason") == "book_no_book" })
     }
 
     @Test
@@ -253,7 +253,7 @@ class CloseOpenCaptureTest {
         poll(fd, "2026-11-25", "15:20", chain("NF", 24500.0, NF_EXP), chain("BNF", 55000.0, BNF_EXP), sec = -1)
         val exp = CloseOpenCapture.exportSection(fd, "2026-11-25")
         val slots = exp.getJSONObject("close_open").getJSONObject("stages").getJSONObject("NF").getJSONObject("slots")
-        assertEquals("PARTIAL_4/6", slots.getJSONObject("15:15").getString("quote_receipt"))
+        assertEquals("QUALIFYING_4/6", slots.getJSONObject("15:15").getString("quote_receipt"))
         val envs = exp.getJSONObject("section").getJSONObject("indices").getJSONObject("NF").getJSONArray("slot_envelopes")
         val e1520 = (0 until envs.length()).map { envs.getJSONObject(it) }.first { it.getString("slot") == "15:20" }
         assertTrue(e1520.getJSONObject("clocks").isNull("acquisition_response_ts"))
@@ -383,13 +383,13 @@ class CloseOpenCaptureTest {
             val o = st.getJSONObject("slots").getJSONObject("15:10").getJSONArray("observations")
             assertTrue((0 until o.length()).all { o.getJSONObject(it).getString("durable") == "REFUSED_CAP" })
             // R1 fix: a cap-refused close quote never becomes queue close evidence
-            assertTrue(entries(fd, ix).none { it.has("close_last_two_sided_slot") })
+            assertTrue(entries(fd, ix).none { it.has("close_last_qualifying_slot") })
         }
         // ...so at the next open the entries are refused for lack of a durable close quote
         poll(fd, "2026-11-26", "09:15", chain("NF", 24600.0, NF_EXP), chain("BNF", 55100.0, BNF_EXP))
         for (ix in listOf("NF", "BNF"))
             assertTrue(entries(fd, ix).all { it.getString("state") == CloseOpenCapture.Q_REFUSED &&
-                it.getString("reason") == "no_two_sided_close_quote" })
+                it.getString("reason") == CloseOpenCapture.R_NO_QUALIFYING_CLOSE })
     }
 
     @Test
@@ -400,11 +400,11 @@ class CloseOpenCaptureTest {
         // simulate a crash after the session file was written but before the queue's evidence was
         val qf = fd.resolve(CloseOpenCapture.DIR_NAME).resolve("queue_NF.json")
         val q = JSONObject(qf.readText())
-        for (i in 0 until q.getJSONArray("entries").length()) q.getJSONArray("entries").getJSONObject(i).remove("close_last_two_sided_slot")
+        for (i in 0 until q.getJSONArray("entries").length()) q.getJSONArray("entries").getJSONObject(i).remove("close_last_qualifying_slot")
         qf.writeText(q.toString())
-        assertTrue(entries(fd, "NF").none { it.has("close_last_two_sided_slot") })
+        assertTrue(entries(fd, "NF").none { it.has("close_last_qualifying_slot") })
         poll(fd, "2026-11-25", "15:10", nf, bnf)                       // identical retry after restart
-        assertTrue(entries(fd, "NF").all { it.getString("close_last_two_sided_slot") == "15:10" })
+        assertTrue(entries(fd, "NF").all { it.getString("close_last_qualifying_slot") == "15:10" })
         val c = CloseOpenCapture.exportSection(fd, "2026-11-25").getJSONObject("close_open")
             .getJSONObject("stages").getJSONObject("NF").getJSONObject("counters")
         assertEquals(6, c.getInt("durable_written"))                  // not 12
