@@ -878,6 +878,15 @@ class AgainstTheFrozenReplay(unittest.TestCase):
         A skip is not a pass. It records that the direct frozen comparison could not be made on
         this input, and which chain the runner used instead.
         """
+        for ix in ('NF', 'BNF'):
+            rok, rwhy, n = FS.records_readable_by_frozen(self.ex, ix)
+            if not rok:
+                self.skipTest(
+                    'the DIRECT frozen chain is unavailable on this export: %s (%d records in '
+                    '%s). premium_repricing_v2.score_index L514 dereferences r["bbo"] '
+                    'unguarded. The research runner rejects them by name as rej_bbo_absent; the '
+                    'frozen module is unmodified, so the parity reference does not exist here.'
+                    % (rwhy, n, ix))
         ok, why = FS.authority_doc_state(self.ex)
         if not ok:
             self.skipTest(

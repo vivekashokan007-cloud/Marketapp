@@ -17,7 +17,7 @@ the code. v3 claimed a stale hash for `stopping_rule.py`; a hash nobody checks i
 | `tools/premium_range_compare/range_compare.py` | `a691173311413b24a71e4c31d88611ddde714b674196fd86b0e5495f0314ed87` |
 | `tools/premium_range_compare/planned_schedule.py` | `4b35e6e7e04dc5ab807f82f46f9566e358d6f6cea61209bca34a8b547efc2bd4` |
 | `tools/premium_range_compare/stopping_rule.py` | `8b89535a7d80a74e2bcfa25542ef46b5759dfcd3da09e510144456177482e24b` |
-| `tools/premium_range_compare/frozen_successor.py` | `cc89d291116c865e180b44a4f81b32c7107e6942c3d9acb9cd402a76b9987357` |
+| `tools/premium_range_compare/frozen_successor.py` | `aa6b2f8e27f6b4d4af58abec322fff12f5113bc9f5e156ee720335b6f88f2327` |
 | `tools/spot_path_baseline/premium_repricing_v2.py` (frozen R7, **unmodified**) | `95e53e25d24ae0369f2c8d8ab63026a0cda499443ddae4041c6ee7ffb373233a` |
 
 **Versions** comparison `premium_neutral_range_comparison_v2_planned_coverage` · schedule
@@ -25,7 +25,7 @@ the code. v3 claimed a stale hash for `stopping_rule.py`; a hash nobody checks i
 `premium_capture_cohort_pilot_window_0920_1505_exclusive_v1` · session calendar
 `nse_regular_session_calendar_v1_app_holidays` · stopping rule
 `premium_range_stopping_rule_v1_exact` · frozen successor
-`premium_repricing_v2_successor_v1_authority_doc_null_guard` ·
+`premium_repricing_v2_successor_v2_null_authority_doc_and_bbo` ·
 R7 pricing contract `2.6` · **branch** `review/premium-neutral-range-comparison-20261116`,
 base `124d62ee027941e43decc737e53d202c32b1d214`
 
@@ -423,7 +423,7 @@ raise and the frozen replay cannot read the file at all.
 
 The frozen module is **not patched** — it is byte-identical to the base commit and the hash above
 asserts it. The guard lives in a versioned successor,
-`frozen_successor.py` / `premium_repricing_v2_successor_v1_authority_doc_null_guard`, which calls
+`frozen_successor.py` / `premium_repricing_v2_successor_v2_null_authority_doc_and_bbo`, which calls
 the frozen reader directly wherever it works and is asserted to return exactly what it returns
 there. Where it cannot, the successor returns an empty spot timeline — an absent authority
 document provides no history, which is a missing input, not a zero reading — and names the shape

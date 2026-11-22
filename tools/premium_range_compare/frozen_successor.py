@@ -34,7 +34,7 @@ sys.path.insert(0, os.path.join(HERE, '..', 'spot_path_baseline'))
 
 import premium_repricing_v2 as R7          # noqa: E402  frozen, read never modified
 
-FROZEN_SUCCESSOR_VERSION = 'premium_repricing_v2_successor_v1_authority_doc_null_guard'
+FROZEN_SUCCESSOR_VERSION = 'premium_repricing_v2_successor_v2_null_authority_doc_and_bbo'
 
 #: the chain a call actually used, carried on every result
 CHAIN_DIRECT = 'DIRECT_FROZEN'
@@ -45,6 +45,9 @@ REASON_AUTHORITY_DOC_NULL = 'parts.authority_doc is null'
 REASON_AUTHORITY_DOC_ABSENT = 'parts.authority_doc is absent'
 REASON_PARTS_ABSENT = 'parts is absent or not a mapping'
 REASON_HISTORY_NOT_MAPPING = 'parts.authority_doc.history is not a mapping'
+#: a record whose poll failed carries `bbo: null`. `R7.score_index` (line 514) dereferences it
+#: unguarded, so one failed poll makes the frozen replay unable to read the whole session.
+REASON_NULL_BBO_RECORD = 'a premium record carries bbo: null (a failed poll)'
 
 
 def authority_doc_state(ex):
@@ -67,6 +70,25 @@ def authority_doc_state(ex):
     if hist is not None and not isinstance(hist, dict):
         return False, REASON_HISTORY_NOT_MAPPING
     return True, None
+
+
+def records_readable_by_frozen(ex, ix):
+    """(readable, reason, count) -- can `R7.score_index` subscript every record of this index?
+
+    THE THIRD UNGUARDED DEREFERENCE, found the same way as the first two: by real data arriving.
+    `premium_repricing_v2.score_index` (line 514) evaluates `r['bbo'].get('bid_raw')`, and a
+    record whose poll FAILED carries `bbo: null` rather than an empty book. On the 20 November
+    capture one poll at 13:25 did exactly that for all six pinned contracts in both indices, so
+    six records out of 414 make the frozen replay unable to read the session at all.
+
+    The research runner guards this itself (`rej_bbo_absent`); the frozen one cannot be changed,
+    so its callers check here first and report which chain they could use.
+    """
+    node = ((ex.get('premium') or {}).get('indices') or {}).get(ix) or {}
+    bad = sum(1 for r in (node.get('records') or []) if not isinstance(r.get('bbo'), dict))
+    if bad:
+        return False, REASON_NULL_BBO_RECORD, bad
+    return True, None, 0
 
 
 def spot_timeline_guarded(ex, ix):
