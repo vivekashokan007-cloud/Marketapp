@@ -29,6 +29,8 @@ RESULTS = os.path.join(ROOT, 'results')
 # forecast-arm figures were produced by the non-causal replay -- so the hashes that must
 # match the files are the ones the current memo states.
 MEMO = os.path.join(REPO, 'CLAUDE_CODE_REPLY_PREMIUM_SPAN_EXTENDED_20261122.md')
+# every memo still presented as live. A module's hash need only appear in one of them.
+LIVE_MEMOS = (os.path.join(REPO, 'CLAUDE_CODE_REPLY_DIRECTION_BASELINE_20261122.md'),)
 SUPERSEDED_MEMO = os.path.join(
     REPO, 'CLAUDE_CODE_RESULTS_PREMIUM_MODEL_VALIDATION_20261121.md')
 README = os.path.join(ROOT, 'README.md')
@@ -287,6 +289,13 @@ class MemoIntegrity(unittest.TestCase):
         if not os.path.exists(MEMO):
             raise unittest.SkipTest('the memo is not present')
         cls.text = text_of(MEMO)
+        # A module's hash may be cited by whichever LIVE memo introduced it, so the hash guard
+        # reads all of them together. `cls.text` stays the span memo alone, because the claim
+        # guards above are about that document's wording specifically.
+        cls.all_memos = text_of(MEMO)
+        for extra in LIVE_MEMOS:
+            if os.path.exists(extra):
+                cls.all_memos += '\n' + text_of(extra)
 
     def test_the_frozen_module_still_hashes_to_the_value_the_memo_cites(self):
         import hashlib
@@ -309,8 +318,9 @@ class MemoIntegrity(unittest.TestCase):
                 continue
             with open(p, 'rb') as fh:
                 digest = hashlib.sha256(fh.read()).hexdigest()
-            self.assertIn(digest, self.text,
-                          'the memo cites a stale hash for %s; it is now %s' % (name, digest))
+            self.assertIn(digest, self.all_memos,
+                          'no live memo cites the current hash for %s; it is now %s'
+                          % (name, digest))
 
     def test_the_withdrawn_leave_one_out_sentence_is_not_asserted_anywhere(self):
         """It was wrong, it was in a pushed memo, and it must not survive as a live claim.
