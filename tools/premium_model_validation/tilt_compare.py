@@ -511,12 +511,18 @@ def self_check(export_path=None, spots_path=None):
 
             # ── chain 1, preferred: the frozen replay's OWN E0_FWD rows ──
             #
-            # `R7.score_index` needs `parts.authority_doc.history` for its spot timeline and
-            # dereferences it without a guard (`spot_timeline`, L382). The 16 November export
-            # carries `authority_doc: null`, so the frozen CLI raises TypeError on it before it
-            # reaches E0_FWD -- which does not use spot at all. That is a defect in the frozen
-            # file, which is out of scope to change here, so the check FALLS BACK rather than
-            # pretending the identity was verified the stronger way.
+            # `R7.score_index` has TWO unguarded dereferences that real exports hit:
+            #
+            #   * `parts.authority_doc.history` for its spot timeline (`spot_timeline`, L382).
+            #     The 16 November export carries `authority_doc: null`, so it raises TypeError
+            #     before reaching E0_FWD -- which does not use spot at all.
+            #   * `r['bbo']` per record (L514). A record whose poll FAILED carries `bbo: null`,
+            #     and on 20 November one poll at 13:25 did that for all six contracts in both
+            #     indices, so it raises AttributeError.
+            #
+            # Both are defects in the frozen file, which is out of scope to change here, so the
+            # check FALLS BACK rather than pretending the identity was verified the stronger
+            # way. The guarded successor on the protocol branch carries both guards.
             chain, theirs = None, None
             try:
                 _s, r7rows, _c, _l = R7.score_index(ex, ix, R7.load_hist(spots_path), hd,
@@ -524,7 +530,7 @@ def self_check(export_path=None, spots_path=None):
                 theirs = [(r['E0_FWD']['crps'], r['E0_FWD']['mae'])
                           for r in r7rows if 'E0_FWD' in r]
                 chain = 'frozen premium_repricing_v2.score_index'
-            except (TypeError, KeyError) as exc:
+            except (TypeError, KeyError, AttributeError) as exc:
                 say.append('%s: the frozen replay could not run on this export (%s: %s); '
                            'falling back to the range runner, which was itself parity-checked '
                            'against the frozen replay on 12 November'

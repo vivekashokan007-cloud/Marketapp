@@ -230,7 +230,7 @@ cd tools/premium_range_compare   && python3 -m unittest discover -s tests     # 
 | `two_sided_diagnostics.py` | `8bf242c905b34c8fbafe2ebb7bb1baf41634b7a644b8278e7039347e8d645cc8` |
 | `spread_replay.py` | `d376c7df9d40caad0140d1d2de445b12b7d9adfc01ef3f4b8865668d90caec83` |
 | `inventory_span.py` | `14edbb1a3fb60a17d2e3aa2a0544fff0fd0454639d345b3d100013ad3940f0d5` |
-| `tilt_compare.py` | `f5924c24a4818e7ad249ec7a70096b55d5000537ab5eef4a269389dd06454cb7` |
+| `tilt_compare.py` | `3054291875958076ea7673d9617d2b02948226f8c0d4b7f4d295d18d24950c78` |
 | `fee_worked_cases.py` | `c876b3b840a684f0e3a1322c7bdb724f65218c8fa904e300dcd191001519f91f` |
 | `range_compare.py` (both branches) | `a691173311413b24a71e4c31d88611ddde714b674196fd86b0e5495f0314ed87` |
 | `frozen_successor.py` | `aa6b2f8e27f6b4d4af58abec322fff12f5113bc9f5e156ee720335b6f88f2327` |
