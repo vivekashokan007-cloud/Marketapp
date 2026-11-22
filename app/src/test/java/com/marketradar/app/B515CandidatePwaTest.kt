@@ -15,8 +15,15 @@ class B515CandidatePwaTest {
     private val base = "https://vivekashokan007-cloud.github.io/MarketVivi/"
 
     /**
-     * THE single typed copy of the accepted candidate identity, and the only place any of these four values appears
-     * as a literal in this repository. Everything else derives from the committed pin or app/build.gradle.kts.
+     * The single typed copy of the accepted candidate identity IN KOTLIN, and the copy that is checked on every
+     * push. Everything in the native build derives from this, the committed pin, or app/build.gradle.kts.
+     *
+     * It is NOT the only literal copy in the repository, and saying so here caused a build failure. There is a
+     * second, deliberate tripwire in tools/candidate_pwa/test_stage_candidate_pwa.py (ACCEPTED_MARKETVIVI_SHA and
+     * ACCEPTED_APP_JS_SHA256), bound to this one by its test_every_hardcoded_copy_of_the_pin_agrees. That file runs
+     * ONLY in the candidate workflow, so a rotation here looks green on push and fails the candidate build. At
+     * 2.6.104 / b535 exactly that happened: these literals and the pin were moved to cbb65bda/2d513a8f and the
+     * Python copy was left on the b534 pair. Rotate BOTH files, the pin and gradle in one commit.
      *
      * Why this is centralised: SEVEN independent hardcoded copies of this identity existed, at FOUR different values
      * (877b02fd/517/2.6.86, 7005a751/523/2.6.92, 3f3f46ad/526/2.6.95, and 526/2.6.95 for the native pair alone);

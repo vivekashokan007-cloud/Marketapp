@@ -134,15 +134,25 @@ class CommittedPinTests(unittest.TestCase):
     bundled runtime cannot be re-pointed without someone editing this expectation and having that
     edit reviewed. Reading the value out of the manifest would make the assertion vacuous.
 
-    Updated for the 2.6.95 paired candidate. It had been left at 877b02fd while the committed
-    manifest said 7005a751, so this test was ALREADY FAILING at the accepted implementation head
-    b9aa75de — it runs only in the manually dispatched candidate workflow, never in the
-    review-validation run, which is why a green review never caught it.
+    Updated for the 2.6.104 / b535 paired candidate (MarketVivi cbb65bda).
+
+    Rotate these two WITH the pin, the Kotlin literals in B515CandidatePwaTest and
+    app/build.gradle.kts, in the same commit. This file is the copy that gets missed, twice now:
+
+      * at 2.6.95 it was left at 877b02fd while the manifest said 7005a751;
+      * at 2.6.104 / b535 it was left at 216a7cef/239cd79b (the b534 pair) while the manifest,
+        the Kotlin literals and gradle were all correctly moved to cbb65bda/2d513a8f — run #10 of
+        the candidate workflow failed here, before the keystore was even decoded.
+
+    It is missed because it runs ONLY in the candidate workflow, never on push, and because
+    B515CandidatePwaTest.kt described itself as the only place these values are typed, which is
+    not true and is corrected there. Until this suite runs on push too, the candidate build is
+    the first thing that can catch a half-rotation.
     """
 
-    ACCEPTED_MARKETVIVI_SHA = "216a7cefd52af86bf0eec355ef683f0161a87ac9"
+    ACCEPTED_MARKETVIVI_SHA = "cbb65bda0642a421865261a36dc62aca06e2e1d4"
     ACCEPTED_APP_JS_SHA256 = \
-        "239cd79bf737bc664c1d4e20de7b323f69f9671afc78eed33def62c3cd2421d3"
+        "2d513a8f883ac60f8535516841877f252d4342c3871561ffc11db1db22a4fc64"
 
     def test_committed_pin_names_the_accepted_marketvivi_commit(self):
         m = json.loads(PIN.read_text())
@@ -191,7 +201,8 @@ class CommittedPinTests(unittest.TestCase):
         # And no stale copy of a superseded identity may survive anywhere in the tracked tree.
         superseded = ("877b02fd6d703ca43148a0f119b60216d9b509ce",
                       "7005a751b166666c1f4e22f5d3e4607390b904e4",
-                      "3f3f46ad01cee8dd5fcdb04817472d15968b53bc")
+                      "3f3f46ad01cee8dd5fcdb04817472d15968b53bc",
+                      "216a7cefd52af86bf0eec355ef683f0161a87ac9")
         tracked = subprocess.run(["git", "-C", str(ROOT), "ls-files", "-z"],
                                  capture_output=True, text=True, check=True).stdout.split("\0")
         offenders = {}
