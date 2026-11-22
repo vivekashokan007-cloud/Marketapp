@@ -31,7 +31,8 @@ RESULTS = os.path.join(ROOT, 'results')
 MEMO = os.path.join(REPO, 'CLAUDE_CODE_REPLY_PREMIUM_SPAN_EXTENDED_20261122.md')
 # every memo still presented as live. A module's hash need only appear in one of them.
 LIVE_MEMOS = (os.path.join(REPO, 'CLAUDE_CODE_REPLY_DIRECTION_BASELINE_20261122.md'),
-              os.path.join(REPO, 'RESEARCH_MAP_MARKET_RADAR_EDGE_20261122.md'))
+              os.path.join(REPO, 'RESEARCH_MAP_MARKET_RADAR_EDGE_20261122.md'),
+              os.path.join(REPO, 'CLAUDE_CODE_REPLY_RANKED_EXPERIMENTS_20261122.md'))
 SUPERSEDED_MEMO = os.path.join(
     REPO, 'CLAUDE_CODE_RESULTS_PREMIUM_MODEL_VALIDATION_20261121.md')
 README = os.path.join(ROOT, 'README.md')
@@ -313,7 +314,8 @@ class MemoIntegrity(unittest.TestCase):
         for name in ('tilt_compare.py', 'economic_check.py', 'two_sided_diagnostics.py',
                      'spread_replay.py', 'inventory_span.py', 'fee_worked_cases.py',
                      'stress_range_ev.py', 'index_direction.py',
-                     'direction_baseline.py', 'field_inventory.py'):
+                     'direction_baseline.py', 'field_inventory.py',
+                     'execution_filter.py', 'paper_intent_feasibility.py'):
             p = os.path.join(ROOT, name)
             if not os.path.exists(p):
                 continue

@@ -1,0 +1,316 @@
+{
+ "credit_intents": [
+  "SELL_CE",
+  "SELL_PE"
+ ],
+ "debit_intents": [
+  "BUY_CE",
+  "BUY_PE"
+ ],
+ "feasibility_version": "paper_intent_feasibility_v1_pinned_ladder_vs_live_strike",
+ "pooled": {
+  "credit_intents": 93,
+  "credit_priceable": 0,
+  "debit_intents": 140,
+  "debit_priceable": 0,
+  "debit_priceable_share": 0.0,
+  "median_debit_offset_points": 400,
+  "no_cohort": 2,
+  "no_strike_recorded": 0,
+  "worst_debit_offset_points": 1700
+ },
+ "refusal": "substituting the nearest pinned strike would price a DIFFERENT trade and attribute it to the rule, so no substitution is made",
+ "sessions": {
+  "2026-11-12": {
+   "indices": {
+    "BNF": {
+     "credit_intents": 0,
+     "credit_priceable": 0,
+     "debit_intents": 0,
+     "debit_priceable": 0,
+     "debit_priceable_share": null,
+     "intent_strikes": [],
+     "no_strike_recorded": 0,
+     "offsets_from_ladder": [],
+     "pinned_contracts": 6,
+     "pinned_ladder": [
+      61100,
+      61200,
+      61300
+     ],
+     "worst_offset_points": null
+    },
+    "NF": {
+     "credit_intents": 0,
+     "credit_priceable": 0,
+     "debit_intents": 0,
+     "debit_priceable": 0,
+     "debit_priceable_share": null,
+     "intent_strikes": [],
+     "no_strike_recorded": 0,
+     "offsets_from_ladder": [],
+     "pinned_contracts": 6,
+     "pinned_ladder": [
+      25250,
+      25300,
+      25350
+     ],
+     "worst_offset_points": null
+    }
+   },
+   "state": "TRAIL_PRESENT"
+  },
+  "2026-11-13": {
+   "indices": {
+    "BNF": {
+     "credit_intents": 0,
+     "credit_priceable": 0,
+     "debit_intents": 0,
+     "debit_priceable": 0,
+     "debit_priceable_share": null,
+     "intent_strikes": [],
+     "no_strike_recorded": 0,
+     "note": "no pinned cohort for this index/session, so nothing could be priced regardless of the intent",
+     "offsets_from_ladder": [],
+     "pinned_contracts": 0,
+     "pinned_ladder": [],
+     "worst_offset_points": null
+    },
+    "NF": {
+     "credit_intents": 0,
+     "credit_priceable": 0,
+     "debit_intents": 1,
+     "debit_priceable": 0,
+     "debit_priceable_share": 0.0,
+     "intent_strikes": [
+      25250
+     ],
+     "no_strike_recorded": 0,
+     "note": "no pinned cohort for this index/session, so nothing could be priced regardless of the intent",
+     "offsets_from_ladder": [],
+     "pinned_contracts": 0,
+     "pinned_ladder": [],
+     "worst_offset_points": null
+    }
+   },
+   "state": "TRAIL_PRESENT"
+  },
+  "2026-11-16": {
+   "indices": {},
+   "state": "NO_DECISION_TRAIL"
+  },
+  "2026-11-17": {
+   "indices": {},
+   "state": "NO_DECISION_TRAIL"
+  },
+  "2026-11-18": {
+   "indices": {
+    "BNF": {
+     "credit_intents": 14,
+     "credit_priceable": 0,
+     "debit_intents": 2,
+     "debit_priceable": 0,
+     "debit_priceable_share": 0.0,
+     "intent_strikes": [
+      61800,
+      61900,
+      62000
+     ],
+     "no_strike_recorded": 0,
+     "offsets_from_ladder": [
+      -400,
+      -300,
+      -200
+     ],
+     "pinned_contracts": 6,
+     "pinned_ladder": [
+      62200,
+      62300,
+      62400
+     ],
+     "worst_offset_points": 400
+    },
+    "NF": {
+     "credit_intents": 27,
+     "credit_priceable": 0,
+     "debit_intents": 5,
+     "debit_priceable": 0,
+     "debit_priceable_share": 0.0,
+     "intent_strikes": [
+      25200,
+      25250
+     ],
+     "no_strike_recorded": 0,
+     "offsets_from_ladder": [
+      -100,
+      -50
+     ],
+     "pinned_contracts": 6,
+     "pinned_ladder": [
+      25300,
+      25350,
+      25400
+     ],
+     "worst_offset_points": 100
+    }
+   },
+   "state": "TRAIL_PRESENT"
+  },
+  "2026-11-19": {
+   "indices": {
+    "BNF": {
+     "credit_intents": 20,
+     "credit_priceable": 0,
+     "debit_intents": 25,
+     "debit_priceable": 0,
+     "debit_priceable_share": 0.0,
+     "intent_strikes": [
+      62400,
+      62500,
+      62600,
+      62700,
+      62800,
+      62900,
+      63000,
+      63100
+     ],
+     "no_strike_recorded": 0,
+     "offsets_from_ladder": [
+      200,
+      300,
+      400,
+      500,
+      600,
+      700,
+      800,
+      900
+     ],
+     "pinned_contracts": 6,
+     "pinned_ladder": [
+      62000,
+      62100,
+      62200
+     ],
+     "worst_offset_points": 900
+    },
+    "NF": {
+     "credit_intents": 32,
+     "credit_priceable": 0,
+     "debit_intents": 14,
+     "debit_priceable": 0,
+     "debit_priceable_share": 0.0,
+     "intent_strikes": [
+      25300,
+      25350,
+      25400,
+      25450,
+      25500,
+      25550
+     ],
+     "no_strike_recorded": 0,
+     "offsets_from_ladder": [
+      50,
+      100,
+      150,
+      200,
+      250,
+      300
+     ],
+     "pinned_contracts": 6,
+     "pinned_ladder": [
+      25150,
+      25200,
+      25250
+     ],
+     "worst_offset_points": 300
+    }
+   },
+   "state": "TRAIL_PRESENT"
+  },
+  "2026-11-20": {
+   "indices": {
+    "BNF": {
+     "credit_intents": 0,
+     "credit_priceable": 0,
+     "debit_intents": 55,
+     "debit_priceable": 0,
+     "debit_priceable_share": 0.0,
+     "intent_strikes": [
+      63100,
+      63200,
+      63300,
+      63400,
+      63500,
+      63700,
+      63900,
+      64000,
+      64100,
+      64200,
+      64300,
+      64400,
+      64500,
+      64600
+     ],
+     "no_strike_recorded": 0,
+     "offsets_from_ladder": [
+      200,
+      300,
+      400,
+      500,
+      600,
+      800,
+      1000,
+      1100,
+      1200,
+      1300,
+      1400,
+      1500,
+      1600,
+      1700
+     ],
+     "pinned_contracts": 6,
+     "pinned_ladder": [
+      62700,
+      62800,
+      62900
+     ],
+     "worst_offset_points": 1700
+    },
+    "NF": {
+     "credit_intents": 0,
+     "credit_priceable": 0,
+     "debit_intents": 38,
+     "debit_priceable": 0,
+     "debit_priceable_share": 0.0,
+     "intent_strikes": [
+      25550,
+      25600,
+      25650,
+      25700,
+      25750,
+      25800
+     ],
+     "no_strike_recorded": 0,
+     "offsets_from_ladder": [
+      50,
+      100,
+      150,
+      200,
+      250,
+      300
+     ],
+     "pinned_contracts": 6,
+     "pinned_ladder": [
+      25400,
+      25450,
+      25500
+     ],
+     "worst_offset_points": 300
+    }
+   },
+   "state": "TRAIL_PRESENT"
+  }
+ },
+ "verdict": "INFEASIBLE_NO_QUOTE_FOR_ANY_INTENT",
+ "why": "the cohort pins three strikes near the 09:20 spot for the whole session, while the Paper rule picks a strike near the LIVE spot at each poll, so the two diverge as the index moves -- most on the sessions that matter most"
+}

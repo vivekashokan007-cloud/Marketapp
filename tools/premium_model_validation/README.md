@@ -26,7 +26,10 @@ is empty.
 | `direction_baseline.py` | the frozen direction-only baseline and its premium-model ablation, scored strictly to `PREDECLARATION_DIRECTION_BASELINE_20261122.md`. Carries its own challenge block: the call/put side split, concentration, and what the unresolved exits would have to be worth for the gain to vanish |
 | `PREDECLARATION_DIRECTION_BASELINE_20261122.md` | the baseline, committed alone before the code that scores it; a test checks the ordering from git history |
 | `field_inventory.py` | which fields actually exist, counted over every observation and decision poll, with ABSENT and NULL kept distinct because they lead to different next steps. The research map is ranked on its output, not on preference |
-| `tests/` | 218 checks, no network. The ones needing real inputs skip loudly without them |
+| `execution_filter.py` | rank 3 of the research map: does the decision-time quote predict a bad round trip? A diagnostic on already-scored trades, with a confound statistic that catches the feature sorting the chain instead of the fills |
+| `paper_intent_feasibility.py` | whether the production Paper rule's own intents can be priced from a capture at all. They cannot: the cohort pins strikes at 09:20, the rule tracks the live spot |
+| `FRESH_SESSION_TEST_LOCK_20261122.md` | the finalists, decision rules, criteria and stopping rules, fixed before any fresh session is viewed |
+| `tests/` | 240 checks, no network. The ones needing real inputs skip loudly without them |
 | `results/` | the printed runs and machine-readable scores for 12 and 16 November |
 
 ## The answer, in three lines

@@ -1,0 +1,1687 @@
+{
+ "basis": "DIAGNOSTIC_ON_ALREADY_SCORED_TRADES_NOT_A_RULE",
+ "buckets": 5,
+ "filter_version": "execution_filter_diagnostic_v1_spread_and_book_imbalance",
+ "horizon_min": 60,
+ "label": "PROXY_SIMULATED_FILL -- no order was placed",
+ "per_index": {
+  "BNF": {
+   "features": {
+    "book_imbalance": {
+     "buckets": {
+      "0": {
+       "best_net_inr": 22425.001337255002,
+       "mean_net_inr": 504.8963533720616,
+       "median_net_inr": -331.3487422045002,
+       "n": 316,
+       "total_net_inr": 159547.24766557149,
+       "win_rate": 0.44936708860759494,
+       "worst_net_inr": -6602.019324253
+      },
+      "1": {
+       "best_net_inr": 19283.727626141,
+       "mean_net_inr": 115.14740933334843,
+       "median_net_inr": -471.8088791829966,
+       "n": 363,
+       "total_net_inr": 41798.5095880055,
+       "win_rate": 0.42424242424242425,
+       "worst_net_inr": -7297.418870202999
+      },
+      "3": {
+       "best_net_inr": 23327.618393636007,
+       "mean_net_inr": 535.2425499288053,
+       "median_net_inr": -167.34629681199795,
+       "n": 703,
+       "total_net_inr": 376275.5125999501,
+       "win_rate": 0.4822190611664296,
+       "worst_net_inr": -9019.092496638998
+      },
+      "4": {
+       "best_net_inr": 23684.47391405,
+       "mean_net_inr": 205.3677244212127,
+       "median_net_inr": -418.25410953099976,
+       "n": 525,
+       "total_net_inr": 107818.0553211366,
+       "win_rate": 0.41523809523809524,
+       "worst_net_inr": -7611.10028875
+      }
+     },
+     "extreme_bucket_is_a_different_instrument": false,
+     "extreme_bucket_mean_mid": 532.018,
+     "extreme_bucket_mid_ratio": 0.9421822602257115,
+     "mean_by_bucket": [
+      504.8963533720616,
+      115.14740933334843,
+      535.2425499288053,
+      205.3677244212127
+     ],
+     "mean_mid_by_bucket": [
+      565.5643196202532,
+      534.6616391184573,
+      593.7711237553342,
+      532.018
+     ],
+     "mean_mid_falls_as_feature_rises": false,
+     "monotone_decreasing": false,
+     "monotone_increasing": false,
+     "other_buckets_mean_mid": 564.6656941646816,
+     "quantile_cuts": [
+      -0.3333333333333333,
+      0.0,
+      0.0,
+      0.3333333333333333
+     ],
+     "rows_with_feature": 1907,
+     "spread_between_extremes_inr": -299.5286289508489,
+     "verdict": "NOT_ORDERED"
+    },
+    "relative_spread": {
+     "buckets": {
+      "0": {
+       "best_net_inr": 10104.352151948002,
+       "mean_net_inr": -50.6878369818488,
+       "median_net_inr": -211.24624524099983,
+       "n": 381,
+       "total_net_inr": -19312.065890084436,
+       "win_rate": 0.4540682414698163,
+       "worst_net_inr": -8353.219606549
+      },
+      "1": {
+       "best_net_inr": 9701.758249997001,
+       "mean_net_inr": 24.15173048026845,
+       "median_net_inr": -361.2260522409976,
+       "n": 382,
+       "total_net_inr": 9225.961043462545,
+       "win_rate": 0.45287958115183247,
+       "worst_net_inr": -7611.10028875
+      },
+      "2": {
+       "best_net_inr": 23327.618393636007,
+       "mean_net_inr": 192.02869457202482,
+       "median_net_inr": -406.0692967329952,
+       "n": 381,
+       "total_net_inr": 73162.93263194147,
+       "win_rate": 0.45144356955380577,
+       "worst_net_inr": -7297.418870202999
+      },
+      "3": {
+       "best_net_inr": 21212.493592253002,
+       "mean_net_inr": -69.40082544107719,
+       "median_net_inr": -575.7198220914993,
+       "n": 382,
+       "total_net_inr": -26511.115318491513,
+       "win_rate": 0.38481675392670156,
+       "worst_net_inr": -9019.092496638998
+      },
+      "4": {
+       "best_net_inr": 23684.47391405,
+       "mean_net_inr": 1703.080348314529,
+       "median_net_inr": -14.536115673998637,
+       "n": 381,
+       "total_net_inr": 648873.6127078356,
+       "win_rate": 0.49343832020997375,
+       "worst_net_inr": -6602.019324253
+      }
+     },
+     "extreme_bucket_is_a_different_instrument": false,
+     "extreme_bucket_mean_mid": 659.677690288714,
+     "extreme_bucket_mid_ratio": 1.2303518277769214,
+     "mean_by_bucket": [
+      -50.6878369818488,
+      24.15173048026845,
+      192.02869457202482,
+      -69.40082544107719,
+      1703.080348314529
+     ],
+     "mean_mid_by_bucket": [
+      559.5064304461943,
+      537.7865183246074,
+      514.3424540682415,
+      533.0444371727749,
+      659.677690288714
+     ],
+     "mean_mid_falls_as_feature_rises": false,
+     "monotone_decreasing": false,
+     "monotone_increasing": false,
+     "other_buckets_mean_mid": 536.1699600029546,
+     "quantile_cuts": [
+      0.002628918099089898,
+      0.00308655584461396,
+      0.003422982885085519,
+      0.0038217841697677445
+     ],
+     "rows_with_feature": 1907,
+     "spread_between_extremes_inr": 1753.7681852963776,
+     "verdict": "NOT_ORDERED"
+    }
+   },
+   "quantity_unit_caveat": "quantity_unit_status is UNKNOWN on every record, so quote size is used only as a RATIO (the unit cancels) and never as a quantity",
+   "rows": 2387,
+   "scored": 1907,
+   "widest_quintile_counterfactual": {
+    "basis": "IN_SAMPLE_COUNTERFACTUAL_NOT_A_RESULT",
+    "dropped": {
+     "best_net_inr": 23684.47391405,
+     "mean_net_inr": 1703.080348314529,
+     "median_net_inr": -14.536115673998637,
+     "n": 381,
+     "total_net_inr": 648873.6127078356,
+     "win_rate": 0.49343832020997375,
+     "worst_net_inr": -6602.019324253
+    },
+    "kept": {
+     "best_net_inr": 23327.618393636007,
+     "mean_net_inr": 23.961803713517774,
+     "median_net_inr": -402.3359102814981,
+     "n": 1526,
+     "total_net_inr": 36565.712466828045,
+     "win_rate": 0.43577981651376146,
+     "worst_net_inr": -9019.092496638998
+    },
+    "note": "the quintile boundary was cut from these same rows, so this cannot be read as the net a gate would earn on fresh data. It says only whether the widest quotes were the losing ones in this sample."
+   }
+  },
+  "NF": {
+   "features": {
+    "book_imbalance": {
+     "buckets": {
+      "0": {
+       "best_net_inr": 8854.926363324998,
+       "mean_net_inr": -23.270058012195985,
+       "median_net_inr": -203.83170783650002,
+       "n": 381,
+       "total_net_inr": -8865.8921026467,
+       "win_rate": 0.4645669291338583,
+       "worst_net_inr": -6923.281287673002
+      },
+      "1": {
+       "best_net_inr": 8301.984371007999,
+       "mean_net_inr": 23.77645399370152,
+       "median_net_inr": -207.3383429555,
+       "n": 381,
+       "total_net_inr": 9058.828971600267,
+       "win_rate": 0.46981627296587924,
+       "worst_net_inr": -6675.553742855001
+      },
+      "2": {
+       "best_net_inr": 7687.634997961498,
+       "mean_net_inr": -95.81222811272964,
+       "median_net_inr": -206.80675653650002,
+       "n": 369,
+       "total_net_inr": -35354.71217359727,
+       "win_rate": 0.45528455284552843,
+       "worst_net_inr": -7683.2910343250005
+      },
+      "3": {
+       "best_net_inr": 8767.868747881497,
+       "mean_net_inr": -16.372117687893965,
+       "median_net_inr": -362.5298419602499,
+       "n": 380,
+       "total_net_inr": -6221.404721399685,
+       "win_rate": 0.42894736842105263,
+       "worst_net_inr": -7539.117250259001
+      },
+      "4": {
+       "best_net_inr": 8122.067291210997,
+       "mean_net_inr": 37.74140000564563,
+       "median_net_inr": -376.48377324050006,
+       "n": 397,
+       "total_net_inr": 14983.335802241314,
+       "win_rate": 0.4534005037783375,
+       "worst_net_inr": -7367.198014010501
+      }
+     },
+     "extreme_bucket_is_a_different_instrument": false,
+     "extreme_bucket_mean_mid": 128.1457808564232,
+     "extreme_bucket_mid_ratio": 0.9129544311415083,
+     "mean_by_bucket": [
+      -23.270058012195985,
+      23.77645399370152,
+      -95.81222811272964,
+      -16.372117687893965,
+      37.74140000564563
+     ],
+     "mean_mid_by_bucket": [
+      130.00570866141734,
+      145.5022965879265,
+      141.90955284552845,
+      144.03776315789474,
+      128.1457808564232
+     ],
+     "mean_mid_falls_as_feature_rises": false,
+     "monotone_decreasing": false,
+     "monotone_increasing": false,
+     "other_buckets_mean_mid": 140.36383031319176,
+     "quantile_cuts": [
+      -0.5217391304347826,
+      -0.1864406779661017,
+      0.14285714285714285,
+      0.5
+     ],
+     "rows_with_feature": 1908,
+     "spread_between_extremes_inr": 61.01145801784162,
+     "verdict": "NOT_ORDERED"
+    },
+    "relative_spread": {
+     "buckets": {
+      "0": {
+       "best_net_inr": 8122.067291210997,
+       "mean_net_inr": -105.91427863150852,
+       "median_net_inr": -431.1139509497503,
+       "n": 382,
+       "total_net_inr": -40459.25443723632,
+       "win_rate": 0.4397905759162304,
+       "worst_net_inr": -7367.198014010501
+      },
+      "1": {
+       "best_net_inr": 6915.396582447999,
+       "mean_net_inr": -112.81397673962535,
+       "median_net_inr": -343.4131946994996,
+       "n": 381,
+       "total_net_inr": -42982.125137797244,
+       "win_rate": 0.4540682414698163,
+       "worst_net_inr": -6675.553742855001
+      },
+      "2": {
+       "best_net_inr": 8105.848806941998,
+       "mean_net_inr": 93.7868320486171,
+       "median_net_inr": 90.80108826399866,
+       "n": 382,
+       "total_net_inr": 35826.569842571786,
+       "win_rate": 0.5104712041884817,
+       "worst_net_inr": -7683.2910343250005
+      },
+      "3": {
+       "best_net_inr": 8854.926363324998,
+       "mean_net_inr": 237.7304860131621,
+       "median_net_inr": 27.20125336799778,
+       "n": 381,
+       "total_net_inr": 90575.31517101474,
+       "win_rate": 0.5144356955380578,
+       "worst_net_inr": -7523.684277788501
+      },
+      "4": {
+       "best_net_inr": 8133.825072050999,
+       "mean_net_inr": -181.57159597475135,
+       "median_net_inr": -378.07483622375,
+       "n": 382,
+       "total_net_inr": -69360.34966235499,
+       "win_rate": 0.35340314136125656,
+       "worst_net_inr": -5540.9387979175
+      }
+     },
+     "extreme_bucket_is_a_different_instrument": true,
+     "extreme_bucket_mean_mid": 68.51511780104713,
+     "extreme_bucket_mid_ratio": 0.4415957361572355,
+     "mean_by_bucket": [
+      -105.91427863150852,
+      -112.81397673962535,
+      93.7868320486171,
+      237.7304860131621,
+      -181.57159597475135
+     ],
+     "mean_mid_by_bucket": [
+      153.81865183246072,
+      155.520406824147,
+      160.89391361256543,
+      150.38097112860893,
+      68.51511780104713
+     ],
+     "mean_mid_falls_as_feature_rises": false,
+     "monotone_decreasing": false,
+     "monotone_increasing": false,
+     "other_buckets_mean_mid": 155.15348584944553,
+     "quantile_cuts": [
+      0.0019350866391063817,
+      0.002301495972382011,
+      0.002514142049025805,
+      0.0027754648903691365
+     ],
+     "rows_with_feature": 1908,
+     "spread_between_extremes_inr": -75.65731734324282,
+     "verdict": "NOT_ORDERED"
+    }
+   },
+   "quantity_unit_caveat": "quantity_unit_status is UNKNOWN on every record, so quote size is used only as a RATIO (the unit cancels) and never as a quantity",
+   "rows": 2382,
+   "scored": 1908,
+   "widest_quintile_counterfactual": {
+    "basis": "IN_SAMPLE_COUNTERFACTUAL_NOT_A_RESULT",
+    "dropped": {
+     "best_net_inr": 8133.825072050999,
+     "mean_net_inr": -181.57159597475135,
+     "median_net_inr": -378.07483622375,
+     "n": 382,
+     "total_net_inr": -69360.34966235499,
+     "win_rate": 0.35340314136125656,
+     "worst_net_inr": -5540.9387979175
+    },
+    "kept": {
+     "best_net_inr": 8854.926363324998,
+     "mean_net_inr": 28.152362672708378,
+     "median_net_inr": -175.56097117025018,
+     "n": 1526,
+     "total_net_inr": 42960.505438553206,
+     "win_rate": 0.4796854521625164,
+     "worst_net_inr": -7683.2910343250005
+    },
+    "note": "the quintile boundary was cut from these same rows, so this cannot be read as the net a gate would earn on fresh data. It says only whether the widest quotes were the losing ones in this sample."
+   }
+  }
+ },
+ "per_session": {
+  "2026-11-12": {
+   "features": {
+    "book_imbalance": {
+     "buckets": {
+      "0": {
+       "best_net_inr": 3696.876612440004,
+       "mean_net_inr": -556.0061199864545,
+       "median_net_inr": -799.9295281269973,
+       "n": 99,
+       "total_net_inr": -55044.605878658986,
+       "win_rate": 0.40404040404040403,
+       "worst_net_inr": -3819.690483438999
+      },
+      "1": {
+       "best_net_inr": 3355.779262154003,
+       "mean_net_inr": -582.1634066040838,
+       "median_net_inr": -787.6506190389987,
+       "n": 95,
+       "total_net_inr": -55305.52362738797,
+       "win_rate": 0.4,
+       "worst_net_inr": -4168.966661592998
+      },
+      "2": {
+       "best_net_inr": 3155.630462762004,
+       "mean_net_inr": 7.877062300874746,
+       "median_net_inr": 507.34648114774797,
+       "n": 20,
+       "total_net_inr": 157.54124601749436,
+       "win_rate": 0.55,
+       "worst_net_inr": -2739.82516484
+      },
+      "3": {
+       "best_net_inr": 4017.396048947002,
+       "mean_net_inr": -220.19903169151314,
+       "median_net_inr": -384.8248734729966,
+       "n": 139,
+       "total_net_inr": -30607.66540512031,
+       "win_rate": 0.4172661870503597,
+       "worst_net_inr": -3689.6330877339983
+      },
+      "4": {
+       "best_net_inr": 3894.301122872002,
+       "mean_net_inr": -364.6865805987947,
+       "median_net_inr": -309.5076534872509,
+       "n": 144,
+       "total_net_inr": -52514.86760622641,
+       "win_rate": 0.4375,
+       "worst_net_inr": -5447.8049249589985
+      }
+     },
+     "extreme_bucket_is_a_different_instrument": false,
+     "extreme_bucket_mean_mid": 500.16875000000005,
+     "extreme_bucket_mid_ratio": 1.1082835028338616,
+     "mean_by_bucket": [
+      -556.0061199864545,
+      -582.1634066040838,
+      7.877062300874746,
+      -220.19903169151314,
+      -364.6865805987947
+     ],
+     "mean_mid_by_bucket": [
+      423.1366161616162,
+      480.1728947368421,
+      324.26875,
+      577.6232014388489,
+      500.16875000000005
+     ],
+     "mean_mid_falls_as_feature_rises": false,
+     "monotone_decreasing": false,
+     "monotone_increasing": false,
+     "other_buckets_mean_mid": 451.3003655843268,
+     "quantile_cuts": [
+      -0.4444444444444444,
+      -0.14285714285714285,
+      0.0,
+      0.3333333333333333
+     ],
+     "rows_with_feature": 497,
+     "spread_between_extremes_inr": 191.31953938765974,
+     "verdict": "NOT_ORDERED"
+    },
+    "relative_spread": {
+     "buckets": {
+      "0": {
+       "best_net_inr": 4017.396048947002,
+       "mean_net_inr": -430.6351223248892,
+       "median_net_inr": -603.843638102503,
+       "n": 99,
+       "total_net_inr": -42632.87711016405,
+       "win_rate": 0.3838383838383838,
+       "worst_net_inr": -4177.775003151998
+      },
+      "1": {
+       "best_net_inr": 3894.301122872002,
+       "mean_net_inr": -225.9867132104105,
+       "median_net_inr": 1.0310682167511231,
+       "n": 100,
+       "total_net_inr": -22598.671321041038,
+       "win_rate": 0.5,
+       "worst_net_inr": -3351.385012017501
+      },
+      "2": {
+       "best_net_inr": 2641.4502378230045,
+       "mean_net_inr": -442.47996605966176,
+       "median_net_inr": -429.00546343550116,
+       "n": 99,
+       "total_net_inr": -43805.51663990651,
+       "win_rate": 0.43434343434343436,
+       "worst_net_inr": -3451.6176604815014
+      },
+      "3": {
+       "best_net_inr": 3868.1460484730046,
+       "mean_net_inr": -223.45461837909872,
+       "median_net_inr": -484.5954712434976,
+       "n": 100,
+       "total_net_inr": -22345.461837909872,
+       "win_rate": 0.41,
+       "worst_net_inr": -3964.2670621089965
+      },
+      "4": {
+       "best_net_inr": 3608.9556113660014,
+       "mean_net_inr": -625.5817612359065,
+       "median_net_inr": -773.8674788079979,
+       "n": 99,
+       "total_net_inr": -61932.59436235472,
+       "win_rate": 0.3838383838383838,
+       "worst_net_inr": -5447.8049249589985
+      }
+     },
+     "extreme_bucket_is_a_different_instrument": true,
+     "extreme_bucket_mean_mid": 790.9169191919191,
+     "extreme_bucket_mid_ratio": 1.8748364397984183,
+     "mean_by_bucket": [
+      -430.6351223248892,
+      -225.9867132104105,
+      -442.47996605966176,
+      -223.45461837909872,
+      -625.5817612359065
+     ],
+     "mean_mid_by_bucket": [
+      382.1340909090909,
+      346.0955,
+      356.0535353535354,
+      603.1535,
+      790.9169191919191
+     ],
+     "mean_mid_falls_as_feature_rises": false,
+     "monotone_decreasing": false,
+     "monotone_increasing": false,
+     "other_buckets_mean_mid": 421.8591565656566,
+     "quantile_cuts": [
+      0.0019465772683033072,
+      0.0023061400980109873,
+      0.0025645722659827386,
+      0.0031890829532391107
+     ],
+     "rows_with_feature": 497,
+     "spread_between_extremes_inr": -194.94663891101726,
+     "verdict": "NOT_ORDERED"
+    }
+   },
+   "quantity_unit_caveat": "quantity_unit_status is UNKNOWN on every record, so quote size is used only as a RATIO (the unit cancels) and never as a quantity",
+   "rows": 641,
+   "scored": 497,
+   "widest_quintile_counterfactual": {
+    "basis": "IN_SAMPLE_COUNTERFACTUAL_NOT_A_RESULT",
+    "dropped": {
+     "best_net_inr": 3608.9556113660014,
+     "mean_net_inr": -625.5817612359065,
+     "median_net_inr": -773.8674788079979,
+     "n": 99,
+     "total_net_inr": -61932.59436235472,
+     "win_rate": 0.3838383838383838,
+     "worst_net_inr": -5447.8049249589985
+    },
+    "kept": {
+     "best_net_inr": 4017.396048947002,
+     "mean_net_inr": -330.10685153020466,
+     "median_net_inr": -437.6295207307489,
+     "n": 398,
+     "total_net_inr": -131382.52690902146,
+     "win_rate": 0.4321608040201005,
+     "worst_net_inr": -4177.775003151998
+    },
+    "note": "the quintile boundary was cut from these same rows, so this cannot be read as the net a gate would earn on fresh data. It says only whether the widest quotes were the losing ones in this sample."
+   }
+  },
+  "2026-11-13": {
+   "refused": "no rows with a two-sided decision quote"
+  },
+  "2026-11-16": {
+   "features": {
+    "book_imbalance": {
+     "buckets": {
+      "0": {
+       "best_net_inr": 4330.434410176999,
+       "mean_net_inr": -221.69236426768444,
+       "median_net_inr": -333.72845368549906,
+       "n": 135,
+       "total_net_inr": -29928.469176137398,
+       "win_rate": 0.4222222222222222,
+       "worst_net_inr": -4616.290549315501
+      },
+      "1": {
+       "best_net_inr": 3847.500546301499,
+       "mean_net_inr": -424.35160245882236,
+       "median_net_inr": -471.8088791829966,
+       "n": 133,
+       "total_net_inr": -56438.76312702338,
+       "win_rate": 0.42857142857142855,
+       "worst_net_inr": -5231.4870673685
+      },
+      "2": {
+       "best_net_inr": 4626.604811747001,
+       "mean_net_inr": -228.55397707539052,
+       "median_net_inr": -216.38528838700137,
+       "n": 139,
+       "total_net_inr": -31769.002813479296,
+       "win_rate": 0.4748201438848921,
+       "worst_net_inr": -5016.1140787449995
+      },
+      "3": {
+       "best_net_inr": 4461.989069318,
+       "mean_net_inr": -189.35170498419401,
+       "median_net_inr": -368.5147741864992,
+       "n": 136,
+       "total_net_inr": -25751.831877850396,
+       "win_rate": 0.3897058823529412,
+       "worst_net_inr": -4077.818510594
+      },
+      "4": {
+       "best_net_inr": 4597.5943166450015,
+       "mean_net_inr": -178.71756433439606,
+       "median_net_inr": -234.52481233599661,
+       "n": 141,
+       "total_net_inr": -25199.17657114984,
+       "win_rate": 0.475177304964539,
+       "worst_net_inr": -5315.135769987998
+      }
+     },
+     "extreme_bucket_is_a_different_instrument": false,
+     "extreme_bucket_mean_mid": 304.32659574468084,
+     "extreme_bucket_mid_ratio": 0.8990570305818362,
+     "mean_by_bucket": [
+      -221.69236426768444,
+      -424.35160245882236,
+      -228.55397707539052,
+      -189.35170498419401,
+      -178.71756433439606
+     ],
+     "mean_mid_by_bucket": [
+      259.53499999999997,
+      311.3721804511278,
+      451.44946043165464,
+      331.62463235294115,
+      304.32659574468084
+     ],
+     "mean_mid_falls_as_feature_rises": false,
+     "monotone_decreasing": false,
+     "monotone_increasing": false,
+     "other_buckets_mean_mid": 338.4953183089309,
+     "quantile_cuts": [
+      -0.4,
+      0.0,
+      0.14285714285714285,
+      0.5
+     ],
+     "rows_with_feature": 684,
+     "spread_between_extremes_inr": 42.97479993328838,
+     "verdict": "NOT_ORDERED"
+    },
+    "relative_spread": {
+     "buckets": {
+      "0": {
+       "best_net_inr": 4270.691712080002,
+       "mean_net_inr": -224.69173072779498,
+       "median_net_inr": -307.7472520819998,
+       "n": 137,
+       "total_net_inr": -30782.767109707915,
+       "win_rate": 0.39416058394160586,
+       "worst_net_inr": -4616.290549315501
+      },
+      "1": {
+       "best_net_inr": 4056.85028735,
+       "mean_net_inr": -292.1782529029921,
+       "median_net_inr": -340.48530571599986,
+       "n": 137,
+       "total_net_inr": -40028.42064770992,
+       "win_rate": 0.43795620437956206,
+       "worst_net_inr": -3936.8043632484996
+      },
+      "2": {
+       "best_net_inr": 3471.6919407770006,
+       "mean_net_inr": -261.66881589851755,
+       "median_net_inr": -253.88929629399865,
+       "n": 136,
+       "total_net_inr": -35586.95896219839,
+       "win_rate": 0.47058823529411764,
+       "worst_net_inr": -5231.4870673685
+      },
+      "3": {
+       "best_net_inr": 4626.604811747001,
+       "mean_net_inr": -189.6984061401337,
+       "median_net_inr": -344.31163211799935,
+       "n": 137,
+       "total_net_inr": -25988.681641198313,
+       "win_rate": 0.4306569343065693,
+       "worst_net_inr": -5016.1140787449995
+      },
+      "4": {
+       "best_net_inr": 4597.5943166450015,
+       "mean_net_inr": -267.88624237099094,
+       "median_net_inr": -387.46218841549984,
+       "n": 137,
+       "total_net_inr": -36700.415204825746,
+       "win_rate": 0.45985401459854014,
+       "worst_net_inr": -5315.135769987998
+      }
+     },
+     "extreme_bucket_is_a_different_instrument": true,
+     "extreme_bucket_mean_mid": 529.4324817518249,
+     "extreme_bucket_mid_ratio": 1.8724005760377065,
+     "mean_by_bucket": [
+      -224.69173072779498,
+      -292.1782529029921,
+      -261.66881589851755,
+      -189.6984061401337,
+      -267.88624237099094
+     ],
+     "mean_mid_by_bucket": [
+      252.52408759124089,
+      232.09525547445256,
+      270.33345588235295,
+      376.0711678832117,
+      529.4324817518249
+     ],
+     "mean_mid_falls_as_feature_rises": false,
+     "monotone_decreasing": false,
+     "monotone_increasing": false,
+     "other_buckets_mean_mid": 282.75599170781453,
+     "quantile_cuts": [
+      0.0020865936358894404,
+      0.002480363786688691,
+      0.0027614501558246873,
+      0.0030906281247158112
+     ],
+     "rows_with_feature": 684,
+     "spread_between_extremes_inr": -43.194511643195966,
+     "verdict": "NOT_ORDERED"
+    }
+   },
+   "quantity_unit_caveat": "quantity_unit_status is UNKNOWN on every record, so quote size is used only as a RATIO (the unit cancels) and never as a quantity",
+   "rows": 828,
+   "scored": 684,
+   "widest_quintile_counterfactual": {
+    "basis": "IN_SAMPLE_COUNTERFACTUAL_NOT_A_RESULT",
+    "dropped": {
+     "best_net_inr": 4597.5943166450015,
+     "mean_net_inr": -267.88624237099094,
+     "median_net_inr": -387.46218841549984,
+     "n": 137,
+     "total_net_inr": -36700.415204825746,
+     "win_rate": 0.45985401459854014,
+     "worst_net_inr": -5315.135769987998
+    },
+    "kept": {
+     "best_net_inr": 4626.604811747001,
+     "mean_net_inr": -242.02345221355492,
+     "median_net_inr": -330.7203592179966,
+     "n": 547,
+     "total_net_inr": -132386.82836081446,
+     "win_rate": 0.43327239488117003,
+     "worst_net_inr": -5231.4870673685
+    },
+    "note": "the quintile boundary was cut from these same rows, so this cannot be read as the net a gate would earn on fresh data. It says only whether the widest quotes were the losing ones in this sample."
+   }
+  },
+  "2026-11-17": {
+   "features": {
+    "book_imbalance": {
+     "buckets": {
+      "0": {
+       "best_net_inr": 10123.352457935001,
+       "mean_net_inr": 75.20039313897105,
+       "median_net_inr": 131.73799964000273,
+       "n": 137,
+       "total_net_inr": 10302.453860039022,
+       "win_rate": 0.5255474452554745,
+       "worst_net_inr": -6923.281287673002
+      },
+      "1": {
+       "best_net_inr": 9701.758249997001,
+       "mean_net_inr": -96.18590574631192,
+       "median_net_inr": -298.0983170625004,
+       "n": 136,
+       "total_net_inr": -13081.283181498406,
+       "win_rate": 0.4338235294117647,
+       "worst_net_inr": -7523.684277788501
+      },
+      "2": {
+       "best_net_inr": 8803.099044356002,
+       "mean_net_inr": 10.24447149957375,
+       "median_net_inr": 70.75103281399967,
+       "n": 137,
+       "total_net_inr": 1403.4925954416017,
+       "win_rate": 0.5182481751824818,
+       "worst_net_inr": -7683.2910343250005
+      },
+      "3": {
+       "best_net_inr": 7614.929667005,
+       "mean_net_inr": -318.77058001410165,
+       "median_net_inr": -564.13080274,
+       "n": 137,
+       "total_net_inr": -43671.56946193194,
+       "win_rate": 0.3722627737226277,
+       "worst_net_inr": -7539.117250259001
+      },
+      "4": {
+       "best_net_inr": 10104.352151948002,
+       "mean_net_inr": 58.16950160317183,
+       "median_net_inr": -491.348162471,
+       "n": 137,
+       "total_net_inr": 7969.221719634532,
+       "win_rate": 0.41605839416058393,
+       "worst_net_inr": -7367.198014010501
+      }
+     },
+     "extreme_bucket_is_a_different_instrument": true,
+     "extreme_bucket_mean_mid": 231.46204379562045,
+     "extreme_bucket_mid_ratio": 0.70075493174284,
+     "mean_by_bucket": [
+      75.20039313897105,
+      -96.18590574631192,
+      10.24447149957375,
+      -318.77058001410165,
+      58.16950160317183
+     ],
+     "mean_mid_by_bucket": [
+      225.3242700729927,
+      341.5534926470588,
+      458.15565693430653,
+      296.18193430656936,
+      231.46204379562045
+     ],
+     "mean_mid_falls_as_feature_rises": false,
+     "monotone_decreasing": false,
+     "monotone_increasing": false,
+     "other_buckets_mean_mid": 330.30383849023184,
+     "quantile_cuts": [
+      -0.43157894736842106,
+      -0.06666666666666667,
+      0.13984168865435356,
+      0.5
+     ],
+     "rows_with_feature": 684,
+     "spread_between_extremes_inr": -17.03089153579922,
+     "verdict": "NOT_ORDERED"
+    },
+    "relative_spread": {
+     "buckets": {
+      "0": {
+       "best_net_inr": 10104.352151948002,
+       "mean_net_inr": -223.58323504847803,
+       "median_net_inr": -479.09751186100175,
+       "n": 137,
+       "total_net_inr": -30630.903201641482,
+       "win_rate": 0.45985401459854014,
+       "worst_net_inr": -7683.2910343250005
+      },
+      "1": {
+       "best_net_inr": 9701.758249997001,
+       "mean_net_inr": 82.07337284431038,
+       "median_net_inr": 120.68252065099966,
+       "n": 137,
+       "total_net_inr": 11244.052079670497,
+       "win_rate": 0.5109489051094891,
+       "worst_net_inr": -7523.684277788501
+      },
+      "2": {
+       "best_net_inr": 10123.352457935001,
+       "mean_net_inr": 421.3288344823206,
+       "median_net_inr": 206.48546207850103,
+       "n": 136,
+       "total_net_inr": 57300.72148959557,
+       "win_rate": 0.5294117647058824,
+       "worst_net_inr": -6810.161908071998
+      },
+      "3": {
+       "best_net_inr": 8803.099044356002,
+       "mean_net_inr": -338.15153450262324,
+       "median_net_inr": -689.2846191669952,
+       "n": 137,
+       "total_net_inr": -46326.7602268594,
+       "win_rate": 0.35766423357664234,
+       "worst_net_inr": -7297.418870202999
+      },
+      "4": {
+       "best_net_inr": 9230.460410624002,
+       "mean_net_inr": -209.23207743854314,
+       "median_net_inr": -207.3383429555,
+       "n": 137,
+       "total_net_inr": -28664.794609080403,
+       "win_rate": 0.40875912408759124,
+       "worst_net_inr": -6602.019324253
+      }
+     },
+     "extreme_bucket_is_a_different_instrument": false,
+     "extreme_bucket_mean_mid": 307.72499999999997,
+     "extreme_bucket_mid_ratio": 0.9886768042817095,
+     "mean_by_bucket": [
+      -223.58323504847803,
+      82.07337284431038,
+      421.3288344823206,
+      -338.15153450262324,
+      -209.23207743854314
+     ],
+     "mean_mid_by_bucket": [
+      192.67609489051094,
+      249.31386861313868,
+      347.7117647058824,
+      455.2956204379562,
+      307.72499999999997
+     ],
+     "mean_mid_falls_as_feature_rises": false,
+     "monotone_decreasing": false,
+     "monotone_increasing": false,
+     "other_buckets_mean_mid": 311.24933716187206,
+     "quantile_cuts": [
+      0.002472187886279334,
+      0.0029334115576415375,
+      0.003370058327932481,
+      0.003883495145630932
+     ],
+     "rows_with_feature": 684,
+     "spread_between_extremes_inr": 14.351157609934887,
+     "verdict": "NOT_ORDERED"
+    }
+   },
+   "quantity_unit_caveat": "quantity_unit_status is UNKNOWN on every record, so quote size is used only as a RATIO (the unit cancels) and never as a quantity",
+   "rows": 828,
+   "scored": 684,
+   "widest_quintile_counterfactual": {
+    "basis": "IN_SAMPLE_COUNTERFACTUAL_NOT_A_RESULT",
+    "dropped": {
+     "best_net_inr": 9230.460410624002,
+     "mean_net_inr": -209.23207743854314,
+     "median_net_inr": -207.3383429555,
+     "n": 137,
+     "total_net_inr": -28664.794609080403,
+     "win_rate": 0.40875912408759124,
+     "worst_net_inr": -6602.019324253
+    },
+    "kept": {
+     "best_net_inr": 10123.352457935001,
+     "mean_net_inr": -15.38005458726646,
+     "median_net_inr": -392.4779196790007,
+     "n": 547,
+     "total_net_inr": -8412.889859234787,
+     "win_rate": 0.4643510054844607,
+     "worst_net_inr": -7683.2910343250005
+    },
+    "note": "the quintile boundary was cut from these same rows, so this cannot be read as the net a gate would earn on fresh data. It says only whether the widest quotes were the losing ones in this sample."
+   }
+  },
+  "2026-11-18": {
+   "features": {
+    "book_imbalance": {
+     "buckets": {
+      "0": {
+       "best_net_inr": 5533.084144745003,
+       "mean_net_inr": -148.12874859200514,
+       "median_net_inr": 25.794622603499548,
+       "n": 100,
+       "total_net_inr": -14812.874859200509,
+       "win_rate": 0.52,
+       "worst_net_inr": -5012.7995332929995
+      },
+      "1": {
+       "best_net_inr": 5762.723467109002,
+       "mean_net_inr": -301.4566872731061,
+       "median_net_inr": -498.8005077524987,
+       "n": 174,
+       "total_net_inr": -52453.463585520425,
+       "win_rate": 0.40804597701149425,
+       "worst_net_inr": -5639.401829106996
+      },
+      "2": {
+       "best_net_inr": 2951.2463193770045,
+       "mean_net_inr": -449.0181596168879,
+       "median_net_inr": 171.29091497999852,
+       "n": 31,
+       "total_net_inr": -13919.562948123525,
+       "win_rate": 0.5483870967741935,
+       "worst_net_inr": -5575.585611378503
+      },
+      "3": {
+       "best_net_inr": 5139.974322950001,
+       "mean_net_inr": -425.0420915991116,
+       "median_net_inr": -489.7967997190017,
+       "n": 201,
+       "total_net_inr": -85433.46041142142,
+       "win_rate": 0.39800995024875624,
+       "worst_net_inr": -5292.8635876929975
+      },
+      "4": {
+       "best_net_inr": 3955.3483235920007,
+       "mean_net_inr": -149.46374576029228,
+       "median_net_inr": -209.38641806650034,
+       "n": 178,
+       "total_net_inr": -26604.54674533203,
+       "win_rate": 0.47752808988764045,
+       "worst_net_inr": -4638.760557456997
+      }
+     },
+     "extreme_bucket_is_a_different_instrument": false,
+     "extreme_bucket_mean_mid": 313.6480337078652,
+     "extreme_bucket_mid_ratio": 0.9957120032316534,
+     "mean_by_bucket": [
+      -148.12874859200514,
+      -301.4566872731061,
+      -449.0181596168879,
+      -425.0420915991116,
+      -149.46374576029228
+     ],
+     "mean_mid_by_bucket": [
+      264.65825,
+      353.80689655172415,
+      230.12822580645164,
+      411.4016169154229,
+      313.6480337078652
+     ],
+     "mean_mid_falls_as_feature_rises": false,
+     "monotone_decreasing": false,
+     "monotone_increasing": false,
+     "other_buckets_mean_mid": 314.9987473183997,
+     "quantile_cuts": [
+      -0.5,
+      -0.17647058823529413,
+      0.0,
+      0.3333333333333333
+     ],
+     "rows_with_feature": 684,
+     "spread_between_extremes_inr": -1.3349971682871455,
+     "verdict": "NOT_ORDERED"
+    },
+    "relative_spread": {
+     "buckets": {
+      "0": {
+       "best_net_inr": 3842.6402403500024,
+       "mean_net_inr": -410.2702466025661,
+       "median_net_inr": -561.3071508104995,
+       "n": 137,
+       "total_net_inr": -56207.023784551566,
+       "win_rate": 0.4306569343065693,
+       "worst_net_inr": -5575.585611378503
+      },
+      "1": {
+       "best_net_inr": 3955.3483235920007,
+       "mean_net_inr": -26.82615808164672,
+       "median_net_inr": 99.21756162800091,
+       "n": 137,
+       "total_net_inr": -3675.183657185601,
+       "win_rate": 0.5255474452554745,
+       "worst_net_inr": -3980.4508714915028
+      },
+      "2": {
+       "best_net_inr": 3695.577944347001,
+       "mean_net_inr": -254.48358470319903,
+       "median_net_inr": -331.27374678149965,
+       "n": 136,
+       "total_net_inr": -34609.767519635076,
+       "win_rate": 0.45588235294117646,
+       "worst_net_inr": -5210.050691648002
+      },
+      "3": {
+       "best_net_inr": 5533.084144745003,
+       "mean_net_inr": -148.0350286508095,
+       "median_net_inr": -344.4060953680007,
+       "n": 137,
+       "total_net_inr": -20280.798925160907,
+       "win_rate": 0.46715328467153283,
+       "worst_net_inr": -5292.8635876929975
+      },
+      "4": {
+       "best_net_inr": 5762.723467109002,
+       "mean_net_inr": -572.6360194384296,
+       "median_net_inr": -528.253124497,
+       "n": 137,
+       "total_net_inr": -78451.13466306489,
+       "win_rate": 0.35036496350364965,
+       "worst_net_inr": -5639.401829106996
+      }
+     },
+     "extreme_bucket_is_a_different_instrument": true,
+     "extreme_bucket_mean_mid": 525.3138686131387,
+     "extreme_bucket_mid_ratio": 1.7772426590379815,
+     "mean_by_bucket": [
+      -410.2702466025661,
+      -26.82615808164672,
+      -254.48358470319903,
+      -148.0350286508095,
+      -572.6360194384296
+     ],
+     "mean_mid_by_bucket": [
+      250.15857664233576,
+      222.7317518248175,
+      261.48069852941177,
+      447.9410583941606,
+      525.3138686131387
+     ],
+     "mean_mid_falls_as_feature_rises": false,
+     "monotone_decreasing": false,
+     "monotone_increasing": false,
+     "other_buckets_mean_mid": 295.57802134768144,
+     "quantile_cuts": [
+      0.002108289410637104,
+      0.0024493641073951096,
+      0.002890173410404508,
+      0.0034857007050622603
+     ],
+     "rows_with_feature": 684,
+     "spread_between_extremes_inr": -162.36577283586348,
+     "verdict": "NOT_ORDERED"
+    }
+   },
+   "quantity_unit_caveat": "quantity_unit_status is UNKNOWN on every record, so quote size is used only as a RATIO (the unit cancels) and never as a quantity",
+   "rows": 828,
+   "scored": 684,
+   "widest_quintile_counterfactual": {
+    "basis": "IN_SAMPLE_COUNTERFACTUAL_NOT_A_RESULT",
+    "dropped": {
+     "best_net_inr": 5762.723467109002,
+     "mean_net_inr": -572.6360194384296,
+     "median_net_inr": -528.253124497,
+     "n": 137,
+     "total_net_inr": -78451.13466306489,
+     "win_rate": 0.35036496350364965,
+     "worst_net_inr": -5639.401829106996
+    },
+    "kept": {
+     "best_net_inr": 5533.084144745003,
+     "mean_net_inr": -209.8222557340642,
+     "median_net_inr": -202.18239631549943,
+     "n": 547,
+     "total_net_inr": -114772.77388653309,
+     "win_rate": 0.46983546617915906,
+     "worst_net_inr": -5575.585611378503
+    },
+    "note": "the quintile boundary was cut from these same rows, so this cannot be read as the net a gate would earn on fresh data. It says only whether the widest quotes were the losing ones in this sample."
+   }
+  },
+  "2026-11-19": {
+   "features": {
+    "book_imbalance": {
+     "buckets": {
+      "0": {
+       "best_net_inr": 8909.010083558003,
+       "mean_net_inr": 438.6696787564925,
+       "median_net_inr": -489.2093257579999,
+       "n": 126,
+       "total_net_inr": 55272.379523318064,
+       "win_rate": 0.42857142857142855,
+       "worst_net_inr": -6440.370669319
+      },
+      "1": {
+       "best_net_inr": 9782.648215244,
+       "mean_net_inr": 564.6456249588413,
+       "median_net_inr": -73.39458080524972,
+       "n": 126,
+       "total_net_inr": 71145.34874481398,
+       "win_rate": 0.49206349206349204,
+       "worst_net_inr": -5571.0722253065
+      },
+      "2": {
+       "best_net_inr": 8450.285850068001,
+       "mean_net_inr": 612.2947519974251,
+       "median_net_inr": 399.60271814600446,
+       "n": 126,
+       "total_net_inr": 77149.1387516756,
+       "win_rate": 0.5476190476190477,
+       "worst_net_inr": -9019.092496638998
+      },
+      "3": {
+       "best_net_inr": 7645.944788636002,
+       "mean_net_inr": 522.690872247881,
+       "median_net_inr": 250.3276942694987,
+       "n": 126,
+       "total_net_inr": 65859.04990323304,
+       "win_rate": 0.5079365079365079,
+       "worst_net_inr": -7611.10028875
+      },
+      "4": {
+       "best_net_inr": 7799.074804874001,
+       "mean_net_inr": 69.36389502283319,
+       "median_net_inr": -628.2293014402521,
+       "n": 126,
+       "total_net_inr": 8739.850772876976,
+       "win_rate": 0.3968253968253968,
+       "worst_net_inr": -6443.589514190001
+      }
+     },
+     "extreme_bucket_is_a_different_instrument": true,
+     "extreme_bucket_mean_mid": 238.94464285714287,
+     "extreme_bucket_mid_ratio": 0.7634753415857976,
+     "mean_by_bucket": [
+      438.6696787564925,
+      564.6456249588413,
+      612.2947519974251,
+      522.690872247881,
+      69.36389502283319
+     ],
+     "mean_mid_by_bucket": [
+      273.3587301587301,
+      291.97301587301587,
+      398.5027777777778,
+      288.044246031746,
+      238.94464285714287
+     ],
+     "mean_mid_falls_as_feature_rises": false,
+     "monotone_decreasing": false,
+     "monotone_increasing": false,
+     "other_buckets_mean_mid": 312.96969246031745,
+     "quantile_cuts": [
+      -0.44,
+      -0.09523809523809523,
+      0.09090909090909091,
+      0.34328358208955223
+     ],
+     "rows_with_feature": 630,
+     "spread_between_extremes_inr": -369.30578373365927,
+     "verdict": "NOT_ORDERED"
+    },
+    "relative_spread": {
+     "buckets": {
+      "0": {
+       "best_net_inr": 7030.229373164003,
+       "mean_net_inr": 550.4288717044402,
+       "median_net_inr": 168.57119387524816,
+       "n": 126,
+       "total_net_inr": 69354.0378347595,
+       "win_rate": 0.5158730158730159,
+       "worst_net_inr": -8353.219606549
+      },
+      "1": {
+       "best_net_inr": 8450.285850068001,
+       "mean_net_inr": 517.3813934774321,
+       "median_net_inr": 288.69863282050187,
+       "n": 126,
+       "total_net_inr": 65190.05557815644,
+       "win_rate": 0.5555555555555556,
+       "worst_net_inr": -7090.645812663001
+      },
+      "2": {
+       "best_net_inr": 7521.392287775003,
+       "mean_net_inr": 214.1325060473055,
+       "median_net_inr": -409.55617843424955,
+       "n": 126,
+       "total_net_inr": 26980.6957619605,
+       "win_rate": 0.42857142857142855,
+       "worst_net_inr": -6177.943913523998
+      },
+      "3": {
+       "best_net_inr": 8909.010083558003,
+       "mean_net_inr": 329.7450666732346,
+       "median_net_inr": -590.6729324095002,
+       "n": 126,
+       "total_net_inr": 41547.87840082753,
+       "win_rate": 0.42063492063492064,
+       "worst_net_inr": -7611.10028875
+      },
+      "4": {
+       "best_net_inr": 9782.648215244,
+       "mean_net_inr": 595.9769850810607,
+       "median_net_inr": -394.25494231849973,
+       "n": 126,
+       "total_net_inr": 75093.10012021355,
+       "win_rate": 0.4523809523809524,
+       "worst_net_inr": -9019.092496638998
+      }
+     },
+     "extreme_bucket_is_a_different_instrument": true,
+     "extreme_bucket_mean_mid": 432.4448412698413,
+     "extreme_bucket_mid_ratio": 1.634367334879574,
+     "mean_by_bucket": [
+      550.4288717044402,
+      517.3813934774321,
+      214.1325060473055,
+      329.7450666732346,
+      595.9769850810607
+     ],
+     "mean_mid_by_bucket": [
+      243.1577380952381,
+      225.10357142857143,
+      241.9480158730159,
+      348.169246031746,
+      432.4448412698413
+     ],
+     "mean_mid_falls_as_feature_rises": false,
+     "monotone_decreasing": false,
+     "monotone_increasing": false,
+     "other_buckets_mean_mid": 264.59464285714284,
+     "quantile_cuts": [
+      0.0022411474675033617,
+      0.0025521054870267725,
+      0.0028735632183908458,
+      0.0033277870216306157
+     ],
+     "rows_with_feature": 630,
+     "spread_between_extremes_inr": 45.54811337662045,
+     "verdict": "NOT_ORDERED"
+    }
+   },
+   "quantity_unit_caveat": "quantity_unit_status is UNKNOWN on every record, so quote size is used only as a RATIO (the unit cancels) and never as a quantity",
+   "rows": 828,
+   "scored": 630,
+   "widest_quintile_counterfactual": {
+    "basis": "IN_SAMPLE_COUNTERFACTUAL_NOT_A_RESULT",
+    "dropped": {
+     "best_net_inr": 9782.648215244,
+     "mean_net_inr": 595.9769850810607,
+     "median_net_inr": -394.25494231849973,
+     "n": 126,
+     "total_net_inr": 75093.10012021355,
+     "win_rate": 0.4523809523809524,
+     "worst_net_inr": -9019.092496638998
+    },
+    "kept": {
+     "best_net_inr": 8909.010083558003,
+     "mean_net_inr": 402.9219594756031,
+     "median_net_inr": -220.9212285737497,
+     "n": 504,
+     "total_net_inr": 203072.667575704,
+     "win_rate": 0.4801587301587302,
+     "worst_net_inr": -8353.219606549
+    },
+    "note": "the quintile boundary was cut from these same rows, so this cannot be read as the net a gate would earn on fresh data. It says only whether the widest quotes were the losing ones in this sample."
+   }
+  },
+  "2026-11-20": {
+   "features": {
+    "book_imbalance": {
+     "buckets": {
+      "0": {
+       "best_net_inr": 22425.001337255002,
+       "mean_net_inr": 1639.9135129773902,
+       "median_net_inr": -63.62521521399974,
+       "n": 127,
+       "total_net_inr": 208269.0161481285,
+       "win_rate": 0.4881889763779528,
+       "worst_net_inr": -3892.7633852869994
+      },
+      "1": {
+       "best_net_inr": 19283.727626141,
+       "mean_net_inr": 669.0295825455806,
+       "median_net_inr": -372.4876315247496,
+       "n": 124,
+       "total_net_inr": 82959.66823565205,
+       "win_rate": 0.4274193548387097,
+       "worst_net_inr": -4547.207964569
+      },
+      "2": {
+       "best_net_inr": 12476.021655538998,
+       "mean_net_inr": 126.28865916538271,
+       "median_net_inr": -587.6588877025015,
+       "n": 30,
+       "total_net_inr": 3788.6597749614807,
+       "win_rate": 0.26666666666666666,
+       "worst_net_inr": -3692.2616984170004
+      },
+      "3": {
+       "best_net_inr": 23327.618393636007,
+       "mean_net_inr": 2321.5217327954538,
+       "median_net_inr": 519.6893100584989,
+       "n": 225,
+       "total_net_inr": 522342.3898789776,
+       "win_rate": 0.5244444444444445,
+       "worst_net_inr": -4931.249059216002
+      },
+      "4": {
+       "best_net_inr": 23684.47391405,
+       "mean_net_inr": 1201.6764390165729,
+       "median_net_inr": -389.2375278157503,
+       "n": 130,
+       "total_net_inr": 156217.93707215448,
+       "win_rate": 0.4230769230769231,
+       "worst_net_inr": -4383.525317893
+      }
+     },
+     "extreme_bucket_is_a_different_instrument": false,
+     "extreme_bucket_mean_mid": 260.92538461538464,
+     "extreme_bucket_mid_ratio": 0.8122064191018137,
+     "mean_by_bucket": [
+      1639.9135129773902,
+      669.0295825455806,
+      126.28865916538271,
+      2321.5217327954538,
+      1201.6764390165729
+     ],
+     "mean_mid_by_bucket": [
+      343.8419291338583,
+      277.2395161290322,
+      186.15583333333333,
+      477.78277777777777,
+      260.92538461538464
+     ],
+     "mean_mid_falls_as_feature_rises": false,
+     "monotone_decreasing": false,
+     "monotone_increasing": false,
+     "other_buckets_mean_mid": 321.2550140935004,
+     "quantile_cuts": [
+      -0.46511627906976744,
+      -0.14285714285714285,
+      0.0,
+      0.38461538461538464
+     ],
+     "rows_with_feature": 636,
+     "spread_between_extremes_inr": -438.23707396081727,
+     "verdict": "NOT_ORDERED"
+    },
+    "relative_spread": {
+     "buckets": {
+      "0": {
+       "best_net_inr": 8122.067291210997,
+       "mean_net_inr": 132.03166986503095,
+       "median_net_inr": -417.44246759499964,
+       "n": 127,
+       "total_net_inr": 16768.02207285895,
+       "win_rate": 0.4094488188976378,
+       "worst_net_inr": -4547.207964569
+      },
+      "1": {
+       "best_net_inr": 8214.3264549935,
+       "mean_net_inr": 842.9023642893535,
+       "median_net_inr": 356.8856424604985,
+       "n": 127,
+       "total_net_inr": 107048.6002647479,
+       "win_rate": 0.5511811023622047,
+       "worst_net_inr": -4132.215599914
+      },
+      "2": {
+       "best_net_inr": 23327.618393636007,
+       "mean_net_inr": 648.8586965704884,
+       "median_net_inr": -714.1931196012499,
+       "n": 128,
+       "total_net_inr": 83053.91316102254,
+       "win_rate": 0.375,
+       "worst_net_inr": -4931.249059216002
+      },
+      "3": {
+       "best_net_inr": 22786.432260461006,
+       "mean_net_inr": 2131.3366850065677,
+       "median_net_inr": -456.55326169599954,
+       "n": 127,
+       "total_net_inr": 270679.7589958343,
+       "win_rate": 0.4015748031496063,
+       "worst_net_inr": -4145.418431854001
+      },
+      "4": {
+       "best_net_inr": 23684.47391405,
+       "mean_net_inr": 3905.72737492449,
+       "median_net_inr": 1650.3700580660027,
+       "n": 127,
+       "total_net_inr": 496027.3766154103,
+       "win_rate": 0.5905511811023622,
+       "worst_net_inr": -3561.324447511001
+      }
+     },
+     "extreme_bucket_is_a_different_instrument": true,
+     "extreme_bucket_mean_mid": 873.2509842519685,
+     "extreme_bucket_mid_ratio": 3.894016277598593,
+     "mean_by_bucket": [
+      132.03166986503095,
+      842.9023642893535,
+      648.8586965704884,
+      2131.3366850065677,
+      3905.72737492449
+     ],
+     "mean_mid_by_bucket": [
+      162.28858267716538,
+      173.11299212598425,
+      227.5234375,
+      334.0933070866142,
+      873.2509842519685
+     ],
+     "mean_mid_falls_as_feature_rises": false,
+     "monotone_decreasing": false,
+     "monotone_increasing": false,
+     "other_buckets_mean_mid": 224.25457984744094,
+     "quantile_cuts": [
+      0.0022107590272659027,
+      0.0026385224274406084,
+      0.003414079011542876,
+      0.004445102978218996
+     ],
+     "rows_with_feature": 636,
+     "spread_between_extremes_inr": 3773.695705059459,
+     "verdict": "NOT_ORDERED"
+    }
+   },
+   "quantity_unit_caveat": "quantity_unit_status is UNKNOWN on every record, so quote size is used only as a RATIO (the unit cancels) and never as a quantity",
+   "rows": 816,
+   "scored": 636,
+   "widest_quintile_counterfactual": {
+    "basis": "IN_SAMPLE_COUNTERFACTUAL_NOT_A_RESULT",
+    "dropped": {
+     "best_net_inr": 23684.47391405,
+     "mean_net_inr": 3905.72737492449,
+     "median_net_inr": 1650.3700580660027,
+     "n": 127,
+     "total_net_inr": 496027.3766154103,
+     "win_rate": 0.5905511811023622,
+     "worst_net_inr": -3561.324447511001
+    },
+    "kept": {
+     "best_net_inr": 23327.618393636007,
+     "mean_net_inr": 938.2127593211462,
+     "median_net_inr": -340.38608656350016,
+     "n": 509,
+     "total_net_inr": 477550.29449446365,
+     "win_rate": 0.43418467583497056,
+     "worst_net_inr": -4931.249059216002
+    },
+    "note": "the quintile boundary was cut from these same rows, so this cannot be read as the net a gate would earn on fresh data. It says only whether the widest quotes were the losing ones in this sample."
+   }
+  }
+ },
+ "pooled": {
+  "features": {
+   "book_imbalance": {
+    "buckets": {
+     "0": {
+      "best_net_inr": 22425.001337255002,
+      "mean_net_inr": 215.3780116903689,
+      "median_net_inr": -227.2776205539996,
+      "n": 761,
+      "total_net_inr": 163902.6668963707,
+      "win_rate": 0.45860709592641263,
+      "worst_net_inr": -6923.281287673002
+     },
+     "1": {
+      "best_net_inr": 19283.727626141,
+      "mean_net_inr": -14.779526392499632,
+      "median_net_inr": -374.64154634099987,
+      "n": 743,
+      "total_net_inr": -10981.188109627363,
+      "win_rate": 0.4360699865410498,
+      "worst_net_inr": -7297.418870202999
+     },
+     "2": {
+      "best_net_inr": 12476.021655538998,
+      "mean_net_inr": -41.63854129956555,
+      "median_net_inr": -241.92508122599992,
+      "n": 115,
+      "total_net_inr": -4788.432249450043,
+      "win_rate": 0.4782608695652174,
+      "worst_net_inr": -7523.684277788501
+     },
+     "3": {
+      "best_net_inr": 23327.618393636007,
+      "mean_net_inr": 286.3542923779055,
+      "median_net_inr": -253.44372178149933,
+      "n": 1433,
+      "total_net_inr": 410345.7009775387,
+      "win_rate": 0.45638520586182835,
+      "worst_net_inr": -9019.092496638998
+     },
+     "4": {
+      "best_net_inr": 23684.47391405,
+      "mean_net_inr": 131.79650515862343,
+      "median_net_inr": -371.6314541289997,
+      "n": 763,
+      "total_net_inr": 100560.73343602968,
+      "win_rate": 0.4429882044560944,
+      "worst_net_inr": -7367.198014010501
+     }
+    },
+    "extreme_bucket_is_a_different_instrument": false,
+    "extreme_bucket_mean_mid": 284.78057011795545,
+    "extreme_bucket_mid_ratio": 0.9100052076601011,
+    "mean_by_bucket": [
+     215.3780116903689,
+     -14.779526392499632,
+     -41.63854129956555,
+     286.3542923779055,
+     131.79650515862343
+    ],
+    "mean_mid_by_bucket": [
+     299.159691195795,
+     338.5329744279946,
+     185.11869565217393,
+     428.96420097697137,
+     284.78057011795545
+    ],
+    "mean_mid_falls_as_feature_rises": false,
+    "monotone_decreasing": false,
+    "monotone_increasing": false,
+    "other_buckets_mean_mid": 312.9438905632337,
+    "quantile_cuts": [
+     -0.4444444444444444,
+     -0.1111111111111111,
+     0.0,
+     0.4074074074074074
+    ],
+    "rows_with_feature": 3815,
+    "spread_between_extremes_inr": -83.58150653174548,
+    "verdict": "NOT_ORDERED"
+   },
+   "relative_spread": {
+    "buckets": {
+     "0": {
+      "best_net_inr": 10104.352151948002,
+      "mean_net_inr": -130.9435426923717,
+      "median_net_inr": -410.0908379199989,
+      "n": 763,
+      "total_net_inr": -99909.9230742797,
+      "win_rate": 0.4259501965923984,
+      "worst_net_inr": -7367.198014010501
+     },
+     "1": {
+      "best_net_inr": 8450.285850068001,
+      "mean_net_inr": 61.32350838530118,
+      "median_net_inr": 48.32665861700018,
+      "n": 763,
+      "total_net_inr": 46789.83689798491,
+      "win_rate": 0.509829619921363,
+      "worst_net_inr": -8353.219606549
+     },
+     "2": {
+      "best_net_inr": 9701.758249997001,
+      "mean_net_inr": 17.708958700543533,
+      "median_net_inr": -349.464937975,
+      "n": 763,
+      "total_net_inr": 13511.935488514771,
+      "win_rate": 0.45740498034076016,
+      "worst_net_inr": -7611.10028875
+     },
+     "3": {
+      "best_net_inr": 23327.618393636007,
+      "mean_net_inr": 12.357679223059343,
+      "median_net_inr": -462.1996199959992,
+      "n": 763,
+      "total_net_inr": 9428.909247194297,
+      "win_rate": 0.41939711664482304,
+      "worst_net_inr": -9019.092496638998
+     },
+     "4": {
+      "best_net_inr": 23684.47391405,
+      "mean_net_inr": 903.3010778393808,
+      "median_net_inr": -240.2677994169993,
+      "n": 763,
+      "total_net_inr": 689218.7223914476,
+      "win_rate": 0.4416775884665793,
+      "worst_net_inr": -6602.019324253
+     }
+    },
+    "extreme_bucket_is_a_different_instrument": true,
+    "extreme_bucket_mean_mid": 530.0208387942333,
+    "extreme_bucket_mid_ratio": 1.7430038826418213,
+    "mean_by_bucket": [
+     -130.9435426923717,
+     61.32350838530118,
+     17.708958700543533,
+     12.357679223059343,
+     903.3010778393808
+    ],
+    "mean_mid_by_bucket": [
+     252.691874180865,
+     238.53695937090433,
+     292.3542267365662,
+     432.7557994757536,
+     530.0208387942333
+    ],
+    "mean_mid_falls_as_feature_rises": false,
+    "monotone_decreasing": false,
+    "monotone_increasing": false,
+    "other_buckets_mean_mid": 304.0847149410223,
+    "quantile_cuts": [
+     0.002172601086300488,
+     0.0025380710659898475,
+     0.002962188534587987,
+     0.003517209202167651
+    ],
+    "rows_with_feature": 3815,
+    "spread_between_extremes_inr": 1034.2446205317524,
+    "verdict": "NOT_ORDERED"
+   }
+  },
+  "quantity_unit_caveat": "quantity_unit_status is UNKNOWN on every record, so quote size is used only as a RATIO (the unit cancels) and never as a quantity",
+  "rows": 4769,
+  "scored": 3815,
+  "widest_quintile_counterfactual": {
+   "basis": "IN_SAMPLE_COUNTERFACTUAL_NOT_A_RESULT",
+   "dropped": {
+    "best_net_inr": 23684.47391405,
+    "mean_net_inr": 903.3010778393808,
+    "median_net_inr": -240.2677994169993,
+    "n": 763,
+    "total_net_inr": 689218.7223914476,
+    "win_rate": 0.4416775884665793,
+    "worst_net_inr": -6602.019324253
+   },
+   "kept": {
+    "best_net_inr": 23327.618393636007,
+    "mean_net_inr": -9.88834909586691,
+    "median_net_inr": -339.8400535242501,
+    "n": 3052,
+    "total_net_inr": -30179.241440586527,
+    "win_rate": 0.45314547837483615,
+    "worst_net_inr": -9019.092496638998
+   },
+   "note": "the quintile boundary was cut from these same rows, so this cannot be read as the net a gate would earn on fresh data. It says only whether the widest quotes were the losing ones in this sample."
+  }
+ },
+ "quote_refusals": {}
+}
