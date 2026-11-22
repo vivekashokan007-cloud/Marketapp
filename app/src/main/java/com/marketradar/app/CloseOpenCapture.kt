@@ -63,6 +63,7 @@ object CloseOpenCapture {
     const val MAX_QUEUE_ENTRIES = 240
 
     const val FRESHNESS_RECEIPT_ONLY = "RECEIPT_ONLY_UNKNOWN_FRESHNESS"
+    const val QUOTE_SOURCE = "UPSTOX_V2_OPTION_CHAIN_LIVE_POLL_RESPONSE"
 
     val UNDERLYING = linkedMapOf("NF" to "NSE_INDEX|Nifty 50", "BNF" to "NSE_INDEX|Nifty Bank")
     private val IST: ZoneId = ZoneId.of("Asia/Kolkata")
@@ -126,9 +127,10 @@ object CloseOpenCapture {
                acquisitions: List<Acquisition>): JSONObject {
         val out = JSONObject().put("version", VERSION)
         return try {
-            if (!isEnabled(filesDir)) return out.put("status", "DISABLED")
+            // window first, so outside both windows no file is read at all (not even the control)
             val slot = declaredSlot ?: return out.put("status", "NO_DECLARED_SLOT")
             val kind = slotKind(slot) ?: return out.put("status", "OUTSIDE_WINDOWS")
+            if (!isEnabled(filesDir)) return out.put("status", "DISABLED")
             val rejectedSoFar = overlapRejected.get()
             try {
                 executor.execute {
@@ -231,6 +233,16 @@ object CloseOpenCapture {
         fun done(status: String): JSONObject {
             so.put("result", status)
             writeSession(filesDir, d, ix, sess, so)
+            // The queue's close evidence moves only for a TWO_SIDED observation that is durably on
+            // disk: newly WRITTEN, or a DUPLICATE_NO_OP of one written earlier (e.g. a restart between
+            // the session write and the queue write). A cap-refused or failed write never marks it.
+            so.optJSONArray("observations")?.let { a ->
+                for (i in 0 until a.length()) a.optJSONObject(i)?.let { o ->
+                    val durable = o.optString("durable")
+                    if (o.optString("book_quality") == "TWO_SIDED" && (durable == "WRITTEN" || durable == "DUPLICATE_NO_OP"))
+                        findEntry(queue, d.toString() + "|" + o.optString("instrument_key"))?.let { e ->
+                            if (!e.has("close_last_two_sided_slot") || e.optString("close_last_two_sided_slot") < slot)
+                                e.put("close_last_two_sided_slot", slot) } } }
             writeQueue(filesDir, ix, queue)
             return out.put("status", status).put("durable_write", so.optString("durable_write"))
         }
@@ -268,7 +280,7 @@ object CloseOpenCapture {
         var twoSided = 0
         for (i in 0 until pins.length()) {
             val pin = pins.getJSONObject(i)
-            val r = observe(sess, env, pin, parsed, "CLOSE", null)
+            val r = observe(sess, env, pin, parsed, "CLOSE", null).put("instrument_key", pin.getString("instrument_key"))
             obsResults.put(r)
             if (r.optString("book_quality") == "TWO_SIDED") twoSided++
             // enqueue / refresh the exact contract for the next regular session
@@ -289,9 +301,6 @@ object CloseOpenCapture {
                 if (e.optString("state") == Q_REFUSED) bump(sess, "queue_refused_" + e.optString("reason"))
                 else bump(sess, "queue_enqueued")
             }
-            // only a NEW observation moves the queue's close evidence, so a retried poll cannot count twice
-            if (r.optString("book_quality") == "TWO_SIDED" && r.optString("durable") == "PENDING")
-                e.put("close_last_two_sided_slot", slot)
         }
         so.put("quote_receipt", if (twoSided == pins.length()) "ALL_TWO_SIDED" else "PARTIAL_$twoSided/${pins.length()}")
             .put("observations", obsResults)
@@ -333,13 +342,18 @@ object CloseOpenCapture {
             }
             if (!r.optBoolean("present")) bump(sess, "quote_contract_missing_" + r.optString("reason"))
             e.put("last_open_outcome", r.optString("reason", r.optString("book_quality")))
-            if (r.optString("book_quality") == "TWO_SIDED" && e.optString("state") == Q_QUEUED)
-                e.put("state", Q_OPEN_CAPTURED).put("open_first_two_sided_slot", slot)
             results.put(r.put("instrument_key", pin.getString("instrument_key")))
         }
         so.put("quote_receipt", if (chain == null) R_CHAIN_MISSING else "ATTEMPTED").put("observations", results)
         so.put("result", "OBSERVED")
         writeSession(filesDir, d, ix, sess, so)
+        // OPEN_CAPTURED only for a TWO_SIDED observation that is durably on disk (see closeSlot)
+        for (i in 0 until results.length()) results.getJSONObject(i).let { o ->
+            val durable = o.optString("durable")
+            if (o.optString("book_quality") == "TWO_SIDED" && (durable == "WRITTEN" || durable == "DUPLICATE_NO_OP"))
+                due.firstOrNull { it.getJSONObject("contract").optString("instrument_key") == o.optString("instrument_key") }
+                    ?.let { e -> if (e.optString("state") == Q_QUEUED)
+                        e.put("state", Q_OPEN_CAPTURED).put("open_first_two_sided_slot", slot) } }
         writeQueue(filesDir, ix, queue)
         return out.put("status", "OBSERVED").put("durable_write", so.optString("durable_write"))
     }
@@ -445,6 +459,9 @@ object CloseOpenCapture {
             .put("session_date", d.toString())
             .put("slot", slot)
             .put("slot_source", "SCHEDULER_SLOT")
+            // the chain this capture reads is the live poll's own option-chain response
+            // (MarketWatchService: "https://api.upstox.com/v2/option/chain?instrument_key=…")
+            .put("quote_source", QUOTE_SOURCE)
             .put("clocks", JSONObject()
                 .put("request_started_ms", acq?.requestStartedMs ?: JSONObject.NULL)
                 .put("acquisition_response_ms", if (ms > 0) ms else JSONObject.NULL)
@@ -596,9 +613,15 @@ object CloseOpenCapture {
         // counters + slot outcomes: allowed into the reserve above the observation bound
         val bytes = sess.toString()
         val storeOther = dirBytes(root(filesDir)) - (if (f.isFile) f.length() else 0L)
-        if (storeOther + bytes.length <= MAX_STORE_BYTES + CONTROL_RESERVE_BYTES) {
-            if (!atomicWrite(f, bytes)) so.put("durable_write", "WRITE_FAILED")
-        } else so.put("durable_write", "REFUSED_RESERVE_EXHAUSTED")
+        val failure = if (storeOther + bytes.length <= MAX_STORE_BYTES + CONTROL_RESERVE_BYTES) {
+            if (atomicWrite(f, bytes)) null else "WRITE_FAILED"
+        } else "REFUSED_RESERVE_EXHAUSTED"
+        if (failure != null) {
+            so.put("durable_write", failure)
+            so.optJSONArray("observations")?.let { a ->
+                for (i in 0 until a.length()) a.optJSONObject(i)?.let { o ->
+                    if (o.optString("durable") == "WRITTEN") o.put("durable", failure) } }
+        }
     }
 
     // ---------------------------------------------------------------- queue file

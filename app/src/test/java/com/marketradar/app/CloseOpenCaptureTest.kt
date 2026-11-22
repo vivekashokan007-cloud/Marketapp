@@ -122,6 +122,8 @@ class CloseOpenCaptureTest {
         assertEquals(5, st.getJSONObject("counters").getInt("scheduled"))
         assertEquals(30, st.getJSONObject("counters").getInt("durable_written"))
         assertEquals(30, st.getInt("export_included_records"))
+        val env0 = dExp.getJSONObject("section").getJSONObject("indices").getJSONObject("NF").getJSONArray("slot_envelopes").getJSONObject(0)
+        assertEquals(CloseOpenCapture.QUOTE_SOURCE, env0.getString("quote_source"))
         val obs1510 = st.getJSONObject("slots").getJSONObject("15:10").getJSONArray("observations")
         assertTrue((0 until obs1510.length()).all { obs1510.getJSONObject(it).getString("durable") == "WRITTEN" })
         writeSample(fd, listOf("2026-11-25", "2026-11-26"), "valid_pair")
@@ -380,7 +382,37 @@ class CloseOpenCaptureTest {
             assertEquals(0, records(exp, ix).length())
             val o = st.getJSONObject("slots").getJSONObject("15:10").getJSONArray("observations")
             assertTrue((0 until o.length()).all { o.getJSONObject(it).getString("durable") == "REFUSED_CAP" })
+            // R1 fix: a cap-refused close quote never becomes queue close evidence
+            assertTrue(entries(fd, ix).none { it.has("close_last_two_sided_slot") })
         }
+        // ...so at the next open the entries are refused for lack of a durable close quote
+        poll(fd, "2026-11-26", "09:15", chain("NF", 24600.0, NF_EXP), chain("BNF", 55100.0, BNF_EXP))
+        for (ix in listOf("NF", "BNF"))
+            assertTrue(entries(fd, ix).all { it.getString("state") == CloseOpenCapture.Q_REFUSED &&
+                it.getString("reason") == "no_two_sided_close_quote" })
+    }
+
+    @Test
+    fun aRestartBetweenTheSessionWriteAndTheQueueWriteIsRepairedByARetryWithoutDoubleCounting() {
+        val fd = tmp()
+        val nf = chain("NF", 24500.0, NF_EXP); val bnf = chain("BNF", 55000.0, BNF_EXP)
+        poll(fd, "2026-11-25", "15:10", nf, bnf)
+        // simulate a crash after the session file was written but before the queue's evidence was
+        val qf = fd.resolve(CloseOpenCapture.DIR_NAME).resolve("queue_NF.json")
+        val q = JSONObject(qf.readText())
+        for (i in 0 until q.getJSONArray("entries").length()) q.getJSONArray("entries").getJSONObject(i).remove("close_last_two_sided_slot")
+        qf.writeText(q.toString())
+        assertTrue(entries(fd, "NF").none { it.has("close_last_two_sided_slot") })
+        poll(fd, "2026-11-25", "15:10", nf, bnf)                       // identical retry after restart
+        assertTrue(entries(fd, "NF").all { it.getString("close_last_two_sided_slot") == "15:10" })
+        val c = CloseOpenCapture.exportSection(fd, "2026-11-25").getJSONObject("close_open")
+            .getJSONObject("stages").getJSONObject("NF").getJSONObject("counters")
+        assertEquals(6, c.getInt("durable_written"))                  // not 12
+        assertEquals(6, c.getInt("queue_enqueued"))                   // not 12
+        assertEquals(6, c.getInt("durable_duplicate_no_op"))
+        // and the open is captured from it
+        poll(fd, "2026-11-26", "09:15", chain("NF", 24600.0, NF_EXP), chain("BNF", 55100.0, BNF_EXP))
+        assertTrue(entries(fd, "NF").all { it.getString("state") == CloseOpenCapture.Q_OPEN_CAPTURED })
     }
 
     @Test
@@ -399,6 +431,10 @@ class CloseOpenCaptureTest {
         val exp = CloseOpenCapture.exportSection(fd, "2026-11-25")
         assertEquals(6, records(exp, "NF").length())   // the two accepted jobs still produced ONE set
         assertEquals("DISABLED", CloseOpenCapture.onPoll(tmp(), "2026-11-25", "15:10", acqs).getString("status"))
+        // outside both windows nothing is read or created, enabled or not
+        val fresh = tmp()
+        assertEquals("OUTSIDE_WINDOWS", CloseOpenCapture.onPoll(fresh, "2026-11-25", "12:00", acqs).getString("status"))
+        assertFalse(fresh.resolve(CloseOpenCapture.DIR_NAME).exists())
     }
 
     @Test
