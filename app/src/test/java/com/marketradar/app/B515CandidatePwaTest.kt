@@ -20,13 +20,13 @@ class B515CandidatePwaTest {
      *
      * Why this is centralised: SEVEN independent hardcoded copies of this identity existed, at FOUR different values
      * (877b02fd/517/2.6.86, 7005a751/523/2.6.92, 3f3f46ad/526/2.6.95, and 526/2.6.95 for the native pair alone);
-     * 3f3f46ad/526/2.6.95, 12a1920e/527/2.6.96, 524caa77/528/2.6.97, 5abafc93/529/2.6.98, 348a9a36/530/2.6.99, 742a655a/531/2.6.100 and 314abbff/532/2.6.101 are superseded by the 2.6.102 b533 expiry-day Paper BUY fallback pair, which is why these live in one place.
+     * 3f3f46ad/526/2.6.95, 12a1920e/527/2.6.96, 524caa77/528/2.6.97, 5abafc93/529/2.6.98, 348a9a36/530/2.6.99, 742a655a/531/2.6.100 and 314abbff/532/2.6.101 are superseded by the 2.6.102 b533 expiry-day Paper BUY fallback pair; 2187cb87 (same identity) is superseded by f534782e, which adds only the close_open_capture opt-in card (no version bump), which is why these live in one place.
      * Two of them were in *this file* and disagreed with each other, and only the ones reached by the push-triggered
      * CI were ever noticed. This class compiles into testDebugUnitTest AND testCandidateUnitTest, so these literals
      * are enforced on every push and in the candidate variant, and the duplicates are no longer needed.
      */
-    private val acceptedMarketViviSha = "2187cb877b74116a7c01a6d76f433d356e4c7dad"
-    private val acceptedAppJsSha256 = "2c12e7153e4d960d1c9f7469c36b5f18cd0a25daae5ceb0bebb1088037068af8"
+    private val acceptedMarketViviSha = "f534782e01b4dd843a674b8dee932c10df629302"
+    private val acceptedAppJsSha256 = "47105e4d75fe41e655cb2496e078a4d5ad343618835055ebabc5c56f8585afe2"
     private val acceptedVersionName = "2.6.102"
     private val acceptedVersionCode = 533
 

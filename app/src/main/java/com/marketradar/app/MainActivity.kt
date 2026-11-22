@@ -832,6 +832,19 @@ class MainActivity : AppCompatActivity() {
                         if (typeof AndroidBridge.getC1CapturePilotStatus !== 'function') return JSON.stringify({ available: false, reason: 'NATIVE_METHOD_ABSENT' });
                         return AndroidBridge.getC1CapturePilotStatus();
                     },
+                    // close_open_capture (research, default OFF; native refuses the switch unless BuildConfig.PWA_CANDIDATE).
+                    getCloseOpenCaptureStatus: function() {
+                        if (typeof AndroidBridge.getCloseOpenCaptureStatus !== 'function') return JSON.stringify({ available: false, reason: 'NATIVE_METHOD_ABSENT' });
+                        return AndroidBridge.getCloseOpenCaptureStatus();
+                    },
+                    getCloseOpenCaptureState: function() {
+                        if (typeof AndroidBridge.getCloseOpenCaptureState !== 'function') return JSON.stringify({ state: 'NATIVE_METHOD_ABSENT' });
+                        return AndroidBridge.getCloseOpenCaptureState();
+                    },
+                    setCloseOpenCapture: function(on) {
+                        if (typeof AndroidBridge.setCloseOpenCapture !== 'function') return JSON.stringify({ ok: false, status: 'NATIVE_METHOD_ABSENT' });
+                        return AndroidBridge.setCloseOpenCapture(on === true);
+                    },
                     triggerMLOnlineUpdate: function(j) { AndroidBridge.triggerMLOnlineUpdate(j); },
                     triggerMLRetrain: function() { return AndroidBridge.triggerMLRetrain(); },
                     triggerDayEvaluation: function() { return AndroidBridge.triggerDayEvaluation(); },
