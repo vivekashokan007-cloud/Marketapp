@@ -1,0 +1,12 @@
+{
+  "approval_reference": "22 November 2026 IST, Market Radar project chat. In response to explicit request for the signed b535 candidate APK for Paper testing, Vivek replied Yes I approve.",
+  "approved_by": "Vivek Ashokan P (Market Radar owner)",
+  "artifact_only": true,
+  "cert_sha256": "fb6042a2eb61045368e8d7b95db6f6d49b04d4b8da2e51b865ca77803a44b478",
+  "codex_final_check_reference": "Verified paired review heads and PWA pin, 29 focused Python tests, 354 PWA passes with one skip, and nine native bridge facade tests. Android and repository-wide checks run in the signed candidate workflow.",
+  "native_sha": "3462cf926af9df7164d2c05132258846a6f1ac94",
+  "pwa_sha": "cbb65bda0642a421865261a36dc62aca06e2e1d4",
+  "schema": "marketradar.candidate_build_authorization.v1",
+  "version_code": "535",
+  "version_name": "2.6.104"
+}
