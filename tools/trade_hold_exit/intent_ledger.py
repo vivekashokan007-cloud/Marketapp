@@ -42,7 +42,7 @@ import hashlib
 import json
 import os
 
-LEDGER_VERSION = 'trade_hold_exit_intent_ledger_v1_publication_clock_anchored'
+LEDGER_VERSION = 'trade_hold_exit_intent_ledger_v2_source_poll_observation_identity'
 
 BUY_ACTIONS = ('BUY_CE', 'BUY_PE')
 SELL_ACTIONS = ('SELL_CE', 'SELL_PE')
@@ -191,6 +191,11 @@ def all_decisions_for(export, index):
         out.append({'decision_id': r.get('decision_id'),
                     'index_key': index,
                     'causal_from': _iso(causal),
+                    # production's observation identity is 'index|source_poll_ts' and its order
+                    # is published_at (index_single_leg_v1.exit_contract). Carrying only the
+                    # publication time loses the identity, so two publications of one poll look
+                    # like two observations. decision_poll_ts IS the source poll label.
+                    'source_poll_ts': r.get('decision_poll_ts'),
                     'causal_clock_basis': (BASIS_PUBLISHED if pub is not None
                                            else BASIS_RECEIPT),
                     'direction': (r.get('direction') or {}).get('value'),

@@ -158,7 +158,9 @@ production ₹29.9121273684, difference ₹0.0000165424 — matching
 ₹192,117) the predicted total is ₹0.00022670 against an observed net difference of ₹0.00022668.
 
 So the delta is **fully attributed and is not floating-point noise**. The money is negligible
-(₹0.23 per ₹1 crore of turnover) but the defect is real and belongs in production's fee table, not
+(**₹0.0118** per ₹1 crore of turnover — the first version of this line said ₹0.23, which was
+wrong by about 20×: `1e7 × 1e-9 × 1.18 = 0.0118`; the ₹0.00022668 on ₹192,117 was correct) but the
+defect is real and belongs in production's fee table, not
 in this replay. Recorded here; **not** fixed in this change, which touches no production code.
 
 ### F6 — provisional flag: corrected claim, no numbers

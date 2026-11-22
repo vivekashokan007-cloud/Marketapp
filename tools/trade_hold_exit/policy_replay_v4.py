@@ -56,8 +56,8 @@ for p in (HERE, os.path.join(REPO, 'tools', 'premium_model_validation')):
 
 import intent_replay as IR            # noqa: E402
 
-VERSION = 'trade_hold_exit_policy_replay_v3_production_oracle_f1_to_f6'
-SUPERSEDES = 'trade_hold_exit_policy_replay_v2_current_policy_fidelity_cross_session'
+VERSION = 'trade_hold_exit_policy_replay_v4_contract_identity_reservation_ttl_obs_identity'
+SUPERSEDES = 'trade_hold_exit_policy_replay_v3_production_oracle_f1_to_f6'
 
 TIME_EXIT_HM = (15, 5)
 
@@ -68,6 +68,7 @@ ST_EXIT_DECIDED = 'EXIT_DECIDED_PENDING_FILL'
 ST_CLOSED = 'CLOSED'
 ST_CANCELLED = 'RESERVATION_CANCELLED_SUPERSEDED'
 ST_UNFILLED = 'RESERVATION_EXPIRED_NO_QUOTE_WITHIN_TOLERANCE'
+ST_EXPIRED = 'RESERVATION_EXPIRED_SLOT_RELEASED'          # D2
 ST_UNRESOLVED = 'UNRESOLVED_AT_STUDY_END'
 
 R_WINDOW = 'REFUSED_ENTRY_WINDOW_CLOSED'
@@ -81,6 +82,10 @@ R_CASH = 'REFUSED_INSUFFICIENT_CASH'
 R_SELL = 'REFUSED_SELL_UNCOVERED_SHORTS_EXCLUDED'
 R_NO_SERIES = 'REFUSED_NO_QUOTE_SERIES_FOR_CONTRACT'
 R_SUPERSEDED = 'REFUSED_DECISION_SUPERSEDED_BEFORE_FILL'
+# D2 -- a pending entry no longer survives its own deadline or its session
+R_RESERVATION_DEADLINE = 'REFUSED_RESERVATION_QUOTE_DEADLINE_PASSED'
+R_RESERVATION_SESSION_END = 'REFUSED_RESERVATION_ENTRY_SESSION_ENDED'
+R_IDENTITY_REVALIDATION = 'REFUSED_DECISION_IDENTITY_REVALIDATION_FAILED'
 
 E_OVERDUE = 'TIME_EXIT_OVERDUE'
 E_TIME = 'TIME_EXIT'
@@ -194,6 +199,22 @@ def run(ledger_path, chain_path, ledger_root, production_root,
                'broker snapshot; freshness, quantities and admission evidence are absent',
                'equal-time ordering: decisions are processed before quote polls at the same '
                'second, and NF before BNF, declared not observed'],
+           'contract_identity': {
+               'quote_cache_key': 'session|index|expiry|strike|option_type',
+               'position_identity': 'index|expiry|strike|option_type, saved at the fill and '
+                                    'used for every later quote resolution',
+               'note': 'D1 -- v3 keyed without expiry, so another series on the same strike '
+                       'could price or close a position'},
+           'reservation_policy': {
+               'quote_deadline': 'published_at + tolerance_min, INCLUSIVE',
+               'tolerance_min': tolerance_min,
+               'expires_on': 'the declared deadline or the end of the entry session, '
+                             'whichever is first; the index slot is released either way',
+               'checked': 'before any quote lookup, so a late first quote cannot fill',
+               'identity_revalidated_at_fill': True,
+               'note': 'D2 -- v3 skipped a prior-session reservation without expiring it, so '
+                       'its slot stayed occupied, and tested the deadline only when no quote '
+                       'existed'},
            'sessions': {}, 'discrepancy_inputs': {}}
 
     # ── events ────────────────────────────────────────────────────────────────────────────────
@@ -201,12 +222,40 @@ def run(ledger_path, chain_path, ledger_root, production_root,
                                                    IR._hhmmss(it['causal_from']),
                                                    it['decision_id']))
     decisions = L.get('decisions') or []
-    obs_by = {}          # (session, index) -> [(hhmmss, direction)]
+    # D3: production's persisted exit contract declares
+    #       observation_order    = 'published_at'
+    #       observation_identity = 'index|source_poll_ts'
+    # so several publications derived from ONE source poll are ONE observation, and the latest
+    # publication of that poll is the one that counts. v3 passed every published row straight to
+    # `contrary_confirmation`, so two publications of a single opposite poll would have counted as
+    # two consecutive opposite observations and exited a position on one poll's worth of evidence.
+    # Ordering is by published_at; identity is (index, source_poll_ts) with a documented fallback
+    # when the source poll is absent.
+    obs_by = {}          # (session, index) -> [(hhmmss, direction, decision_id)]
+    obs_dedup = {'rows_in': len(decisions), 'collapsed': 0, 'no_source_poll': 0,
+                 'identity': 'index|source_poll_ts', 'order': 'published_at',
+                 'fallback': 'index|published_at|decision_id when source_poll_ts is absent'}
     for d in decisions:
-        obs_by.setdefault((d['causal_from'][:10], d['index_key']), []).append(
-            (IR._hhmmss(d['causal_from']), d['direction'], d['decision_id']))
+        key = (d['causal_from'][:10], d['index_key'])
+        src = d.get('source_poll_ts')
+        if not src:
+            obs_dedup['no_source_poll'] += 1
+            src = 'NO_SOURCE_POLL:%s:%s' % (d['causal_from'], d.get('decision_id') or '')
+        obs_by.setdefault(key, {})
+        prior = obs_by[key].get(src)
+        row = (IR._hhmmss(d['causal_from']), d['direction'], d['decision_id'])
+        if prior is None or row[0] > prior[0]:
+            # latest publication of this source poll wins; an earlier one is not a second
+            # observation of the market
+            if prior is not None:
+                obs_dedup['collapsed'] += 1
+            obs_by[key][src] = row
+        else:
+            obs_dedup['collapsed'] += 1
     for k in obs_by:
-        obs_by[k].sort()
+        obs_by[k] = sorted(obs_by[k].values())
+    obs_dedup['rows_out'] = sum(len(v) for v in obs_by.values())
+    out['observation_identity'] = obs_dedup
 
     # every session the study covers, including ones with no entry intents (F3)
     sessions = sorted({k[0] for k in obs_by} | {k.split('|')[0] for k in chain}
@@ -221,8 +270,21 @@ def run(ledger_path, chain_path, ledger_root, production_root,
     max_committed = 0.0
     all_pos = []
 
-    def contract_series(session, ix, strike, otype):
-        return chain.get('%s|%s|%d|%s' % (session, ix, strike, otype))
+    def contract_series(session, ix, expiry, strike, otype):
+        """D1: a series is identified by its OWN contract, expiry included.
+
+        v3 keyed on session|index|strike|option_type, so a quote from another expiry on the same
+        strike could price or close a position in a different series. NSE lists one strike on
+        several expiries, so that is a real collision, not a hypothetical one. The expiry is now
+        part of the key and a position resolves quotes only by the identity it was opened with.
+        """
+        if not expiry:
+            return None
+        return chain.get('%s|%s|%s|%d|%s' % (session, ix, expiry, strike, otype))
+
+    def series_for(session, p):
+        return contract_series(session, p['index_key'], p.get('expiry'),
+                               p['strike'], p['option_type'])
 
     for session in sessions:
         rows = [it for it in intents if it['session_date'] == session]
@@ -249,7 +311,7 @@ def run(ledger_path, chain_path, ledger_root, production_root,
                 # F3: the SAME contract as quoted in the session being monitored -- keying this
                 # to the entry session made a carried position unclosable, which was the whole
                 # defect F3 exists to fix.
-                ser = contract_series(session, ix, p['strike'], p['option_type'])
+                ser = series_for(session, p)
                 if not ser:
                     continue
                 q = next(((t, b, a) for t, b, a in ser if t == now), None)
@@ -325,21 +387,55 @@ def run(ledger_path, chain_path, ledger_root, production_root,
                                         entry_session=entry_day))
                 del held[ix]
 
+        def expire_reservations(now=None, session_over=False):
+            """D2: a reservation expires at its declared quote deadline or the end of its entry
+            session, whichever comes first, and its index slot is released when it does.
+
+            v3 did neither. A reservation from an earlier session was skipped with `continue`, so
+            it never expired and its slot stayed occupied for the rest of the study, and the
+            deadline was only consulted when no quote existed, so the first matching quote was
+            accepted however late it arrived.
+
+            **Declared convention:** the deadline is `published_at + tolerance_min` and it is
+            INCLUSIVE -- a quote stamped exactly at the deadline still fills; one second later
+            does not. `tolerance_min` is the frozen 10-minute (two-poll) tolerance, not a
+            parameter tuned here.
+            """
+            for ix in list(reserved):
+                r = reserved[ix]
+                if session_over or r['session_date'] != session:
+                    r['state'] = ST_EXPIRED
+                    refuse(r['intent'], R_RESERVATION_SESSION_END,
+                           {'reserved_session': r['session_date'], 'deadline': r['deadline']},
+                           at=now or r['deadline'])
+                    del reserved[ix]
+                    continue
+                if now is not None and _sec(now) > _sec(r['deadline']):
+                    r['state'] = ST_EXPIRED
+                    refuse(r['intent'], R_RESERVATION_DEADLINE,
+                           {'deadline': r['deadline'], 'tolerance_min': tolerance_min}, at=now)
+                    del reserved[ix]
+
         def try_fill(now):
             """F4: a reservation becomes a position only at an admissible observation."""
             nonlocal cash, open_premium, fees_paid, max_committed
+            # D2: the deadline is tested BEFORE any quote lookup, so a late first quote cannot
+            # fill and cannot keep the slot.
+            expire_reservations(now)
             for ix in list(reserved):
                 r = reserved[ix]
                 it = r['intent']
-                if r['session_date'] != session:
+                # D2: identity is revalidated at the fill, not trusted from reservation time
+                if (it.get('decision_id') != r['decision_id']
+                        or not it.get('identity_complete') or not it.get('joinable')):
+                    r['state'] = ST_CANCELLED
+                    refuse(it, R_IDENTITY_REVALIDATION, {'reserved_as': r['decision_id']}, at=now)
+                    del reserved[ix]
                     continue
-                ser = contract_series(session, ix, it['strike'], it['option_type'])
+                ser = contract_series(session, ix, it.get('expiry'),
+                                      it['strike'], it['option_type'])
                 q = next(((t, b, a) for t, b, a in (ser or []) if t == now), None)
                 if q is None:
-                    if _sec(now) - _sec(r['published_at']) > tolerance_min * 60:
-                        r['state'] = ST_UNFILLED
-                        refuse(it, R_NO_SERIES, {'tolerance_min': tolerance_min}, at=now)
-                        del reserved[ix]
                     continue
                 # supersession, against EVERY authority decision
                 later = [(t, d, dirn) for t, dirn, d in obs_by.get((session, ix), [])
@@ -392,6 +488,8 @@ def run(ledger_path, chain_path, ledger_root, production_root,
                 p = {'state': ST_FILLED, 'session_date': session,
                      'decision_id': it['decision_id'], 'index_key': ix,
                      'strike': it['strike'], 'option_type': it['option_type'],
+                     # D1: the saved contract identity, carried for the position's whole life
+                     'expiry': it.get('expiry'),
                      'contract': '%d%s' % (it['strike'], it['option_type']),
                      'entry_direction': it['direction_value'],
                      'published_at': r['published_at'], 'entry_poll': now,
@@ -440,14 +538,19 @@ def run(ledger_path, chain_path, ledger_root, production_root,
                     if since < SL.REENTRY_GAP_MIN:
                         refuse(it, R_GAP, {'minutes_since_last_exit': round(since, 1)})
                         continue
-                if not contract_series(session, ix, it['strike'], it['option_type']):
-                    refuse(it, R_NO_SERIES)
+                if not contract_series(session, ix, it.get('expiry'),
+                                       it['strike'], it['option_type']):
+                    refuse(it, R_NO_SERIES, {'expiry': it.get('expiry')})
                     continue
                 reserved[ix] = {'intent': it, 'session_date': session,
-                                'published_at': now, 'state': ST_RESERVED}
+                                'decision_id': it['decision_id'],
+                                'published_at': now, 'state': ST_RESERVED,
+                                # D2: declared at reservation time, inclusive
+                                'deadline': IR._plus_hhmmss(now, tolerance_min)}
                 ledger_rows.append(dict(kind='RESERVED', decision_id=it['decision_id'],
-                                        at=now, index_key=ix,
+                                        at=now, index_key=ix, expiry=it.get('expiry'),
                                         contract='%d%s' % (it['strike'], it['option_type']),
+                                        quote_deadline=reserved[ix]['deadline'],
                                         direction=it['direction_value']))
 
         # chronological: decision publications and quote polls, merged
@@ -456,6 +559,9 @@ def run(ledger_path, chain_path, ledger_root, production_root,
             monitor(now)        # exits first: an exit frees the index at this instant
             try_fill(now)
             reserve_at(now)
+        # D2: a pending entry never outlives its entry session. A FILLED position does carry
+        # over -- it keeps its own saved exit plan across the rollover (F3).
+        expire_reservations(session_over=True)
         # record observations each held position has now seen, for cross-session confirmation
         for ix, p in held.items():
             p['obs_seen'] = p.get('obs_seen', []) + [
@@ -686,7 +792,7 @@ def main(argv=None):
               a.horizon_min, a.capital_inr, a.max_risk_pct, a.tolerance_min)
     if a.out:
         os.makedirs(a.out, exist_ok=True)
-        q = os.path.join(a.out, 'v3_%s_%dmin.json' % (a.policy.lower(), a.horizon_min))
+        q = os.path.join(a.out, 'v4_%s_%dmin.json' % (a.policy.lower(), a.horizon_min))
         with open(q, 'w', encoding='utf-8') as fh:
             json.dump(out, fh, indent=1, sort_keys=True, default=str)
         out['_written'] = q

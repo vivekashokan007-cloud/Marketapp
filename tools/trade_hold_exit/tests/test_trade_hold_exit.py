@@ -129,27 +129,82 @@ class UntrustedChainPayload(unittest.TestCase):
 
     def test_a_well_formed_payload_parses(self):
         p = self.write(self.wrap([{'session_date': '2026-11-20', 'index_key': 'BNF',
-                                   'csv': '63100,CE,09:15:03,421.25,423.6;'
-                                          '63100,CE,09:20:06,260.75,261.95'}]))
+                                   'csv': '63100,CE,2026-11-23,09:15:03,421.25,423.6;'
+                                          '63100,CE,2026-11-23,09:20:06,260.75,261.95'}]))
         got = LC.load([p])
         self.assertEqual(got['summary']['contracts'], 1)
         self.assertEqual(got['summary']['quotes'], 2)
         self.assertEqual(got['summary']['malformed'], 0)
-        self.assertEqual(got['contracts']['2026-11-20|BNF|63100|CE'][0],
+        self.assertEqual(got['contracts']['2026-11-20|BNF|2026-11-23|63100|CE'][0],
                          ['09:15:03', 421.25, 423.6])
 
-    def test_a_sixth_ltp_field_is_accepted_and_dropped(self):
-        """LTP is display-only; executable economics never inherit an LTP fallback."""
+    def test_two_expiries_on_one_strike_are_two_contracts(self):
+        """D1: the whole point of the expiry-keyed cache. v1 merged these into one series,
+        so a quote from one expiry could price or close a position in the other."""
+        p = self.write(self.wrap([{'session_date': '2026-11-20', 'index_key': 'BNF',
+                                   'csv': '63100,CE,2026-11-23,09:15:03,421.25,423.6;'
+                                          '63100,CE,2026-11-30,09:15:03,512.00,514.0'}]))
+        got = LC.load([p])
+        self.assertEqual(got['summary']['contracts'], 2)
+        self.assertEqual(got['summary']['quotes'], 2)
+        self.assertEqual(got['summary']['contracts_with_duplicate_stamps'], 0)
+        self.assertEqual(got['contracts']['2026-11-20|BNF|2026-11-23|63100|CE'][0][1], 421.25)
+        self.assertEqual(got['contracts']['2026-11-20|BNF|2026-11-30|63100|CE'][0][1], 512.0)
+
+    def test_the_v1_shape_with_no_group_expiry_yields_no_contracts(self):
+        """An expiry must reach every quote from the schema or the row group. With neither,
+        the rows are malformed -- never keyed on a guessed identity.
+
+        (My first version of this test asserted the loader refuses the v1 SCHEMA outright. It
+        does not, and should not: a read grouped by expiry supplies it per row group. The
+        contract is that a quote with no expiry from either source is malformed.)"""
+        p = self.write(self.wrap([{'session_date': '2026-11-20', 'index_key': 'NF',
+                                   'csv': '25550,CE,09:15:03,1,2;25550,CE,09:20:03,1,2'}]))
+        got = LC.load([p], LC.SCHEMA_V1_NO_EXPIRY)
+        self.assertEqual(got['summary']['contracts'], 0)
+        self.assertEqual(got['summary']['malformed'], 2)
+
+    def test_an_unparseable_expiry_is_malformed_not_accepted(self):
+        p = self.write(self.wrap([{'session_date': '2026-11-20', 'index_key': 'NF',
+                                   'csv': '25550,CE,NOV,09:15:03,1,2'}]))
+        got = LC.load([p])
+        self.assertEqual(got['summary']['contracts'], 0)
+        self.assertEqual(got['summary']['malformed'], 1)
+
+    def test_a_sixth_field_is_not_guessed_between_expiry_and_ltp(self):
+        """Both the expiry shape and the v1+ltp shape have six fields. Declaring the schema
+        is what tells them apart; an LTP read under the expiry schema is malformed, not an
+        expiry."""
         p = self.write(self.wrap([{'session_date': '2026-11-20', 'index_key': 'NF',
                                    'csv': '25550,CE,09:15:03,134.65,135.8,135.0'}]))
-        got = LC.load([p])
+        got = LC.load([p])                       # default schema expects expiry in position 3
+        self.assertEqual(got['summary']['quotes'], 0)
+        self.assertEqual(got['summary']['malformed'], 1)
+
+    def test_ltp_is_parsed_and_dropped_when_it_is_declared(self):
+        """LTP is display-only; executable economics never inherit an LTP fallback."""
+        p = self.write(self.wrap([{'session_date': '2026-11-20', 'index_key': 'NF',
+                                   'csv': '25550,CE,2026-11-23,09:15:03,134.65,135.8,135.0'}]))
+        got = LC.load([p], 'strike,option_type,expiry,hhmmss,bid,ask,ltp')
         self.assertEqual(got['summary']['malformed'], 0)
-        self.assertEqual(len(got['contracts']['2026-11-20|NF|25550|CE'][0]), 3)
+        self.assertEqual(len(got['contracts']['2026-11-20|NF|2026-11-23|25550|CE'][0]), 3)
+
+    def test_the_expiry_may_be_declared_once_per_row_group(self):
+        """`group by session_date, index_key, expiry` puts the expiry on the row, not in the
+        CSV. That is a complete contract identity and is accepted."""
+        p = self.write(self.wrap([{'session_date': '2026-11-20', 'index_key': 'NF',
+                                   'expiry': '2026-11-23',
+                                   'csv': '25550,CE,09:15:03,134.65,135.8'}]))
+        got = LC.load([p], LC.SCHEMA_V1_NO_EXPIRY)
+        self.assertEqual(got['summary']['malformed'], 0)
+        self.assertEqual(got['contracts']['2026-11-20|NF|2026-11-23|25550|CE'][0],
+                         ['09:15:03', 134.65, 135.8])
 
     def test_a_malformed_record_is_counted_not_guessed(self):
         p = self.write(self.wrap([{'session_date': '2026-11-20', 'index_key': 'NF',
-                                   'csv': 'nonsense;25550,XX,09:15:03,1,2;'
-                                          '25550,CE,bad-time,1,2;25550,CE,09:15:03,a,b'}]))
+                                   'csv': 'nonsense;25550,XX,2026-11-23,09:15:03,1,2;'
+                                          '25550,CE,2026-11-23,bad-time,1,2;'
+                                          '25550,CE,2026-11-23,09:15:03,a,b'}]))
         got = LC.load([p])
         self.assertEqual(got['summary']['quotes'], 0)
         self.assertEqual(got['summary']['malformed'], 4)
@@ -162,7 +217,8 @@ class UntrustedChainPayload(unittest.TestCase):
 
     def test_a_repeated_stamp_is_one_observation_and_is_reported(self):
         p = self.write(self.wrap([{'session_date': '2026-11-20', 'index_key': 'NF',
-                                   'csv': '25550,CE,09:15:03,1,2;25550,CE,09:15:03,1,2'}]))
+                                   'csv': '25550,CE,2026-11-23,09:15:03,1,2;'
+                                          '25550,CE,2026-11-23,09:15:03,1,2'}]))
         got = LC.load([p])
         self.assertEqual(got['summary']['quotes'], 1)
         self.assertEqual(got['summary']['contracts_with_duplicate_stamps'], 1)

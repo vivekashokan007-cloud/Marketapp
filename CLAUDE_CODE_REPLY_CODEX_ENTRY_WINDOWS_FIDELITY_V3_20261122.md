@@ -218,7 +218,12 @@ difference        ₹0.0000165424   =  14019 × 1e-9 × 1.18   (matches to 1e-9)
 Across all twelve executed legs (total turnover ₹192,117) the predicted difference is ₹0.00022670
 against ₹0.00022668 observed.
 
-The money is negligible — ₹0.23 per ₹1 crore of turnover — but the defect is real, it is in
+**Corrected 22 Nov after review:** the per-crore figure in the first version of this memo was
+wrong. `1e7 × 1e-9 × 1.18` is **₹0.0118 per ₹1 crore of turnover**, not ₹0.23 — an error of about
+20×, mine, in the only line of this section that was not computed from the data. The ₹0.00022668
+on ₹192,117 was right and is unchanged.
+
+The money is negligible — ₹0.0118 per ₹1 crore of turnover — but the defect is real, it is in
 production's fee table rather than in this replay, and the research ledger is the more correct of
 the two on this point. **Recorded, not fixed.** This change touches no production code, and fixing
 a production fee rate is outside what any of these handoffs authorise.
