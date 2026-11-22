@@ -25,7 +25,8 @@ is empty.
 | `index_direction.py` | realised index direction from `parts.authority_doc.history[index].spot`, the decision-poll trail, with the premium proxy recomputed beside it. A session whose `authority_doc` is null is reported UNOBSERVABLE; no direction is claimed for it |
 | `direction_baseline.py` | the frozen direction-only baseline and its premium-model ablation, scored strictly to `PREDECLARATION_DIRECTION_BASELINE_20261122.md`. Carries its own challenge block: the call/put side split, concentration, and what the unresolved exits would have to be worth for the gain to vanish |
 | `PREDECLARATION_DIRECTION_BASELINE_20261122.md` | the baseline, committed alone before the code that scores it; a test checks the ordering from git history |
-| `tests/` | 202 checks, no network. The ones needing real inputs skip loudly without them |
+| `field_inventory.py` | which fields actually exist, counted over every observation and decision poll, with ABSENT and NULL kept distinct because they lead to different next steps. The research map is ranked on its output, not on preference |
+| `tests/` | 218 checks, no network. The ones needing real inputs skip loudly without them |
 | `results/` | the printed runs and machine-readable scores for 12 and 16 November |
 
 ## The answer, in three lines

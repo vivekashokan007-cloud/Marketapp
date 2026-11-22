@@ -1,0 +1,667 @@
+{
+ "by_verdict": {
+  "PARTIAL": [
+   "record:bbo.ask",
+   "record:bbo.ask_qty",
+   "record:bbo.bid",
+   "record:bbo.bid_qty",
+   "record:bbo.book_status",
+   "record:bbo.executable_mid_computed",
+   "record:bbo.ltp",
+   "record:bbo.quantity_unit_status",
+   "record:identity.strike",
+   "record:iv.authoritative_resolved",
+   "record:iv.greeks",
+   "record:iv.source",
+   "record:iv.unit_status",
+   "session:caps",
+   "session:cohort.expiry",
+   "session:cohort.paired_strikes",
+   "session:cohort.selection_spot",
+   "session:cohort.underlying_key",
+   "session:evidence_context.clock_provenance",
+   "session:integrity",
+   "session:references.lot_resolution",
+   "trail:direction.er",
+   "trail:direction.strength",
+   "trail:direction.z_30",
+   "trail:direction.z_open",
+   "trail:lineage.anchor_30_ts",
+   "trail:lineage.open_ref_ts",
+   "trail:why.ml.reason",
+   "trail:why.sl.action",
+   "trail:why.sl.state",
+   "trail:why.sl.strike"
+  ],
+  "UNUSABLE_ABSENT": [
+   "record:exchange_timestamp",
+   "record:greeks.delta",
+   "record:greeks.theta",
+   "record:greeks.vega",
+   "record:oi",
+   "record:oi_change",
+   "record:vendor_timestamp",
+   "record:volume",
+   "session:margin",
+   "session:margin_evidence"
+  ],
+  "UNUSABLE_ALWAYS_NULL": [
+   "record:iv.market_data",
+   "trail:why.ml.selected"
+  ],
+  "USABLE": [
+   "record:identity.verified",
+   "record:outcome",
+   "trail:direction.value",
+   "trail:regime",
+   "trail:spot.asof",
+   "trail:spot.value",
+   "trail:why.act",
+   "trail:why.dte",
+   "trail:why.expiry"
+  ]
+ },
+ "exports": [
+  {
+   "file": "export_2026-11-12.json",
+   "session": "2026-11-12"
+  },
+  {
+   "file": "export_2026-11-13.json",
+   "session": "2026-11-13"
+  },
+  {
+   "file": "export_2026-11-16.json",
+   "session": "2026-11-16"
+  },
+  {
+   "file": "export_2026-11-17.json",
+   "session": "2026-11-17"
+  },
+  {
+   "file": "export_2026-11-18.json",
+   "session": "2026-11-18"
+  },
+  {
+   "file": "export_2026-11-19.json",
+   "session": "2026-11-19"
+  },
+  {
+   "file": "export_2026-11-20.json",
+   "session": "2026-11-20"
+  }
+ ],
+ "inventory_version": "export_field_inventory_v1_presence_null_absent",
+ "per_session": {
+  "2026-11-12": {
+   "authority_doc_present": true,
+   "indices": {
+    "BNF": {
+     "records": 323,
+     "trail_polls": 73
+    },
+    "NF": {
+     "records": 318,
+     "trail_polls": 73
+    }
+   }
+  },
+  "2026-11-13": {
+   "authority_doc_present": true,
+   "indices": {
+    "BNF": {
+     "records": 0,
+     "trail_polls": 41
+    },
+    "NF": {
+     "records": 0,
+     "trail_polls": 41
+    }
+   }
+  },
+  "2026-11-16": {
+   "authority_doc_present": false,
+   "indices": {
+    "BNF": {
+     "records": 414,
+     "trail_polls": 0
+    },
+    "NF": {
+     "records": 414,
+     "trail_polls": 0
+    }
+   }
+  },
+  "2026-11-17": {
+   "authority_doc_present": false,
+   "indices": {
+    "BNF": {
+     "records": 414,
+     "trail_polls": 0
+    },
+    "NF": {
+     "records": 414,
+     "trail_polls": 0
+    }
+   }
+  },
+  "2026-11-18": {
+   "authority_doc_present": true,
+   "indices": {
+    "BNF": {
+     "records": 414,
+     "trail_polls": 78
+    },
+    "NF": {
+     "records": 414,
+     "trail_polls": 78
+    }
+   }
+  },
+  "2026-11-19": {
+   "authority_doc_present": true,
+   "indices": {
+    "BNF": {
+     "records": 414,
+     "trail_polls": 78
+    },
+    "NF": {
+     "records": 414,
+     "trail_polls": 78
+    }
+   }
+  },
+  "2026-11-20": {
+   "authority_doc_present": true,
+   "indices": {
+    "BNF": {
+     "records": 414,
+     "trail_polls": 77
+    },
+    "NF": {
+     "records": 414,
+     "trail_polls": 77
+    }
+   }
+  }
+ },
+ "pooled": {
+  "record_fields": {
+   "bbo.ask": {
+    "absent": 12,
+    "example_value": 814.8,
+    "null": 0,
+    "present": 4769,
+    "present_share": 0.9974900648399916,
+    "rows": 4781,
+    "verdict": "PARTIAL"
+   },
+   "bbo.ask_qty": {
+    "absent": 12,
+    "example_value": 60,
+    "null": 0,
+    "present": 4769,
+    "present_share": 0.9974900648399916,
+    "rows": 4781,
+    "verdict": "PARTIAL"
+   },
+   "bbo.bid": {
+    "absent": 12,
+    "example_value": 811.8,
+    "null": 0,
+    "present": 4769,
+    "present_share": 0.9974900648399916,
+    "rows": 4781,
+    "verdict": "PARTIAL"
+   },
+   "bbo.bid_qty": {
+    "absent": 12,
+    "example_value": 60,
+    "null": 0,
+    "present": 4769,
+    "present_share": 0.9974900648399916,
+    "rows": 4781,
+    "verdict": "PARTIAL"
+   },
+   "bbo.book_status": {
+    "absent": 12,
+    "example_value": "TWO_SIDED",
+    "null": 0,
+    "present": 4769,
+    "present_share": 0.9974900648399916,
+    "rows": 4781,
+    "verdict": "PARTIAL"
+   },
+   "bbo.executable_mid_computed": {
+    "absent": 12,
+    "example_value": false,
+    "null": 0,
+    "present": 4769,
+    "present_share": 0.9974900648399916,
+    "rows": 4781,
+    "verdict": "PARTIAL"
+   },
+   "bbo.ltp": {
+    "absent": 12,
+    "example_value": 813.05,
+    "null": 0,
+    "present": 4769,
+    "present_share": 0.9974900648399916,
+    "rows": 4781,
+    "verdict": "PARTIAL"
+   },
+   "bbo.quantity_unit_status": {
+    "absent": 12,
+    "example_value": "UNKNOWN",
+    "null": 0,
+    "present": 4769,
+    "present_share": 0.9974900648399916,
+    "rows": 4781,
+    "verdict": "PARTIAL"
+   },
+   "exchange_timestamp": {
+    "absent": 4781,
+    "example_value": null,
+    "null": 0,
+    "present": 0,
+    "present_share": 0.0,
+    "rows": 4781,
+    "verdict": "UNUSABLE_ABSENT"
+   },
+   "greeks.delta": {
+    "absent": 4781,
+    "example_value": null,
+    "null": 0,
+    "present": 0,
+    "present_share": 0.0,
+    "rows": 4781,
+    "verdict": "UNUSABLE_ABSENT"
+   },
+   "greeks.theta": {
+    "absent": 4781,
+    "example_value": null,
+    "null": 0,
+    "present": 0,
+    "present_share": 0.0,
+    "rows": 4781,
+    "verdict": "UNUSABLE_ABSENT"
+   },
+   "greeks.vega": {
+    "absent": 4781,
+    "example_value": null,
+    "null": 0,
+    "present": 0,
+    "present_share": 0.0,
+    "rows": 4781,
+    "verdict": "UNUSABLE_ABSENT"
+   },
+   "identity.strike": {
+    "absent": 0,
+    "example_value": 61100,
+    "null": 12,
+    "present": 4769,
+    "present_share": 0.9974900648399916,
+    "rows": 4781,
+    "verdict": "PARTIAL"
+   },
+   "identity.verified": {
+    "absent": 0,
+    "example_value": true,
+    "null": 0,
+    "present": 4781,
+    "present_share": 1.0,
+    "rows": 4781,
+    "verdict": "USABLE"
+   },
+   "iv.authoritative_resolved": {
+    "absent": 12,
+    "example_value": false,
+    "null": 0,
+    "present": 4769,
+    "present_share": 0.9974900648399916,
+    "rows": 4781,
+    "verdict": "PARTIAL"
+   },
+   "iv.greeks": {
+    "absent": 12,
+    "example_value": 18.71,
+    "null": 0,
+    "present": 4769,
+    "present_share": 0.9974900648399916,
+    "rows": 4781,
+    "verdict": "PARTIAL"
+   },
+   "iv.market_data": {
+    "absent": 12,
+    "example_value": null,
+    "null": 4769,
+    "present": 0,
+    "present_share": 0.0,
+    "rows": 4781,
+    "verdict": "UNUSABLE_ALWAYS_NULL"
+   },
+   "iv.source": {
+    "absent": 12,
+    "example_value": "GREEKS_PRESENT_ONLY",
+    "null": 0,
+    "present": 4769,
+    "present_share": 0.9974900648399916,
+    "rows": 4781,
+    "verdict": "PARTIAL"
+   },
+   "iv.unit_status": {
+    "absent": 12,
+    "example_value": "UNKNOWN",
+    "null": 0,
+    "present": 4769,
+    "present_share": 0.9974900648399916,
+    "rows": 4781,
+    "verdict": "PARTIAL"
+   },
+   "oi": {
+    "absent": 4781,
+    "example_value": null,
+    "null": 0,
+    "present": 0,
+    "present_share": 0.0,
+    "rows": 4781,
+    "verdict": "UNUSABLE_ABSENT"
+   },
+   "oi_change": {
+    "absent": 4781,
+    "example_value": null,
+    "null": 0,
+    "present": 0,
+    "present_share": 0.0,
+    "rows": 4781,
+    "verdict": "UNUSABLE_ABSENT"
+   },
+   "outcome": {
+    "absent": 0,
+    "example_value": "OBSERVED",
+    "null": 0,
+    "present": 4781,
+    "present_share": 1.0,
+    "rows": 4781,
+    "verdict": "USABLE"
+   },
+   "vendor_timestamp": {
+    "absent": 4781,
+    "example_value": null,
+    "null": 0,
+    "present": 0,
+    "present_share": 0.0,
+    "rows": 4781,
+    "verdict": "UNUSABLE_ABSENT"
+   },
+   "volume": {
+    "absent": 4781,
+    "example_value": null,
+    "null": 0,
+    "present": 0,
+    "present_share": 0.0,
+    "rows": 4781,
+    "verdict": "UNUSABLE_ABSENT"
+   }
+  },
+  "records": 4781,
+  "session_fields": {
+   "caps": {
+    "absent": 2,
+    "example_value": "dict",
+    "null": 0,
+    "present": 12,
+    "present_share": 0.8571428571428571,
+    "rows": 14,
+    "verdict": "PARTIAL"
+   },
+   "cohort.expiry": {
+    "absent": 2,
+    "example_value": "2026-11-23",
+    "null": 0,
+    "present": 12,
+    "present_share": 0.8571428571428571,
+    "rows": 14,
+    "verdict": "PARTIAL"
+   },
+   "cohort.paired_strikes": {
+    "absent": 2,
+    "example_value": "list",
+    "null": 0,
+    "present": 12,
+    "present_share": 0.8571428571428571,
+    "rows": 14,
+    "verdict": "PARTIAL"
+   },
+   "cohort.selection_spot": {
+    "absent": 2,
+    "example_value": 61164.6,
+    "null": 0,
+    "present": 12,
+    "present_share": 0.8571428571428571,
+    "rows": 14,
+    "verdict": "PARTIAL"
+   },
+   "cohort.underlying_key": {
+    "absent": 2,
+    "example_value": "NSE_INDEX|Nifty Bank",
+    "null": 0,
+    "present": 12,
+    "present_share": 0.8571428571428571,
+    "rows": 14,
+    "verdict": "PARTIAL"
+   },
+   "evidence_context.clock_provenance": {
+    "absent": 2,
+    "example_value": "DEVICE_LOCAL_ACQUISITION_RECEIPT_EXCHANGE_EVENT_SEMANTICS_UNVERIFIED",
+    "null": 0,
+    "present": 12,
+    "present_share": 0.8571428571428571,
+    "rows": 14,
+    "verdict": "PARTIAL"
+   },
+   "integrity": {
+    "absent": 2,
+    "example_value": "dict",
+    "null": 0,
+    "present": 12,
+    "present_share": 0.8571428571428571,
+    "rows": 14,
+    "verdict": "PARTIAL"
+   },
+   "margin": {
+    "absent": 14,
+    "example_value": null,
+    "null": 0,
+    "present": 0,
+    "present_share": 0.0,
+    "rows": 14,
+    "verdict": "UNUSABLE_ABSENT"
+   },
+   "margin_evidence": {
+    "absent": 14,
+    "example_value": null,
+    "null": 0,
+    "present": 0,
+    "present_share": 0.0,
+    "rows": 14,
+    "verdict": "UNUSABLE_ABSENT"
+   },
+   "references.lot_resolution": {
+    "absent": 2,
+    "example_value": "UNRESOLVED_REFERENCE",
+    "null": 0,
+    "present": 12,
+    "present_share": 0.8571428571428571,
+    "rows": 14,
+    "verdict": "PARTIAL"
+   }
+  },
+  "session_index_nodes": 14,
+  "trail_fields": {
+   "direction.er": {
+    "absent": 0,
+    "example_value": 0.115361,
+    "null": 30,
+    "present": 664,
+    "present_share": 0.9567723342939481,
+    "rows": 694,
+    "verdict": "PARTIAL"
+   },
+   "direction.strength": {
+    "absent": 0,
+    "example_value": "MODERATE",
+    "null": 461,
+    "present": 233,
+    "present_share": 0.3357348703170029,
+    "rows": 694,
+    "verdict": "PARTIAL"
+   },
+   "direction.value": {
+    "absent": 0,
+    "example_value": "UNAVAILABLE",
+    "null": 0,
+    "present": 694,
+    "present_share": 1.0,
+    "rows": 694,
+    "verdict": "USABLE"
+   },
+   "direction.z_30": {
+    "absent": 0,
+    "example_value": 0.237282,
+    "null": 30,
+    "present": 664,
+    "present_share": 0.9567723342939481,
+    "rows": 694,
+    "verdict": "PARTIAL"
+   },
+   "direction.z_open": {
+    "absent": 0,
+    "example_value": 0.038748,
+    "null": 30,
+    "present": 664,
+    "present_share": 0.9567723342939481,
+    "rows": 694,
+    "verdict": "PARTIAL"
+   },
+   "lineage.anchor_30_ts": {
+    "absent": 0,
+    "example_value": "2026-11-12T09:20:00+05:30",
+    "null": 30,
+    "present": 664,
+    "present_share": 0.9567723342939481,
+    "rows": 694,
+    "verdict": "PARTIAL"
+   },
+   "lineage.open_ref_ts": {
+    "absent": 0,
+    "example_value": "2026-11-12T09:20:00+05:30",
+    "null": 10,
+    "present": 684,
+    "present_share": 0.9855907780979827,
+    "rows": 694,
+    "verdict": "PARTIAL"
+   },
+   "regime": {
+    "absent": 0,
+    "example_value": "UNAVAILABLE",
+    "null": 0,
+    "present": 694,
+    "present_share": 1.0,
+    "rows": 694,
+    "verdict": "USABLE"
+   },
+   "spot.asof": {
+    "absent": 0,
+    "example_value": "2026-11-12T09:15:00+05:30",
+    "null": 0,
+    "present": 694,
+    "present_share": 1.0,
+    "rows": 694,
+    "verdict": "USABLE"
+   },
+   "spot.value": {
+    "absent": 0,
+    "example_value": 60823.15,
+    "null": 0,
+    "present": 694,
+    "present_share": 1.0,
+    "rows": 694,
+    "verdict": "USABLE"
+   },
+   "why.act": {
+    "absent": 0,
+    "example_value": "UNAVAILABLE",
+    "null": 0,
+    "present": 694,
+    "present_share": 1.0,
+    "rows": 694,
+    "verdict": "USABLE"
+   },
+   "why.dte": {
+    "absent": 0,
+    "example_value": 11,
+    "null": 0,
+    "present": 694,
+    "present_share": 1.0,
+    "rows": 694,
+    "verdict": "USABLE"
+   },
+   "why.expiry": {
+    "absent": 0,
+    "example_value": "2026-11-23",
+    "null": 0,
+    "present": 694,
+    "present_share": 1.0,
+    "rows": 694,
+    "verdict": "USABLE"
+   },
+   "why.ml.reason": {
+    "absent": 227,
+    "example_value": "NO_ADMISSIBLE_CANDIDATE",
+    "null": 0,
+    "present": 467,
+    "present_share": 0.6729106628242075,
+    "rows": 694,
+    "verdict": "PARTIAL"
+   },
+   "why.ml.selected": {
+    "absent": 227,
+    "example_value": null,
+    "null": 467,
+    "present": 0,
+    "present_share": 0.0,
+    "rows": 694,
+    "verdict": "UNUSABLE_ALWAYS_NULL"
+   },
+   "why.sl.action": {
+    "absent": 461,
+    "example_value": "BUY_CE",
+    "null": 0,
+    "present": 233,
+    "present_share": 0.3357348703170029,
+    "rows": 694,
+    "verdict": "PARTIAL"
+   },
+   "why.sl.state": {
+    "absent": 461,
+    "example_value": "ELIGIBLE_PENDING_SNAPSHOT",
+    "null": 0,
+    "present": 233,
+    "present_share": 0.3357348703170029,
+    "rows": 694,
+    "verdict": "PARTIAL"
+   },
+   "why.sl.strike": {
+    "absent": 461,
+    "example_value": 25250,
+    "null": 0,
+    "present": 233,
+    "present_share": 0.3357348703170029,
+    "rows": 694,
+    "verdict": "PARTIAL"
+   }
+  },
+  "trail_polls": 694
+ }
+}
