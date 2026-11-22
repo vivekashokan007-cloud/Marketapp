@@ -302,7 +302,8 @@ class MemoIntegrity(unittest.TestCase):
         import hashlib
         for name in ('tilt_compare.py', 'economic_check.py', 'two_sided_diagnostics.py',
                      'spread_replay.py', 'inventory_span.py', 'fee_worked_cases.py',
-                     'stress_range_ev.py', 'index_direction.py'):
+                     'stress_range_ev.py', 'index_direction.py',
+                     'direction_baseline.py'):
             p = os.path.join(ROOT, name)
             if not os.path.exists(p):
                 continue
