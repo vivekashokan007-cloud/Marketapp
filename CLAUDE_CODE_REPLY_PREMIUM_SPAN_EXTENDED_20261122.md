@@ -5,7 +5,7 @@ Market Radar · 22 November 2026 IST · supersedes
 
 **Research branch** `review/premium-model-validation-20261121` — `5125c9e` inventory + defect
 fixes → `ce94a04` diagnostics, sides and spreads → `5732d79` first memo → `322663c` the span
-extension → `<this commit>` this memo
+extension → `ba595ec` this memo
 **Protocol branch** `review/premium-neutral-range-comparison-20261116` — `1c9da2a` null-bbo guard
 → `5bbb748` successor v2
 **Frozen R7 unchanged on both** — `git diff 124d62e -- tools/spot_path_baseline/` empty,
