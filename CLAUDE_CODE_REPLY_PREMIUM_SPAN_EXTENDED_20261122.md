@@ -3,6 +3,23 @@
 Market Radar · 22 November 2026 IST · supersedes
 `CLAUDE_CODE_REPLY_PREMIUM_SPAN_12_TO_20_NOV_20261121` now that the four missing exports arrived
 
+> **CORRECTED IN PART, 22 November, after the research owner's edge-research handoff.** Two
+> things in this memo were wrong and are corrected **in place**, at §3.2 and §4, with the
+> withdrawn wording left visible rather than quietly rewritten:
+>
+> 1. **§3.2's "remove 20 November and every positive arm is negative" is false.** BANKNIFTY
+>    `RANGE_EV` stays positive under *every* leave-one-session-out, worst case **+16,433**. It is
+>    the one exception, the owner caught it from my own table, and §3.2 now carries the full
+>    leave-one-out grid for all eighteen arms instead of a single sentence.
+> 2. **§4's spread figures charged fees on the net spread price, not on each executed leg.** Every
+>    number in that table is wrong and all four are replaced. The headline claim — NIFTY bull call
+>    at "−₹1.2 a trade, an edge of exactly zero" — was a fee artefact; corrected it is
+>    **−₹42.8 a trade**. The §4 *conclusion* (all four structures lose) is unchanged and in fact
+>    strengthened.
+>
+> Everything else in this memo stands as written. The corrected replay, the survival stress on the
+> one surviving arm, and the research map are returned separately.
+
 **Research branch** `review/premium-model-validation-20261121` — `5125c9e` inventory + defect
 fixes → `ce94a04` diagnostics, sides and spreads → `5732d79` first memo → `322663c` the span
 extension → `ba595ec` this memo
@@ -94,25 +111,101 @@ taking 437 calls and only 260 puts — an accidental long-call tilt in a sample 
 | NF | BUY_ALL | −26,400 | +165,605 (20 Nov) | 627% | 2 / 4 |
 | BNF | RANGE_EV | +131,251 | +114,818 (20 Nov) | 87% | 3 / 3 |
 
-**Remove 20 November and every positive arm is negative.** Every arm loses the majority of
-sessions. The declared downside bar is met in **1 of 12** session/index cells for BUY_ALL, **3 of
-12** for the median forecast, and **0 of 12** for RANGE_EV.
+~~**Remove 20 November and every positive arm is negative.**~~ **WITHDRAWN — this was wrong, and
+the owner caught it from my own table above: the BNF RANGE_EV row shows +131,251 total with only
++114,818 from 20 November, so the remainder is positive and the sentence contradicts its own
+table.** The full leave-one-session-out grid, every arm and both indices, six sessions:
+
+| idx | arm | all six | worst LOO | drop | 12th-out | 16th-out | 17th-out | 18th-out | 19th-out | 20th-out |
+| --- | --- | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| BNF | BUY_ALL | +685,439 | **−122,534** | 20th | +788,421 | +752,731 | +688,557 | +796,148 | +523,873 | −122,534 |
+| BNF | FORECAST λ=1 | +200,229 | **−85,786** | 20th | +241,720 | +226,997 | +226,606 | +287,000 | +104,608 | −85,786 |
+| BNF | FORECAST λ=0.5 | +53,066 | **−99,415** | 20th | +84,062 | +68,670 | +121,266 | +121,868 | −31,123 | −99,415 |
+| BNF | **RANGE_EV λ=0** | **+131,251** | **+16,433** | 20th | +170,362 | +224,536 | +47,183 | +140,099 | +57,642 | **+16,433** |
+| BNF | **RANGE_EV HIST** | **+129,023** | **+14,205** | 20th | +168,134 | +221,132 | +46,421 | +140,575 | +54,646 | **+14,205** |
+| NF | BUY_ALL | −26,400 | −192,005 | 20th | +63,933 | +75,396 | +7,560 | +56,116 | −142,999 | −192,005 |
+| NF | FORECAST λ=1 | +137,157 | **−13,314** | 20th | +137,441 | +233,306 | +154,874 | +162,098 | +11,381 | −13,314 |
+| NF | FORECAST λ=0.5 | +98,573 | **−58,028** | 20th | +109,048 | +207,939 | +117,073 | +141,388 | −24,554 | −58,028 |
+| NF | RANGE_EV λ=0 | −64,394 | −97,687 | 18th | −63,937 | −27,755 | +517 | −97,687 | −80,360 | −52,750 |
+| NF | RANGE_EV HIST | −52,891 | −87,813 | 18th | −52,434 | −15,475 | +4,971 | −87,813 | −72,458 | −41,247 |
+| NF | RANGE_EV IV_ONLY | −135,755 | −135,755 | — | — | — | — | — | — | — |
+
+`FORECAST_RULE_HIST`, `FORECAST_RULE_IV_ONLY`, `RANGE_EV_IV_ONLY` on BNF and both
+`FORECAST_RULE_E0_TILT_0` arms take **zero** trades on every session, so they are exactly ₹0 under
+every leave-one-out and are not evidence of anything.
+
+**The corrected statement: two of eighteen arms stay positive under every leave-one-session-out,
+and they are the same arm on the same index — BANKNIFTY `RANGE_EV`, at λ=0 (+16,433) and on the
+historical reference (+14,205).** The λ=0.5 and λ=1 forecast arms and both buy-all diagnostics do
+flip, as I said; the RANGE_EV exception is real and I had asserted the opposite.
+
+That exception is the one thing in the whole span that looked like an edge, so I stressed it
+rather than reporting it. `stress_range_ev.py`, same population, same governed dated costs:
+
+| unresolved exits priced as | n | total | win% | worst LOO | without the best 5 | return on risk |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| **EXCLUDE** (the replay's basis) | 1,047 | **+131,251** | 43.6 | **+16,433** | +64,714 | 0.66% |
+| AT_ARM_MEAN | 1,223 | +153,314 | 51.8 | +19,272 | +86,777 | 0.77% |
+| AT_TOTAL_LOSS | 1,223 | **−2,905,099** | 37.4 | −2,639,909 | −2,971,636 | −14.55% |
+
+It **survives** the two stresses that usually kill a result of this kind:
+
+* **Concentration.** Remove the five best trades of 1,047 and it is still +64,714. Those five do
+  carry 51% of the gain, which is heavy, but the remainder does not change sign.
+* **Worse fills.** Realisation already crosses the spread and pays one declared tick each way.
+  Pay a **second** adverse tick each way, with the decision left on the unstressed estimate so
+  the rule cannot decline the trades its own bad fills would kill: +128,112, worst LOO +13,813.
+
+It does **not** survive the hole in the book. **176 of 1,223 filled positions (14.4%) never got an
+exit quote and are scored by nobody.** That splits in two, and only one half is a data problem:
+
+* **115 of them sit at decision slots 14:05–14:40, where the scored count is exactly zero.** A
+  60-minute hold from 14:05 targets 15:05, past the last exit the capture holds — the same
+  15:00 window boundary as the overnight blocker in §7. That is not missing data, it is known at
+  decision time, and it is identical for every arm, so the matched treatment is to drop those
+  decisions, not to price them.
+* **61 are genuine holes at slots that did score** — 5.0% of the book. **The entire +131,251 is
+  erased if those 61 averaged −₹2,152.** The scored distribution's own 10th percentile is
+  **−₹3,009** and its worst is −₹9,019.
+
+**So the honest verdict on the one exception is "not established", not "an edge".** A 0.66% return
+on risk measured across 86% of the book cannot be separated from a 5% hole whose plausible adverse
+value is larger than the whole gain. It is a reason to fix the capture window and re-measure, not
+a reason to trade. Every arm, including this one, still loses the majority of sessions, and the
+declared downside bar is met in **1 of 12** session/index cells for BUY_ALL, **3 of 12** for the
+median forecast, and **0 of 12** for RANGE_EV — that part of the original sentence stands.
 
 ## 4 · The spreads are the cleanest result, because they cap the windfall
 
-Two-leg debit verticals, same six sessions, 323–324 scored rows each:
+> **These figures are CORRECTED. The table first published here charged the dated statutory and
+> exchange levies on the *net* spread price instead of on each executed leg.** A vertical is four
+> orders across two contracts, and the ledger was being handed one synthetic instrument: STT
+> (0.15% of the sale) was never charged on the short leg's entry sale at all, and the exchange,
+> IPFT and SEBI components saw the net rather than both legs — roughly a halving on a typical
+> vertical. On one worked NIFTY vertical the turnover was understated **2.26×**, total fees were
+> **₹11.71** low (10% of the correct figure), and STT came to ₹5.84 against the correct ₹13.25.
+> `spread_replay.fees_for` now prices `sell_px`/`buy_px` on the entry legs and
+> `exit_sell_px`/`exit_buy_px` on the exit legs, with `legs=2`.
+
+Two-leg debit verticals, same six sessions, 323–324 scored rows each, **per-leg dated costs**:
 
 | idx | structure | 12th | 16th | 17th | 18th | 19th | 20th | **total** | per trade |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| NF | BULL_CALL | −15,316 | −19,318 | +18,135 | −10,449 | +11,212 | +15,336 | **−399** | **−1.2** |
-| NF | BEAR_PUT | +1,249 | +2,338 | −33,894 | −8,315 | −29,873 | −32,629 | −101,123 | −313 |
-| BNF | BULL_CALL | −8,137 | −12,290 | −7,737 | −11,067 | +4,286 | −5,530 | −40,475 | −125 |
-| BNF | BEAR_PUT | −11,848 | −11,516 | −18,284 | −12,840 | −26,819 | −31,120 | −112,427 | −348 |
+| NF | BULL_CALL | −17,536 | −20,614 | +16,956 | −12,279 | +7,619 | +12,020 | **−13,834** | **−42.8** |
+| NF | BEAR_PUT | −937 | +1,098 | −34,099 | −11,956 | −31,046 | −33,558 | −110,499 | −342.1 |
+| BNF | BULL_CALL | −12,293 | −16,555 | −13,532 | −13,662 | −755 | −13,380 | −70,177 | −216.6 |
+| BNF | BEAR_PUT | −16,310 | −15,608 | −20,774 | −17,517 | −28,434 | −32,015 | −130,658 | −404.5 |
+
+Superseded net-basis totals, for the reconciliation: −399 / −101,123 / −40,475 / −112,427.
 
 **All four structures lose, and this is the more robust statement of the whole exercise.** The
 short leg caps the directional windfall that made the outright call arms look positive, so the
-one-day dominance of §3.2 disappears — and what is left is costs. **NIFTY bull call is −₹399
-across 323 round trips, −₹1.2 a trade: an edge of exactly zero, with the costs eaten.**
+one-day dominance of §3.2 disappears — and what is left is costs. ~~NIFTY bull call is −₹399
+across 323 round trips, −₹1.2 a trade: an edge of exactly zero~~ — **withdrawn: that "exactly
+zero" was my own fee defect.** Corrected, NIFTY bull call is **−₹13,834 across 323 round trips,
+−₹42.8 a trade**, and BANKNIFTY bull call goes from −₹125 to −₹216.6 a trade. The conclusion is
+unchanged and stronger: the one structure that looked like a free option was paying half its
+fees.
 
 Credit verticals remain **refused**, not replayed: their legs are present but no export carries
 hedged-margin evidence, and that is the difference between legs existing and a position being
@@ -196,6 +289,9 @@ with worked cases) and 16 Nov → 20 Nov (this one, with the §8 listing evidenc
 | "the forecast adds nothing" | **refined**: it improves per-trade on calls by 9–34% and degrades it on puts. It cuts size |
 | "the tail is calibrated; the loss is a near-cancellation" | **holds** on the new sessions (§5) |
 | "debit spreads are defined-risk and marginally positive on NIFTY puts" | **withdrawn** — over six sessions all four structures lose (§4), and that is the cleaner result |
+| "remove 20 November and every positive arm is negative" | **withdrawn, my error** — BNF RANGE_EV survives every leave-one-out at +16,433 (λ=0) and +14,205 (HIST); §3.2 now carries the full grid |
+| "NIFTY bull call is an edge of exactly zero, −₹1.2 a trade" | **withdrawn, my error** — the fees were charged on the net spread price; per leg it is **−₹42.8 a trade** (§4) |
+| the BNF RANGE_EV exception is an edge | **not established** — it survives concentration and a second adverse tick each way, but 5% of the book has no exit quote and −₹2,152 average on those 61 positions erases the whole gain, against a scored p10 of −₹3,009 (§3.2) |
 | "overnight is blocked by the window constant" | **proven** on real adjacent sessions (§7) |
 
 ## 10 · Rerun commands
@@ -218,7 +314,12 @@ python3 -I tools/premium_followon/next_session_match.py \
 # which frozen chain an export can take
 python3 -I tools/premium_range_compare/frozen_successor.py <export.json>
 # suites
-cd tools/premium_model_validation && python3 -m unittest discover -s tests     # 132
+# the survival stress on the one arm that passes every leave-one-out
+python3 -I tools/premium_model_validation/stress_range_ev.py \
+    --span <dir-of-exports> --spots <spots> --ledger-root <tree> \
+    --index BNF --arm RANGE_EV_E0_TILT_0 --out <out>
+# suites. SR_SPAN / SR_SPOTS / SR_LEDGER_ROOT unskip the stress integration guard
+cd tools/premium_model_validation && python3 -m unittest discover -s tests     # 152
 cd tools/premium_range_compare   && python3 -m unittest discover -s tests     # 158
 ```
 
@@ -228,7 +329,8 @@ cd tools/premium_range_compare   && python3 -m unittest discover -s tests     # 
 | --- | --- |
 | `economic_check.py` | `3ef634d7eb802da70c7b473f7013337dc00ce5ca6df121b416b98db0ac62d807` |
 | `two_sided_diagnostics.py` | `8bf242c905b34c8fbafe2ebb7bb1baf41634b7a644b8278e7039347e8d645cc8` |
-| `spread_replay.py` | `d376c7df9d40caad0140d1d2de445b12b7d9adfc01ef3f4b8865668d90caec83` |
+| `spread_replay.py` (per-leg fee basis; was `d376c7df…` on the net basis) | `b13d9f5c1f56368e6f9f27b20dbd447cc0bae5eae786f2410f31ee9521ffb7aa` |
+| `stress_range_ev.py` | `5b4a977d07f38c0042f1025b07d704b7ab3b8d425cd497df29129227b286bbee` |
 | `inventory_span.py` | `14edbb1a3fb60a17d2e3aa2a0544fff0fd0454639d345b3d100013ad3940f0d5` |
 | `tilt_compare.py` | `3054291875958076ea7673d9617d2b02948226f8c0d4b7f4d295d18d24950c78` |
 | `fee_worked_cases.py` | `c876b3b840a684f0e3a1322c7bdb724f65218c8fa904e300dcd191001519f91f` |

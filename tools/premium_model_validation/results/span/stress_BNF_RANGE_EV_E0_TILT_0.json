@@ -1,0 +1,1824 @@
+{
+ "arm": "RANGE_EV_E0_TILT_0",
+ "by_extra_tick": {
+  "0.00": {
+   "per_session": {
+    "2026-11-12": {
+     "AT_ARM_MEAN": {
+      "best_net_inr": 3894.301122872002,
+      "gain_from_best_10_inr": 26632.939899758025,
+      "gain_from_best_1_inr": 3894.301122872002,
+      "gain_from_best_5_inr": 16498.669946008016,
+      "imputation_inr": -11174.643319330762,
+      "mean_net_inr": -328.66597998031654,
+      "median_net_inr": -328.66597998031654,
+      "n": 153,
+      "total_net_inr": -50285.89493698843,
+      "total_without_best_10_inr": -76918.83483674648,
+      "total_without_best_1_inr": -54180.19605986045,
+      "total_without_best_5_inr": -66784.56488299646,
+      "unresolved_left_out": 0,
+      "win_rate": 0.3333333333333333,
+      "worst_net_inr": -4168.966661592998
+     },
+     "AT_TOTAL_LOSS": {
+      "best_net_inr": 3894.301122872002,
+      "gain_from_best_10_inr": 26632.939899758025,
+      "gain_from_best_1_inr": 3894.301122872002,
+      "gain_from_best_5_inr": 16498.669946008016,
+      "imputation_inr": -805564.5,
+      "mean_net_inr": -5520.756546520638,
+      "median_net_inr": -898.841964810998,
+      "n": 153,
+      "total_net_inr": -844675.7516176577,
+      "total_without_best_10_inr": -871308.6915174159,
+      "total_without_best_1_inr": -848570.05274053,
+      "total_without_best_5_inr": -861174.4215636658,
+      "unresolved_left_out": 0,
+      "win_rate": 0.3333333333333333,
+      "worst_net_inr": -26952.0
+     },
+     "EXCLUDE": {
+      "best_net_inr": 3894.301122872002,
+      "gain_from_best_10_inr": 26632.939899758025,
+      "gain_from_best_1_inr": 3894.301122872002,
+      "gain_from_best_5_inr": 16498.669946008016,
+      "imputation_inr": 0.0,
+      "mean_net_inr": -328.66597998031654,
+      "median_net_inr": -217.5497087019952,
+      "n": 119,
+      "total_net_inr": -39111.25161765767,
+      "total_without_best_10_inr": -65744.19151741572,
+      "total_without_best_1_inr": -43005.552740529696,
+      "total_without_best_5_inr": -55609.92156366571,
+      "unresolved_left_out": 34,
+      "win_rate": 0.42857142857142855,
+      "worst_net_inr": -4168.966661592998
+     },
+     "capital": {
+      "fills_costing_more_than_reserved": 42,
+      "orders": 156,
+      "peak_committed_inr": 935500.5,
+      "peak_concurrent_positions": 39,
+      "states": {
+       "RELEASED_AT_EXIT": 119,
+       "RELEASED_UNFILLED": 3,
+       "UNRESOLVED_NO_EXIT": 34
+      },
+      "total_fill_shortfall_inr": 20488.5,
+      "unresolved_capital_inr": 805564.5,
+      "unresolved_positions": 34,
+      "worst_fill_shortfall_inr": 1132.5
+     },
+     "decision_time_opportunities": 323,
+     "outcome_status": {
+      "NOT_FILLED_NO_QUOTE_AT_FILL_POLL": 3,
+      "NO_EXIT_QUOTE_AT_TARGET_INSTANT": 34,
+      "SCORED": 119,
+      "WAIT_NO_POSITION": 167
+     }
+    },
+    "2026-11-13": {
+     "refused": "no decisions on this session"
+    },
+    "2026-11-16": {
+     "AT_ARM_MEAN": {
+      "best_net_inr": 4597.5943166450015,
+      "gain_from_best_10_inr": 39041.394561116016,
+      "gain_from_best_1_inr": 4597.5943166450015,
+      "gain_from_best_5_inr": 21071.852599645008,
+      "imputation_inr": -11908.683662402123,
+      "mean_net_inr": -496.1951526000885,
+      "median_net_inr": -496.1951526000885,
+      "n": 212,
+      "total_net_inr": -105193.37235121889,
+      "total_without_best_10_inr": -144234.76691233498,
+      "total_without_best_1_inr": -109790.96666786395,
+      "total_without_best_5_inr": -126265.22495086397,
+      "unresolved_left_out": 0,
+      "win_rate": 0.37735849056603776,
+      "worst_net_inr": -5315.135769987998
+     },
+     "AT_TOTAL_LOSS": {
+      "best_net_inr": 4597.5943166450015,
+      "gain_from_best_10_inr": 39041.394561116016,
+      "gain_from_best_1_inr": 4597.5943166450015,
+      "gain_from_best_5_inr": 21071.852599645008,
+      "imputation_inr": -416755.5,
+      "mean_net_inr": -2405.8499466453613,
+      "median_net_inr": -974.2918497549973,
+      "n": 212,
+      "total_net_inr": -510040.1886888167,
+      "total_without_best_10_inr": -549081.5832499319,
+      "total_without_best_1_inr": -514637.78300546086,
+      "total_without_best_5_inr": -531112.0412884608,
+      "unresolved_left_out": 0,
+      "win_rate": 0.37735849056603776,
+      "worst_net_inr": -20116.5
+     },
+     "EXCLUDE": {
+      "best_net_inr": 4597.5943166450015,
+      "gain_from_best_10_inr": 39041.394561116016,
+      "gain_from_best_1_inr": 4597.5943166450015,
+      "gain_from_best_5_inr": 21071.852599645008,
+      "imputation_inr": 0.0,
+      "mean_net_inr": -496.1951526000885,
+      "median_net_inr": -300.7840195659983,
+      "n": 188,
+      "total_net_inr": -93284.68868881668,
+      "total_without_best_10_inr": -132326.08324993277,
+      "total_without_best_1_inr": -97882.28300546174,
+      "total_without_best_5_inr": -114356.54128846175,
+      "unresolved_left_out": 24,
+      "win_rate": 0.425531914893617,
+      "worst_net_inr": -5315.135769987998
+     },
+     "capital": {
+      "fills_costing_more_than_reserved": 96,
+      "orders": 212,
+      "peak_committed_inr": 811077.0,
+      "peak_concurrent_positions": 47,
+      "states": {
+       "RELEASED_AT_EXIT": 188,
+       "UNRESOLVED_NO_EXIT": 24
+      },
+      "total_fill_shortfall_inr": 60724.500000000015,
+      "unresolved_capital_inr": 416755.5,
+      "unresolved_positions": 24,
+      "worst_fill_shortfall_inr": 2948.9999999999964
+     },
+     "decision_time_opportunities": 414,
+     "outcome_status": {
+      "NO_EXIT_QUOTE_AT_TARGET_INSTANT": 24,
+      "SCORED": 188,
+      "WAIT_NO_POSITION": 202
+     }
+    },
+    "2026-11-17": {
+     "AT_ARM_MEAN": {
+      "best_net_inr": 10123.352457935001,
+      "gain_from_best_10_inr": 92734.37391358102,
+      "gain_from_best_1_inr": 10123.352457935001,
+      "gain_from_best_5_inr": 48856.720657243015,
+      "imputation_inr": 10847.435747927637,
+      "mean_net_inr": 451.97648949698487,
+      "median_net_inr": -160.9363365535005,
+      "n": 210,
+      "total_net_inr": 94915.06279436678,
+      "total_without_best_10_inr": 2180.688880786118,
+      "total_without_best_1_inr": 84791.71033643212,
+      "total_without_best_5_inr": 46058.34213712413,
+      "unresolved_left_out": 0,
+      "win_rate": 0.4857142857142857,
+      "worst_net_inr": -7297.418870202999
+     },
+     "AT_TOTAL_LOSS": {
+      "best_net_inr": 10123.352457935001,
+      "gain_from_best_10_inr": 92734.37391358102,
+      "gain_from_best_1_inr": 10123.352457935001,
+      "gain_from_best_5_inr": 48856.720657243015,
+      "imputation_inr": -349257.0,
+      "mean_net_inr": -1262.806537874099,
+      "median_net_inr": -526.2797484955001,
+      "n": 210,
+      "total_net_inr": -265189.37295356084,
+      "total_without_best_10_inr": -357923.7468671418,
+      "total_without_best_1_inr": -275312.72541149583,
+      "total_without_best_5_inr": -314046.09361080383,
+      "unresolved_left_out": 0,
+      "win_rate": 0.37142857142857144,
+      "worst_net_inr": -26269.5
+     },
+     "EXCLUDE": {
+      "best_net_inr": 10123.352457935001,
+      "gain_from_best_10_inr": 92734.37391358102,
+      "gain_from_best_1_inr": 10123.352457935001,
+      "gain_from_best_5_inr": 48856.720657243015,
+      "imputation_inr": 0.0,
+      "mean_net_inr": 451.97648949698487,
+      "median_net_inr": -422.2154962015007,
+      "n": 186,
+      "total_net_inr": 84067.62704643914,
+      "total_without_best_10_inr": -8666.746867141803,
+      "total_without_best_1_inr": 73944.27458850421,
+      "total_without_best_5_inr": 35210.90638919621,
+      "unresolved_left_out": 24,
+      "win_rate": 0.41935483870967744,
+      "worst_net_inr": -7297.418870202999
+     },
+     "capital": {
+      "fills_costing_more_than_reserved": 90,
+      "orders": 210,
+      "peak_committed_inr": 758767.5,
+      "peak_concurrent_positions": 48,
+      "states": {
+       "RELEASED_AT_EXIT": 186,
+       "UNRESOLVED_NO_EXIT": 24
+      },
+      "total_fill_shortfall_inr": 48173.999999999985,
+      "unresolved_capital_inr": 349257.0,
+      "unresolved_positions": 24,
+      "worst_fill_shortfall_inr": 2263.5000000000036
+     },
+     "decision_time_opportunities": 414,
+     "outcome_status": {
+      "NO_EXIT_QUOTE_AT_TARGET_INSTANT": 24,
+      "SCORED": 186,
+      "WAIT_NO_POSITION": 204
+     }
+    },
+    "2026-11-18": {
+     "AT_ARM_MEAN": {
+      "best_net_inr": 5762.723467109002,
+      "gain_from_best_10_inr": 40283.57141560103,
+      "gain_from_best_1_inr": 5762.723467109002,
+      "gain_from_best_5_inr": 23434.719003580012,
+      "imputation_inr": -1077.9140618759152,
+      "mean_net_inr": -44.91308591149647,
+      "median_net_inr": -44.91308591149647,
+      "n": 221,
+      "total_net_inr": -9925.791986440734,
+      "total_without_best_10_inr": -50209.36340204208,
+      "total_without_best_1_inr": -15688.515453550062,
+      "total_without_best_5_inr": -33360.510990021074,
+      "unresolved_left_out": 0,
+      "win_rate": 0.42081447963800905,
+      "worst_net_inr": -4638.760557456997
+     },
+     "AT_TOTAL_LOSS": {
+      "best_net_inr": 5762.723467109002,
+      "gain_from_best_10_inr": 40283.57141560103,
+      "gain_from_best_1_inr": 5762.723467109002,
+      "gain_from_best_5_inr": 23434.719003580012,
+      "imputation_inr": -371479.5,
+      "mean_net_inr": -1720.9383616496145,
+      "median_net_inr": -374.4407937430003,
+      "n": 221,
+      "total_net_inr": -380327.3779245648,
+      "total_without_best_10_inr": -420610.94934016577,
+      "total_without_best_1_inr": -386090.1013916738,
+      "total_without_best_5_inr": -403762.0969281448,
+      "unresolved_left_out": 0,
+      "win_rate": 0.42081447963800905,
+      "worst_net_inr": -22537.5
+     },
+     "EXCLUDE": {
+      "best_net_inr": 5762.723467109002,
+      "gain_from_best_10_inr": 40283.57141560103,
+      "gain_from_best_1_inr": 5762.723467109002,
+      "gain_from_best_5_inr": 23434.719003580012,
+      "imputation_inr": 0.0,
+      "mean_net_inr": -44.91308591149647,
+      "median_net_inr": -37.494991485998625,
+      "n": 197,
+      "total_net_inr": -8847.877924564837,
+      "total_without_best_10_inr": -49131.44934016583,
+      "total_without_best_1_inr": -14610.601391673816,
+      "total_without_best_5_inr": -32282.596928144827,
+      "unresolved_left_out": 24,
+      "win_rate": 0.4720812182741117,
+      "worst_net_inr": -4638.760557456997
+     },
+     "capital": {
+      "fills_costing_more_than_reserved": 108,
+      "orders": 221,
+      "peak_committed_inr": 741235.5,
+      "peak_concurrent_positions": 48,
+      "states": {
+       "RELEASED_AT_EXIT": 197,
+       "UNRESOLVED_NO_EXIT": 24
+      },
+      "total_fill_shortfall_inr": 82519.49999999999,
+      "unresolved_capital_inr": 371479.5,
+      "unresolved_positions": 24,
+      "worst_fill_shortfall_inr": 3792.0
+     },
+     "decision_time_opportunities": 414,
+     "outcome_status": {
+      "NO_EXIT_QUOTE_AT_TARGET_INSTANT": 24,
+      "SCORED": 197,
+      "WAIT_NO_POSITION": 193
+     }
+    },
+    "2026-11-19": {
+     "AT_ARM_MEAN": {
+      "best_net_inr": 9782.648215244,
+      "gain_from_best_10_inr": 82270.43044493302,
+      "gain_from_best_1_inr": 9782.648215244,
+      "gain_from_best_5_inr": 44672.779324990006,
+      "imputation_inr": 18002.251498378726,
+      "mean_net_inr": 400.05003329730505,
+      "median_net_inr": 400.05003329730505,
+      "n": 229,
+      "total_net_inr": 91611.45762508274,
+      "total_without_best_10_inr": 9341.027180149755,
+      "total_without_best_1_inr": 81828.80940983878,
+      "total_without_best_5_inr": 46938.67830009276,
+      "unresolved_left_out": 0,
+      "win_rate": 0.5633187772925764,
+      "worst_net_inr": -9019.092496638998
+     },
+     "AT_TOTAL_LOSS": {
+      "best_net_inr": 9782.648215244,
+      "gain_from_best_10_inr": 82270.43044493302,
+      "gain_from_best_1_inr": 9782.648215244,
+      "gain_from_best_5_inr": 44672.779324990006,
+      "imputation_inr": -617742.0,
+      "mean_net_inr": -2376.1257374379734,
+      "median_net_inr": -895.8981211720011,
+      "n": 229,
+      "total_net_inr": -544132.7938732959,
+      "total_without_best_10_inr": -626403.2243182292,
+      "total_without_best_1_inr": -553915.4420885402,
+      "total_without_best_5_inr": -588805.5731982861,
+      "unresolved_left_out": 0,
+      "win_rate": 0.36681222707423583,
+      "worst_net_inr": -31153.5
+     },
+     "EXCLUDE": {
+      "best_net_inr": 9782.648215244,
+      "gain_from_best_10_inr": 82270.43044493302,
+      "gain_from_best_1_inr": 9782.648215244,
+      "gain_from_best_5_inr": 44672.779324990006,
+      "imputation_inr": 0.0,
+      "mean_net_inr": 400.05003329730505,
+      "median_net_inr": -569.3006128855006,
+      "n": 184,
+      "total_net_inr": 73609.20612670413,
+      "total_without_best_10_inr": -8661.22431822884,
+      "total_without_best_1_inr": 63826.55791146018,
+      "total_without_best_5_inr": 28936.426801714173,
+      "unresolved_left_out": 45,
+      "win_rate": 0.45652173913043476,
+      "worst_net_inr": -9019.092496638998
+     },
+     "capital": {
+      "fills_costing_more_than_reserved": 76,
+      "orders": 229,
+      "peak_committed_inr": 925395.0,
+      "peak_concurrent_positions": 51,
+      "states": {
+       "RELEASED_AT_EXIT": 184,
+       "UNRESOLVED_NO_EXIT": 45
+      },
+      "total_fill_shortfall_inr": 58868.999999999985,
+      "unresolved_capital_inr": 617742.0,
+      "unresolved_positions": 45,
+      "worst_fill_shortfall_inr": 2872.5
+     },
+     "decision_time_opportunities": 414,
+     "outcome_status": {
+      "NO_EXIT_QUOTE_AT_TARGET_INSTANT": 45,
+      "SCORED": 184,
+      "WAIT_NO_POSITION": 185
+     }
+    },
+    "2026-11-20": {
+     "AT_ARM_MEAN": {
+      "best_net_inr": 14857.483256564004,
+      "gain_from_best_10_inr": 116408.48496029904,
+      "gain_from_best_1_inr": 14857.483256564004,
+      "gain_from_best_5_inr": 66536.97010192001,
+      "imputation_inr": 16592.169517154645,
+      "mean_net_inr": 663.6867806861857,
+      "median_net_inr": -59.06807475999979,
+      "n": 198,
+      "total_net_inr": 131409.98257586476,
+      "total_without_best_10_inr": 15001.497615566004,
+      "total_without_best_1_inr": 116552.49931930105,
+      "total_without_best_5_inr": 64873.01247394502,
+      "unresolved_left_out": 0,
+      "win_rate": 0.48484848484848486,
+      "worst_net_inr": -4931.249059216002
+     },
+     "AT_TOTAL_LOSS": {
+      "best_net_inr": 14857.483256564004,
+      "gain_from_best_10_inr": 116408.48496029904,
+      "gain_from_best_1_inr": 14857.483256564004,
+      "gain_from_best_5_inr": 66536.97010192001,
+      "imputation_inr": -475551.0,
+      "mean_net_inr": -1821.884782531767,
+      "median_net_inr": -1017.0,
+      "n": 198,
+      "total_net_inr": -360733.1869412898,
+      "total_without_best_10_inr": -477141.67190158914,
+      "total_without_best_1_inr": -375590.670197854,
+      "total_without_best_5_inr": -427270.15704321006,
+      "unresolved_left_out": 0,
+      "win_rate": 0.35858585858585856,
+      "worst_net_inr": -57054.0
+     },
+     "EXCLUDE": {
+      "best_net_inr": 14857.483256564004,
+      "gain_from_best_10_inr": 116408.48496029904,
+      "gain_from_best_1_inr": 14857.483256564004,
+      "gain_from_best_5_inr": 66536.97010192001,
+      "imputation_inr": 0.0,
+      "mean_net_inr": 663.6867806861858,
+      "median_net_inr": -480.05914958799974,
+      "n": 173,
+      "total_net_inr": 114817.81305871015,
+      "total_without_best_10_inr": -1590.6719015889557,
+      "total_without_best_1_inr": 99960.32980214607,
+      "total_without_best_5_inr": 48280.84295679006,
+      "unresolved_left_out": 25,
+      "win_rate": 0.41040462427745666,
+      "worst_net_inr": -4931.249059216002
+     },
+     "capital": {
+      "fills_costing_more_than_reserved": 78,
+      "orders": 200,
+      "peak_committed_inr": 962577.0,
+      "peak_concurrent_positions": 51,
+      "states": {
+       "RELEASED_AT_EXIT": 173,
+       "RELEASED_UNFILLED": 2,
+       "UNRESOLVED_NO_EXIT": 25
+      },
+      "total_fill_shortfall_inr": 87945.0,
+      "unresolved_capital_inr": 475551.0,
+      "unresolved_positions": 25,
+      "worst_fill_shortfall_inr": 4947.0
+     },
+     "decision_time_opportunities": 408,
+     "outcome_status": {
+      "NOT_FILLED_NO_QUOTE_AT_FILL_POLL": 2,
+      "NO_EXIT_QUOTE_AT_TARGET_INSTANT": 25,
+      "SCORED": 173,
+      "WAIT_NO_POSITION": 208
+     }
+    }
+   },
+   "resolvable_window": {
+    "break_even_net_per_sporadic_unresolved_inr": -2151.652918046136,
+    "last_decision_slot_with_any_exit": "14:00",
+    "note": "after dropping the structurally unclosable decision slots, which is the matched correction, the remaining hole is the sporadic one. The gain is zero if each of those averaged the figure above; compare it against the scored p10, not against zero",
+    "sporadic_share_of_filled": 0.04987735077677841,
+    "sporadic_unresolved_positions": 61,
+    "structural_slots_no_exit_possible": [
+     "14:05",
+     "14:10",
+     "14:15",
+     "14:20",
+     "14:25",
+     "14:30",
+     "14:35",
+     "14:40"
+    ],
+    "structural_unresolved_positions": 115
+   },
+   "sessions_scored": 6,
+   "span": {
+    "AT_ARM_MEAN": {
+     "best_net_inr": 14857.483256564004,
+     "gain_from_best_10_inr": 117691.70653598304,
+     "gain_from_best_1_inr": 14857.483256564004,
+     "gain_from_best_5_inr": 66536.97010192001,
+     "imputation_inr": 22063.176435666974,
+     "leave_one_session_out_total_inr": {
+      "2026-11-12": 196430.4150773316,
+      "2026-11-16": 264267.06329827406,
+      "2026-11-17": 55512.87173842279,
+      "2026-11-18": 165151.65098497455,
+      "2026-11-19": 66391.39298130438,
+      "2026-11-20": 19272.12850761658
+     },
+     "mean_net_inr": 125.35895702083508,
+     "median_net_inr": 125.35895702083508,
+     "n": 1223,
+     "positive_under_every_leave_one_out": true,
+     "return_on_risk": 0.007680102910815225,
+     "return_on_worst_peak": 0.1592745353737727,
+     "total_net_inr": 153314.00443648,
+     "total_risk_inr": 19962493.5,
+     "total_without_best_10_inr": 35622.2979004921,
+     "total_without_best_1_inr": 138456.52117991113,
+     "total_without_best_5_inr": 86777.03433455511,
+     "unresolved_left_out": 0,
+     "win_rate": 0.517579721995094,
+     "worst_leave_one_out_inr": 19272.12850761658,
+     "worst_net_inr": -9019.092496638998,
+     "worst_session_peak_committed_inr": 962577.0
+    },
+    "AT_TOTAL_LOSS": {
+     "best_net_inr": 14857.483256564004,
+     "gain_from_best_10_inr": 117691.70653598304,
+     "gain_from_best_1_inr": 14857.483256564004,
+     "gain_from_best_5_inr": 66536.97010192001,
+     "imputation_inr": -3036349.5,
+     "leave_one_session_out_total_inr": {
+      "2026-11-12": -2060422.920381528,
+      "2026-11-16": -2395058.483310369,
+      "2026-11-17": -2639909.2990456247,
+      "2026-11-18": -2524771.294074621,
+      "2026-11-19": -2360965.8781258897,
+      "2026-11-20": -2544365.485057896
+     },
+     "mean_net_inr": -2375.387303351746,
+     "median_net_inr": -728.7425579560011,
+     "n": 1223,
+     "positive_under_every_leave_one_out": false,
+     "return_on_risk": -0.14552784560702228,
+     "return_on_worst_peak": -3.0180428911133195,
+     "total_net_inr": -2905098.671999186,
+     "total_risk_inr": 19962493.5,
+     "total_without_best_10_inr": -3022790.378535169,
+     "total_without_best_1_inr": -2919956.1552557503,
+     "total_without_best_5_inr": -2971635.6421011062,
+     "unresolved_left_out": 0,
+     "win_rate": 0.37367130008176613,
+     "worst_leave_one_out_inr": -2639909.2990456247,
+     "worst_net_inr": -57054.0,
+     "worst_session_peak_committed_inr": 962577.0
+    },
+    "EXCLUDE": {
+     "best_net_inr": 14857.483256564004,
+     "gain_from_best_10_inr": 117691.70653598304,
+     "gain_from_best_1_inr": 14857.483256564004,
+     "gain_from_best_5_inr": 66536.97010192001,
+     "imputation_inr": 0.0,
+     "leave_one_session_out_total_inr": {
+      "2026-11-12": 170362.0796184719,
+      "2026-11-16": 224535.51668963092,
+      "2026-11-17": 47183.200954375396,
+      "2026-11-18": 140098.70592537915,
+      "2026-11-19": 57641.62187411016,
+      "2026-11-20": 16433.01494210413
+     },
+     "mean_net_inr": 125.35895702083508,
+     "median_net_inr": -378.81696970899986,
+     "n": 1047,
+     "positive_under_every_leave_one_out": true,
+     "return_on_risk": 0.006574871420787904,
+     "return_on_worst_peak": 0.1363535883371557,
+     "total_net_inr": 131250.8280008143,
+     "total_risk_inr": 19962493.5,
+     "total_without_best_10_inr": 13559.12146483148,
+     "total_without_best_1_inr": 116393.3447442505,
+     "total_without_best_5_inr": 64713.857898894494,
+     "unresolved_left_out": 176,
+     "win_rate": 0.4364851957975167,
+     "worst_leave_one_out_inr": 16433.01494210413,
+     "worst_net_inr": -9019.092496638998,
+     "worst_session_peak_committed_inr": 962577.0
+    }
+   },
+   "trades": 1228,
+   "unresolved_break_even": {
+    "break_even_net_per_unresolved_inr": -745.7433409137176,
+    "filled_positions": 1223,
+    "gain_measured_on_scored_inr": 131250.8280008143,
+    "note": "the gain is zero if each unresolved position averaged the break-even figure. Compare it against the scored tail, NOT against zero: an exit quote that never arrived is an unknown, not a flat trade",
+    "reserved_premium_per_unresolved_inr": 17251.985795454544,
+    "scored_mean_net_inr": 125.35895702083508,
+    "scored_p10_net_inr": -3009.417691906,
+    "scored_worst_net_inr": -9019.092496638998,
+    "unresolved_positions": 176,
+    "unresolved_share": 0.1439084219133279
+   },
+   "unresolved_by_decision_slot": {
+    "09:20": {
+     "scored": 18,
+     "unresolved": 0,
+     "unresolved_share": 0.0
+    },
+    "09:25": {
+     "scored": 32,
+     "unresolved": 0,
+     "unresolved_share": 0.0
+    },
+    "09:30": {
+     "scored": 33,
+     "unresolved": 0,
+     "unresolved_share": 0.0
+    },
+    "09:35": {
+     "scored": 36,
+     "unresolved": 0,
+     "unresolved_share": 0.0
+    },
+    "09:40": {
+     "scored": 18,
+     "unresolved": 0,
+     "unresolved_share": 0.0
+    },
+    "09:45": {
+     "scored": 36,
+     "unresolved": 0,
+     "unresolved_share": 0.0
+    },
+    "09:50": {
+     "scored": 18,
+     "unresolved": 0,
+     "unresolved_share": 0.0
+    },
+    "09:55": {
+     "scored": 18,
+     "unresolved": 0,
+     "unresolved_share": 0.0
+    },
+    "10:00": {
+     "scored": 21,
+     "unresolved": 0,
+     "unresolved_share": 0.0
+    },
+    "10:05": {
+     "scored": 33,
+     "unresolved": 0,
+     "unresolved_share": 0.0
+    },
+    "10:10": {
+     "scored": 18,
+     "unresolved": 0,
+     "unresolved_share": 0.0
+    },
+    "10:15": {
+     "scored": 15,
+     "unresolved": 3,
+     "unresolved_share": 0.16666666666666666
+    },
+    "10:20": {
+     "scored": 18,
+     "unresolved": 0,
+     "unresolved_share": 0.0
+    },
+    "10:25": {
+     "scored": 20,
+     "unresolved": 0,
+     "unresolved_share": 0.0
+    },
+    "10:30": {
+     "scored": 18,
+     "unresolved": 0,
+     "unresolved_share": 0.0
+    },
+    "10:35": {
+     "scored": 28,
+     "unresolved": 0,
+     "unresolved_share": 0.0
+    },
+    "10:40": {
+     "scored": 18,
+     "unresolved": 0,
+     "unresolved_share": 0.0
+    },
+    "10:45": {
+     "scored": 18,
+     "unresolved": 0,
+     "unresolved_share": 0.0
+    },
+    "10:50": {
+     "scored": 18,
+     "unresolved": 0,
+     "unresolved_share": 0.0
+    },
+    "10:55": {
+     "scored": 18,
+     "unresolved": 0,
+     "unresolved_share": 0.0
+    },
+    "11:00": {
+     "scored": 21,
+     "unresolved": 0,
+     "unresolved_share": 0.0
+    },
+    "11:05": {
+     "scored": 18,
+     "unresolved": 0,
+     "unresolved_share": 0.0
+    },
+    "11:10": {
+     "scored": 18,
+     "unresolved": 0,
+     "unresolved_share": 0.0
+    },
+    "11:15": {
+     "scored": 18,
+     "unresolved": 0,
+     "unresolved_share": 0.0
+    },
+    "11:20": {
+     "scored": 18,
+     "unresolved": 0,
+     "unresolved_share": 0.0
+    },
+    "11:25": {
+     "scored": 17,
+     "unresolved": 0,
+     "unresolved_share": 0.0
+    },
+    "11:30": {
+     "scored": 18,
+     "unresolved": 0,
+     "unresolved_share": 0.0
+    },
+    "11:35": {
+     "scored": 18,
+     "unresolved": 0,
+     "unresolved_share": 0.0
+    },
+    "11:40": {
+     "scored": 18,
+     "unresolved": 0,
+     "unresolved_share": 0.0
+    },
+    "11:45": {
+     "scored": 11,
+     "unresolved": 0,
+     "unresolved_share": 0.0
+    },
+    "11:50": {
+     "scored": 18,
+     "unresolved": 0,
+     "unresolved_share": 0.0
+    },
+    "11:55": {
+     "scored": 18,
+     "unresolved": 0,
+     "unresolved_share": 0.0
+    },
+    "12:00": {
+     "scored": 18,
+     "unresolved": 0,
+     "unresolved_share": 0.0
+    },
+    "12:05": {
+     "scored": 18,
+     "unresolved": 0,
+     "unresolved_share": 0.0
+    },
+    "12:10": {
+     "scored": 18,
+     "unresolved": 0,
+     "unresolved_share": 0.0
+    },
+    "12:15": {
+     "scored": 27,
+     "unresolved": 0,
+     "unresolved_share": 0.0
+    },
+    "12:20": {
+     "scored": 20,
+     "unresolved": 0,
+     "unresolved_share": 0.0
+    },
+    "12:25": {
+     "scored": 15,
+     "unresolved": 3,
+     "unresolved_share": 0.16666666666666666
+    },
+    "12:30": {
+     "scored": 18,
+     "unresolved": 0,
+     "unresolved_share": 0.0
+    },
+    "12:35": {
+     "scored": 18,
+     "unresolved": 0,
+     "unresolved_share": 0.0
+    },
+    "12:40": {
+     "scored": 18,
+     "unresolved": 0,
+     "unresolved_share": 0.0
+    },
+    "12:45": {
+     "scored": 17,
+     "unresolved": 1,
+     "unresolved_share": 0.05555555555555555
+    },
+    "12:50": {
+     "scored": 15,
+     "unresolved": 3,
+     "unresolved_share": 0.16666666666666666
+    },
+    "12:55": {
+     "scored": 12,
+     "unresolved": 6,
+     "unresolved_share": 0.3333333333333333
+    },
+    "13:00": {
+     "scored": 9,
+     "unresolved": 9,
+     "unresolved_share": 0.5
+    },
+    "13:05": {
+     "scored": 15,
+     "unresolved": 3,
+     "unresolved_share": 0.16666666666666666
+    },
+    "13:10": {
+     "scored": 15,
+     "unresolved": 3,
+     "unresolved_share": 0.16666666666666666
+    },
+    "13:15": {
+     "scored": 13,
+     "unresolved": 3,
+     "unresolved_share": 0.1875
+    },
+    "13:20": {
+     "scored": 15,
+     "unresolved": 3,
+     "unresolved_share": 0.16666666666666666
+    },
+    "13:25": {
+     "scored": 12,
+     "unresolved": 3,
+     "unresolved_share": 0.2
+    },
+    "13:30": {
+     "scored": 15,
+     "unresolved": 3,
+     "unresolved_share": 0.16666666666666666
+    },
+    "13:35": {
+     "scored": 12,
+     "unresolved": 6,
+     "unresolved_share": 0.3333333333333333
+    },
+    "13:40": {
+     "scored": 12,
+     "unresolved": 3,
+     "unresolved_share": 0.2
+    },
+    "13:45": {
+     "scored": 15,
+     "unresolved": 0,
+     "unresolved_share": 0.0
+    },
+    "13:50": {
+     "scored": 15,
+     "unresolved": 0,
+     "unresolved_share": 0.0
+    },
+    "13:55": {
+     "scored": 12,
+     "unresolved": 3,
+     "unresolved_share": 0.2
+    },
+    "14:00": {
+     "scored": 10,
+     "unresolved": 6,
+     "unresolved_share": 0.375
+    },
+    "14:05": {
+     "scored": 0,
+     "unresolved": 15,
+     "unresolved_share": 1.0
+    },
+    "14:10": {
+     "scored": 0,
+     "unresolved": 15,
+     "unresolved_share": 1.0
+    },
+    "14:15": {
+     "scored": 0,
+     "unresolved": 13,
+     "unresolved_share": 1.0
+    },
+    "14:20": {
+     "scored": 0,
+     "unresolved": 15,
+     "unresolved_share": 1.0
+    },
+    "14:25": {
+     "scored": 0,
+     "unresolved": 15,
+     "unresolved_share": 1.0
+    },
+    "14:30": {
+     "scored": 0,
+     "unresolved": 15,
+     "unresolved_share": 1.0
+    },
+    "14:35": {
+     "scored": 0,
+     "unresolved": 15,
+     "unresolved_share": 1.0
+    },
+    "14:40": {
+     "scored": 0,
+     "unresolved": 12,
+     "unresolved_share": 1.0
+    }
+   }
+  },
+  "0.05": {
+   "per_session": {
+    "2026-11-12": {
+     "AT_ARM_MEAN": {
+      "best_net_inr": 3891.3033278720045,
+      "gain_from_best_10_inr": 26602.96194975805,
+      "gain_from_best_1_inr": 3891.3033278720045,
+      "gain_from_best_5_inr": 16483.68097100803,
+      "imputation_inr": -11276.56834933067,
+      "mean_net_inr": -331.6637749803138,
+      "median_net_inr": -331.6637749803138,
+      "n": 153,
+      "total_net_inr": -50744.55757198796,
+      "total_without_best_10_inr": -77347.51952174625,
+      "total_without_best_1_inr": -54635.860899860185,
+      "total_without_best_5_inr": -67228.23854299622,
+      "unresolved_left_out": 0,
+      "win_rate": 0.3333333333333333,
+      "worst_net_inr": -4171.964456592996
+     },
+     "AT_TOTAL_LOSS": {
+      "best_net_inr": 3891.3033278720045,
+      "gain_from_best_10_inr": 26602.96194975805,
+      "gain_from_best_1_inr": 3891.3033278720045,
+      "gain_from_best_5_inr": 16483.68097100803,
+      "imputation_inr": -805564.5,
+      "mean_net_inr": -5523.088164853969,
+      "median_net_inr": -901.8397598109952,
+      "n": 153,
+      "total_net_inr": -845032.4892226574,
+      "total_without_best_10_inr": -871635.4511724159,
+      "total_without_best_1_inr": -848923.7925505298,
+      "total_without_best_5_inr": -861516.1701936658,
+      "unresolved_left_out": 0,
+      "win_rate": 0.3333333333333333,
+      "worst_net_inr": -26952.0
+     },
+     "EXCLUDE": {
+      "best_net_inr": 3891.3033278720045,
+      "gain_from_best_10_inr": 26602.96194975805,
+      "gain_from_best_1_inr": 3891.3033278720045,
+      "gain_from_best_5_inr": 16483.68097100803,
+      "imputation_inr": 0.0,
+      "mean_net_inr": -331.6637749803138,
+      "median_net_inr": -220.5475037019925,
+      "n": 119,
+      "total_net_inr": -39467.98922265735,
+      "total_without_best_10_inr": -66070.95117241539,
+      "total_without_best_1_inr": -43359.29255052934,
+      "total_without_best_5_inr": -55951.67019366536,
+      "unresolved_left_out": 34,
+      "win_rate": 0.42857142857142855,
+      "worst_net_inr": -4171.964456592996
+     },
+     "capital": {
+      "fills_costing_more_than_reserved": 42,
+      "orders": 156,
+      "peak_committed_inr": 935559.0,
+      "peak_concurrent_positions": 39,
+      "states": {
+       "RELEASED_AT_EXIT": 119,
+       "RELEASED_UNFILLED": 3,
+       "UNRESOLVED_NO_EXIT": 34
+      },
+      "total_fill_shortfall_inr": 20551.49999999993,
+      "unresolved_capital_inr": 805564.5,
+      "unresolved_positions": 34,
+      "worst_fill_shortfall_inr": 1134.0
+     },
+     "decision_time_opportunities": 323,
+     "outcome_status": {
+      "NOT_FILLED_NO_QUOTE_AT_FILL_POLL": 3,
+      "NO_EXIT_QUOTE_AT_TARGET_INSTANT": 34,
+      "SCORED": 119,
+      "WAIT_NO_POSITION": 167
+     }
+    },
+    "2026-11-13": {
+     "refused": "no decisions on this session"
+    },
+    "2026-11-16": {
+     "AT_ARM_MEAN": {
+      "best_net_inr": 4594.596521645004,
+      "gain_from_best_10_inr": 39011.41661111603,
+      "gain_from_best_1_inr": 4594.596521645004,
+      "gain_from_best_5_inr": 21056.86362464502,
+      "imputation_inr": -11980.630742402078,
+      "mean_net_inr": -499.19294760008654,
+      "median_net_inr": -499.19294760008654,
+      "n": 212,
+      "total_net_inr": -105828.90489121825,
+      "total_without_best_10_inr": -144840.32150233467,
+      "total_without_best_1_inr": -110423.50141286365,
+      "total_without_best_5_inr": -126885.76851586367,
+      "unresolved_left_out": 0,
+      "win_rate": 0.37735849056603776,
+      "worst_net_inr": -5318.133564987996
+     },
+     "AT_TOTAL_LOSS": {
+      "best_net_inr": 4594.596521645004,
+      "gain_from_best_10_inr": 39011.41661111603,
+      "gain_from_best_1_inr": 4594.596521645004,
+      "gain_from_best_5_inr": 21056.86362464502,
+      "imputation_inr": -416755.5,
+      "mean_net_inr": -2408.5083686264916,
+      "median_net_inr": -977.2896447549945,
+      "n": 212,
+      "total_net_inr": -510603.7741488163,
+      "total_without_best_10_inr": -549615.1907599326,
+      "total_without_best_1_inr": -515198.37067046145,
+      "total_without_best_5_inr": -531660.6377734615,
+      "unresolved_left_out": 0,
+      "win_rate": 0.37735849056603776,
+      "worst_net_inr": -20116.5
+     },
+     "EXCLUDE": {
+      "best_net_inr": 4594.596521645004,
+      "gain_from_best_10_inr": 39011.41661111603,
+      "gain_from_best_1_inr": 4594.596521645004,
+      "gain_from_best_5_inr": 21056.86362464502,
+      "imputation_inr": 0.0,
+      "mean_net_inr": -499.19294760008654,
+      "median_net_inr": -303.78181456599725,
+      "n": 188,
+      "total_net_inr": -93848.27414881632,
+      "total_without_best_10_inr": -132859.6907599324,
+      "total_without_best_1_inr": -98442.87067046134,
+      "total_without_best_5_inr": -114905.13777346136,
+      "unresolved_left_out": 24,
+      "win_rate": 0.425531914893617,
+      "worst_net_inr": -5318.133564987996
+     },
+     "capital": {
+      "fills_costing_more_than_reserved": 97,
+      "orders": 212,
+      "peak_committed_inr": 811147.5,
+      "peak_concurrent_positions": 47,
+      "states": {
+       "RELEASED_AT_EXIT": 188,
+       "UNRESOLVED_NO_EXIT": 24
+      },
+      "total_fill_shortfall_inr": 60869.99999999994,
+      "unresolved_capital_inr": 416755.5,
+      "unresolved_positions": 24,
+      "worst_fill_shortfall_inr": 2950.4999999999964
+     },
+     "decision_time_opportunities": 414,
+     "outcome_status": {
+      "NO_EXIT_QUOTE_AT_TARGET_INSTANT": 24,
+      "SCORED": 188,
+      "WAIT_NO_POSITION": 202
+     }
+    },
+    "2026-11-17": {
+     "AT_ARM_MEAN": {
+      "best_net_inr": 10120.354662935004,
+      "gain_from_best_10_inr": 92704.39596358103,
+      "gain_from_best_1_inr": 10120.354662935004,
+      "gain_from_best_5_inr": 48841.731682243015,
+      "imputation_inr": 10775.488667927657,
+      "mean_net_inr": 448.9786944969857,
+      "median_net_inr": -163.93413155350117,
+      "n": 210,
+      "total_net_inr": 94285.52584436686,
+      "total_without_best_10_inr": 1581.1298807864068,
+      "total_without_best_1_inr": 84165.17118143244,
+      "total_without_best_5_inr": 45443.794162124424,
+      "unresolved_left_out": 0,
+      "win_rate": 0.4857142857142857,
+      "worst_net_inr": -7300.416665202998
+     },
+     "AT_TOTAL_LOSS": {
+      "best_net_inr": 10120.354662935004,
+      "gain_from_best_10_inr": 92704.39596358103,
+      "gain_from_best_1_inr": 10120.354662935004,
+      "gain_from_best_5_inr": 48841.731682243015,
+      "imputation_inr": -349257.0,
+      "mean_net_inr": -1265.4617277312411,
+      "median_net_inr": -529.2775434955008,
+      "n": 210,
+      "total_net_inr": -265746.9628235607,
+      "total_without_best_10_inr": -358451.358787142,
+      "total_without_best_1_inr": -275867.3174864959,
+      "total_without_best_5_inr": -314588.6945058039,
+      "unresolved_left_out": 0,
+      "win_rate": 0.37142857142857144,
+      "worst_net_inr": -26269.5
+     },
+     "EXCLUDE": {
+      "best_net_inr": 10120.354662935004,
+      "gain_from_best_10_inr": 92704.39596358103,
+      "gain_from_best_1_inr": 10120.354662935004,
+      "gain_from_best_5_inr": 48841.731682243015,
+      "imputation_inr": 0.0,
+      "mean_net_inr": 448.97869449698567,
+      "median_net_inr": -425.21329120150136,
+      "n": 186,
+      "total_net_inr": 83510.03717643929,
+      "total_without_best_10_inr": -9194.358787141515,
+      "total_without_best_1_inr": 73389.68251350452,
+      "total_without_best_5_inr": 34668.30549419651,
+      "unresolved_left_out": 24,
+      "win_rate": 0.41935483870967744,
+      "worst_net_inr": -7300.416665202998
+     },
+     "capital": {
+      "fills_costing_more_than_reserved": 91,
+      "orders": 210,
+      "peak_committed_inr": 758839.5,
+      "peak_concurrent_positions": 48,
+      "states": {
+       "RELEASED_AT_EXIT": 186,
+       "UNRESOLVED_NO_EXIT": 24
+      },
+      "total_fill_shortfall_inr": 48310.49999999993,
+      "unresolved_capital_inr": 349257.0,
+      "unresolved_positions": 24,
+      "worst_fill_shortfall_inr": 2265.0
+     },
+     "decision_time_opportunities": 414,
+     "outcome_status": {
+      "NO_EXIT_QUOTE_AT_TARGET_INSTANT": 24,
+      "SCORED": 186,
+      "WAIT_NO_POSITION": 204
+     }
+    },
+    "2026-11-18": {
+     "AT_ARM_MEAN": {
+      "best_net_inr": 5759.725672109003,
+      "gain_from_best_10_inr": 40253.59346560105,
+      "gain_from_best_1_inr": 5759.725672109003,
+      "gain_from_best_5_inr": 23419.730028580023,
+      "imputation_inr": -1149.8611418758915,
+      "mean_net_inr": -47.910880911495475,
+      "median_net_inr": -47.910880911495475,
+      "n": 221,
+      "total_net_inr": -10588.304681440482,
+      "total_without_best_10_inr": -50841.898147041335,
+      "total_without_best_1_inr": -16348.030353549286,
+      "total_without_best_5_inr": -34008.03471002031,
+      "unresolved_left_out": 0,
+      "win_rate": 0.42081447963800905,
+      "worst_net_inr": -4641.7583524569945
+     },
+     "AT_TOTAL_LOSS": {
+      "best_net_inr": 5759.725672109003,
+      "gain_from_best_10_inr": 40253.59346560105,
+      "gain_from_best_1_inr": 5759.725672109003,
+      "gain_from_best_5_inr": 23419.730028580023,
+      "imputation_inr": -371479.5,
+      "mean_net_inr": -1723.6106042514236,
+      "median_net_inr": -377.438588743001,
+      "n": 221,
+      "total_net_inr": -380917.9435395646,
+      "total_without_best_10_inr": -421171.5370051659,
+      "total_without_best_1_inr": -386677.6692116738,
+      "total_without_best_5_inr": -404337.6735681448,
+      "unresolved_left_out": 0,
+      "win_rate": 0.42081447963800905,
+      "worst_net_inr": -22537.5
+     },
+     "EXCLUDE": {
+      "best_net_inr": 5759.725672109003,
+      "gain_from_best_10_inr": 40253.59346560105,
+      "gain_from_best_1_inr": 5759.725672109003,
+      "gain_from_best_5_inr": 23419.730028580023,
+      "imputation_inr": 0.0,
+      "mean_net_inr": -47.910880911495475,
+      "median_net_inr": -40.49278648599591,
+      "n": 197,
+      "total_net_inr": -9438.443539564601,
+      "total_without_best_10_inr": -49692.03700516572,
+      "total_without_best_1_inr": -15198.169211673674,
+      "total_without_best_5_inr": -32858.173568144695,
+      "unresolved_left_out": 24,
+      "win_rate": 0.4720812182741117,
+      "worst_net_inr": -4641.7583524569945
+     },
+     "capital": {
+      "fills_costing_more_than_reserved": 108,
+      "orders": 221,
+      "peak_committed_inr": 741307.5,
+      "peak_concurrent_positions": 48,
+      "states": {
+       "RELEASED_AT_EXIT": 197,
+       "UNRESOLVED_NO_EXIT": 24
+      },
+      "total_fill_shortfall_inr": 82681.49999999997,
+      "unresolved_capital_inr": 371479.5,
+      "unresolved_positions": 24,
+      "worst_fill_shortfall_inr": 3793.5
+     },
+     "decision_time_opportunities": 414,
+     "outcome_status": {
+      "NO_EXIT_QUOTE_AT_TARGET_INSTANT": 24,
+      "SCORED": 197,
+      "WAIT_NO_POSITION": 193
+     }
+    },
+    "2026-11-19": {
+     "AT_ARM_MEAN": {
+      "best_net_inr": 9779.650420244,
+      "gain_from_best_10_inr": 82240.45249493304,
+      "gain_from_best_1_inr": 9779.650420244,
+      "gain_from_best_5_inr": 44657.79034999001,
+      "imputation_inr": 17867.350723378757,
+      "mean_net_inr": 397.05223829730573,
+      "median_net_inr": 397.05223829730573,
+      "n": 229,
+      "total_net_inr": 90924.9625700827,
+      "total_without_best_10_inr": 8684.510075149734,
+      "total_without_best_1_inr": 81145.31214983878,
+      "total_without_best_5_inr": 46267.17222009276,
+      "unresolved_left_out": 0,
+      "win_rate": 0.5633187772925764,
+      "worst_net_inr": -9022.090291638997
+     },
+     "AT_TOTAL_LOSS": {
+      "best_net_inr": 9779.650420244,
+      "gain_from_best_10_inr": 82240.45249493304,
+      "gain_from_best_1_inr": 9779.650420244,
+      "gain_from_best_5_inr": 44657.79034999001,
+      "imputation_inr": -617742.0,
+      "mean_net_inr": -2378.5344460842607,
+      "median_net_inr": -898.8959161720018,
+      "n": 229,
+      "total_net_inr": -544684.3881532957,
+      "total_without_best_10_inr": -626924.8406482292,
+      "total_without_best_1_inr": -554464.0385735403,
+      "total_without_best_5_inr": -589342.1785032862,
+      "unresolved_left_out": 0,
+      "win_rate": 0.36681222707423583,
+      "worst_net_inr": -31153.5
+     },
+     "EXCLUDE": {
+      "best_net_inr": 9779.650420244,
+      "gain_from_best_10_inr": 82240.45249493304,
+      "gain_from_best_1_inr": 9779.650420244,
+      "gain_from_best_5_inr": 44657.79034999001,
+      "imputation_inr": 0.0,
+      "mean_net_inr": 397.05223829730573,
+      "median_net_inr": -572.2984078855013,
+      "n": 184,
+      "total_net_inr": 73057.61184670423,
+      "total_without_best_10_inr": -9182.840648228754,
+      "total_without_best_1_inr": 63277.96142646029,
+      "total_without_best_5_inr": 28399.821496714274,
+      "unresolved_left_out": 45,
+      "win_rate": 0.45652173913043476,
+      "worst_net_inr": -9022.090291638997
+     },
+     "capital": {
+      "fills_costing_more_than_reserved": 76,
+      "orders": 229,
+      "peak_committed_inr": 925440.0,
+      "peak_concurrent_positions": 51,
+      "states": {
+       "RELEASED_AT_EXIT": 184,
+       "UNRESOLVED_NO_EXIT": 45
+      },
+      "total_fill_shortfall_inr": 58982.999999999956,
+      "unresolved_capital_inr": 617742.0,
+      "unresolved_positions": 45,
+      "worst_fill_shortfall_inr": 2873.9999999999964
+     },
+     "decision_time_opportunities": 414,
+     "outcome_status": {
+      "NO_EXIT_QUOTE_AT_TARGET_INSTANT": 45,
+      "SCORED": 184,
+      "WAIT_NO_POSITION": 185
+     }
+    },
+    "2026-11-20": {
+     "AT_ARM_MEAN": {
+      "best_net_inr": 14854.485461564005,
+      "gain_from_best_10_inr": 116378.50701029906,
+      "gain_from_best_1_inr": 14854.485461564005,
+      "gain_from_best_5_inr": 66521.98112692003,
+      "imputation_inr": 16517.224642154662,
+      "mean_net_inr": 660.6889856861865,
+      "median_net_inr": -62.065869759999615,
+      "n": 198,
+      "total_net_inr": 130816.41916586482,
+      "total_without_best_10_inr": 14437.912155565982,
+      "total_without_best_1_inr": 115961.93370430103,
+      "total_without_best_5_inr": 64294.438038945016,
+      "unresolved_left_out": 0,
+      "win_rate": 0.48484848484848486,
+      "worst_net_inr": -4934.246854216003
+     },
+     "AT_TOTAL_LOSS": {
+      "best_net_inr": 14854.485461564005,
+      "gain_from_best_10_inr": 116378.50701029906,
+      "gain_from_best_1_inr": 14854.485461564005,
+      "gain_from_best_5_inr": 66521.98112692003,
+      "imputation_inr": -475551.0,
+      "mean_net_inr": -1824.5040680620693,
+      "median_net_inr": -1017.0,
+      "n": 198,
+      "total_net_inr": -361251.8054762897,
+      "total_without_best_10_inr": -477630.3124865884,
+      "total_without_best_1_inr": -376106.2909378534,
+      "total_without_best_5_inr": -427773.7866032094,
+      "unresolved_left_out": 0,
+      "win_rate": 0.35858585858585856,
+      "worst_net_inr": -57054.0
+     },
+     "EXCLUDE": {
+      "best_net_inr": 14854.485461564005,
+      "gain_from_best_10_inr": 116378.50701029906,
+      "gain_from_best_1_inr": 14854.485461564005,
+      "gain_from_best_5_inr": 66521.98112692003,
+      "imputation_inr": 0.0,
+      "mean_net_inr": 660.6889856861865,
+      "median_net_inr": -483.0569445879995,
+      "n": 173,
+      "total_net_inr": 114299.19452371028,
+      "total_without_best_10_inr": -2079.312486588955,
+      "total_without_best_1_inr": 99444.7090621461,
+      "total_without_best_5_inr": 47777.21339679008,
+      "unresolved_left_out": 25,
+      "win_rate": 0.41040462427745666,
+      "worst_net_inr": -4934.246854216003
+     },
+     "capital": {
+      "fills_costing_more_than_reserved": 79,
+      "orders": 200,
+      "peak_committed_inr": 962592.0,
+      "peak_concurrent_positions": 51,
+      "states": {
+       "RELEASED_AT_EXIT": 173,
+       "RELEASED_UNFILLED": 2,
+       "UNRESOLVED_NO_EXIT": 25
+      },
+      "total_fill_shortfall_inr": 88063.49999999997,
+      "unresolved_capital_inr": 475551.0,
+      "unresolved_positions": 25,
+      "worst_fill_shortfall_inr": 4948.499999999993
+     },
+     "decision_time_opportunities": 408,
+     "outcome_status": {
+      "NOT_FILLED_NO_QUOTE_AT_FILL_POLL": 2,
+      "NO_EXIT_QUOTE_AT_TARGET_INSTANT": 25,
+      "SCORED": 173,
+      "WAIT_NO_POSITION": 208
+     }
+    }
+   },
+   "resolvable_window": {
+    "break_even_net_per_sporadic_unresolved_inr": -2100.1989612428797,
+    "last_decision_slot_with_any_exit": "14:00",
+    "note": "after dropping the structurally unclosable decision slots, which is the matched correction, the remaining hole is the sporadic one. The gain is zero if each of those averaged the figure above; compare it against the scored p10, not against zero",
+    "sporadic_share_of_filled": 0.04987735077677841,
+    "sporadic_unresolved_positions": 61,
+    "structural_slots_no_exit_possible": [
+     "14:05",
+     "14:10",
+     "14:15",
+     "14:20",
+     "14:25",
+     "14:30",
+     "14:35",
+     "14:40"
+    ],
+    "structural_unresolved_positions": 115
+   },
+   "sessions_scored": 6,
+   "span": {
+    "AT_ARM_MEAN": {
+     "best_net_inr": 14854.485461564005,
+     "gain_from_best_10_inr": 117661.72858598306,
+     "gain_from_best_1_inr": 14854.485461564005,
+     "gain_from_best_5_inr": 66521.98112692003,
+     "imputation_inr": 21535.564515667196,
+     "leave_one_session_out_total_inr": {
+      "2026-11-12": 193222.77442733225,
+      "2026-11-16": 261236.2925532745,
+      "2026-11-17": 52476.10540342436,
+      "2026-11-18": 162147.86039497965,
+      "2026-11-19": 63411.58475130537,
+      "2026-11-20": 16199.388632617947
+     },
+     "mean_net_inr": 122.36116202083632,
+     "median_net_inr": 122.36116202083633,
+     "n": 1223,
+     "positive_under_every_leave_one_out": true,
+     "return_on_risk": 0.00749585360733572,
+     "return_on_worst_peak": 0.15546327120055142,
+     "total_net_inr": 149647.7011514812,
+     "total_risk_inr": 19964064.0,
+     "total_without_best_10_inr": 31985.97256549607,
+     "total_without_best_1_inr": 134793.21568991512,
+     "total_without_best_5_inr": 83125.7200245591,
+     "unresolved_left_out": 0,
+     "win_rate": 0.517579721995094,
+     "worst_leave_one_out_inr": 16199.388632617947,
+     "worst_net_inr": -9022.090291638997,
+     "worst_session_peak_committed_inr": 962592.0
+    },
+    "AT_TOTAL_LOSS": {
+     "best_net_inr": 14854.485461564005,
+     "gain_from_best_10_inr": 117661.72858598306,
+     "gain_from_best_1_inr": 14854.485461564005,
+     "gain_from_best_5_inr": 66521.98112692003,
+     "imputation_inr": -3036349.5,
+     "leave_one_session_out_total_inr": {
+      "2026-11-12": -2063204.8741415269,
+      "2026-11-16": -2397633.589215368,
+      "2026-11-17": -2642490.400540624,
+      "2026-11-18": -2527319.41982462,
+      "2026-11-19": -2363552.9752108883,
+      "2026-11-20": -2546985.5578878946
+     },
+     "mean_net_inr": -2377.9536904040756,
+     "median_net_inr": -731.7403529560017,
+     "n": 1223,
+     "positive_under_every_leave_one_out": false,
+     "return_on_risk": -0.14567361451877656,
+     "return_on_worst_peak": -3.021256527546649,
+     "total_net_inr": -2908237.3633641843,
+     "total_risk_inr": 19964064.0,
+     "total_without_best_10_inr": -3025899.091950163,
+     "total_without_best_1_inr": -2923091.848825744,
+     "total_without_best_5_inr": -2974759.3444911,
+     "unresolved_left_out": 0,
+     "win_rate": 0.37367130008176613,
+     "worst_leave_one_out_inr": -2642490.400540624,
+     "worst_net_inr": -57054.0,
+     "worst_session_peak_committed_inr": 962592.0
+    },
+    "EXCLUDE": {
+     "best_net_inr": 14854.485461564005,
+     "gain_from_best_10_inr": 117661.72858598306,
+     "gain_from_best_1_inr": 14854.485461564005,
+     "gain_from_best_5_inr": 66521.98112692003,
+     "imputation_inr": 0.0,
+     "leave_one_session_out_total_inr": {
+      "2026-11-12": 167580.12585847298,
+      "2026-11-16": 221960.41078463182,
+      "2026-11-17": 44602.0994593763,
+      "2026-11-18": 137550.58017538028,
+      "2026-11-19": 55054.52478911144,
+      "2026-11-20": 13812.942112105395
+     },
+     "mean_net_inr": 122.36116202083633,
+     "median_net_inr": -381.81476470899975,
+     "n": 1047,
+     "positive_under_every_leave_one_out": true,
+     "return_on_risk": 0.006417137143810783,
+     "return_on_worst_peak": 0.13309079717659783,
+     "total_net_inr": 128112.13663581567,
+     "total_risk_inr": 19964064.0,
+     "total_without_best_10_inr": 10450.40804983101,
+     "total_without_best_1_inr": 113257.65117425006,
+     "total_without_best_5_inr": 61590.15550889404,
+     "unresolved_left_out": 176,
+     "win_rate": 0.4364851957975167,
+     "worst_leave_one_out_inr": 13812.942112105395,
+     "worst_net_inr": -9022.090291638997,
+     "worst_session_peak_committed_inr": 962592.0
+    }
+   },
+   "trades": 1228,
+   "unresolved_break_even": {
+    "break_even_net_per_unresolved_inr": -727.9098672489527,
+    "filled_positions": 1223,
+    "gain_measured_on_scored_inr": 128112.13663581567,
+    "note": "the gain is zero if each unresolved position averaged the break-even figure. Compare it against the scored tail, NOT against zero: an exit quote that never arrived is an unknown, not a flat trade",
+    "reserved_premium_per_unresolved_inr": 17251.985795454544,
+    "scored_mean_net_inr": 122.36116202083633,
+    "scored_p10_net_inr": -3012.4154869060003,
+    "scored_worst_net_inr": -9022.090291638997,
+    "unresolved_positions": 176,
+    "unresolved_share": 0.1439084219133279
+   },
+   "unresolved_by_decision_slot": {
+    "09:20": {
+     "scored": 18,
+     "unresolved": 0,
+     "unresolved_share": 0.0
+    },
+    "09:25": {
+     "scored": 32,
+     "unresolved": 0,
+     "unresolved_share": 0.0
+    },
+    "09:30": {
+     "scored": 33,
+     "unresolved": 0,
+     "unresolved_share": 0.0
+    },
+    "09:35": {
+     "scored": 36,
+     "unresolved": 0,
+     "unresolved_share": 0.0
+    },
+    "09:40": {
+     "scored": 18,
+     "unresolved": 0,
+     "unresolved_share": 0.0
+    },
+    "09:45": {
+     "scored": 36,
+     "unresolved": 0,
+     "unresolved_share": 0.0
+    },
+    "09:50": {
+     "scored": 18,
+     "unresolved": 0,
+     "unresolved_share": 0.0
+    },
+    "09:55": {
+     "scored": 18,
+     "unresolved": 0,
+     "unresolved_share": 0.0
+    },
+    "10:00": {
+     "scored": 21,
+     "unresolved": 0,
+     "unresolved_share": 0.0
+    },
+    "10:05": {
+     "scored": 33,
+     "unresolved": 0,
+     "unresolved_share": 0.0
+    },
+    "10:10": {
+     "scored": 18,
+     "unresolved": 0,
+     "unresolved_share": 0.0
+    },
+    "10:15": {
+     "scored": 15,
+     "unresolved": 3,
+     "unresolved_share": 0.16666666666666666
+    },
+    "10:20": {
+     "scored": 18,
+     "unresolved": 0,
+     "unresolved_share": 0.0
+    },
+    "10:25": {
+     "scored": 20,
+     "unresolved": 0,
+     "unresolved_share": 0.0
+    },
+    "10:30": {
+     "scored": 18,
+     "unresolved": 0,
+     "unresolved_share": 0.0
+    },
+    "10:35": {
+     "scored": 28,
+     "unresolved": 0,
+     "unresolved_share": 0.0
+    },
+    "10:40": {
+     "scored": 18,
+     "unresolved": 0,
+     "unresolved_share": 0.0
+    },
+    "10:45": {
+     "scored": 18,
+     "unresolved": 0,
+     "unresolved_share": 0.0
+    },
+    "10:50": {
+     "scored": 18,
+     "unresolved": 0,
+     "unresolved_share": 0.0
+    },
+    "10:55": {
+     "scored": 18,
+     "unresolved": 0,
+     "unresolved_share": 0.0
+    },
+    "11:00": {
+     "scored": 21,
+     "unresolved": 0,
+     "unresolved_share": 0.0
+    },
+    "11:05": {
+     "scored": 18,
+     "unresolved": 0,
+     "unresolved_share": 0.0
+    },
+    "11:10": {
+     "scored": 18,
+     "unresolved": 0,
+     "unresolved_share": 0.0
+    },
+    "11:15": {
+     "scored": 18,
+     "unresolved": 0,
+     "unresolved_share": 0.0
+    },
+    "11:20": {
+     "scored": 18,
+     "unresolved": 0,
+     "unresolved_share": 0.0
+    },
+    "11:25": {
+     "scored": 17,
+     "unresolved": 0,
+     "unresolved_share": 0.0
+    },
+    "11:30": {
+     "scored": 18,
+     "unresolved": 0,
+     "unresolved_share": 0.0
+    },
+    "11:35": {
+     "scored": 18,
+     "unresolved": 0,
+     "unresolved_share": 0.0
+    },
+    "11:40": {
+     "scored": 18,
+     "unresolved": 0,
+     "unresolved_share": 0.0
+    },
+    "11:45": {
+     "scored": 11,
+     "unresolved": 0,
+     "unresolved_share": 0.0
+    },
+    "11:50": {
+     "scored": 18,
+     "unresolved": 0,
+     "unresolved_share": 0.0
+    },
+    "11:55": {
+     "scored": 18,
+     "unresolved": 0,
+     "unresolved_share": 0.0
+    },
+    "12:00": {
+     "scored": 18,
+     "unresolved": 0,
+     "unresolved_share": 0.0
+    },
+    "12:05": {
+     "scored": 18,
+     "unresolved": 0,
+     "unresolved_share": 0.0
+    },
+    "12:10": {
+     "scored": 18,
+     "unresolved": 0,
+     "unresolved_share": 0.0
+    },
+    "12:15": {
+     "scored": 27,
+     "unresolved": 0,
+     "unresolved_share": 0.0
+    },
+    "12:20": {
+     "scored": 20,
+     "unresolved": 0,
+     "unresolved_share": 0.0
+    },
+    "12:25": {
+     "scored": 15,
+     "unresolved": 3,
+     "unresolved_share": 0.16666666666666666
+    },
+    "12:30": {
+     "scored": 18,
+     "unresolved": 0,
+     "unresolved_share": 0.0
+    },
+    "12:35": {
+     "scored": 18,
+     "unresolved": 0,
+     "unresolved_share": 0.0
+    },
+    "12:40": {
+     "scored": 18,
+     "unresolved": 0,
+     "unresolved_share": 0.0
+    },
+    "12:45": {
+     "scored": 17,
+     "unresolved": 1,
+     "unresolved_share": 0.05555555555555555
+    },
+    "12:50": {
+     "scored": 15,
+     "unresolved": 3,
+     "unresolved_share": 0.16666666666666666
+    },
+    "12:55": {
+     "scored": 12,
+     "unresolved": 6,
+     "unresolved_share": 0.3333333333333333
+    },
+    "13:00": {
+     "scored": 9,
+     "unresolved": 9,
+     "unresolved_share": 0.5
+    },
+    "13:05": {
+     "scored": 15,
+     "unresolved": 3,
+     "unresolved_share": 0.16666666666666666
+    },
+    "13:10": {
+     "scored": 15,
+     "unresolved": 3,
+     "unresolved_share": 0.16666666666666666
+    },
+    "13:15": {
+     "scored": 13,
+     "unresolved": 3,
+     "unresolved_share": 0.1875
+    },
+    "13:20": {
+     "scored": 15,
+     "unresolved": 3,
+     "unresolved_share": 0.16666666666666666
+    },
+    "13:25": {
+     "scored": 12,
+     "unresolved": 3,
+     "unresolved_share": 0.2
+    },
+    "13:30": {
+     "scored": 15,
+     "unresolved": 3,
+     "unresolved_share": 0.16666666666666666
+    },
+    "13:35": {
+     "scored": 12,
+     "unresolved": 6,
+     "unresolved_share": 0.3333333333333333
+    },
+    "13:40": {
+     "scored": 12,
+     "unresolved": 3,
+     "unresolved_share": 0.2
+    },
+    "13:45": {
+     "scored": 15,
+     "unresolved": 0,
+     "unresolved_share": 0.0
+    },
+    "13:50": {
+     "scored": 15,
+     "unresolved": 0,
+     "unresolved_share": 0.0
+    },
+    "13:55": {
+     "scored": 12,
+     "unresolved": 3,
+     "unresolved_share": 0.2
+    },
+    "14:00": {
+     "scored": 10,
+     "unresolved": 6,
+     "unresolved_share": 0.375
+    },
+    "14:05": {
+     "scored": 0,
+     "unresolved": 15,
+     "unresolved_share": 1.0
+    },
+    "14:10": {
+     "scored": 0,
+     "unresolved": 15,
+     "unresolved_share": 1.0
+    },
+    "14:15": {
+     "scored": 0,
+     "unresolved": 13,
+     "unresolved_share": 1.0
+    },
+    "14:20": {
+     "scored": 0,
+     "unresolved": 15,
+     "unresolved_share": 1.0
+    },
+    "14:25": {
+     "scored": 0,
+     "unresolved": 15,
+     "unresolved_share": 1.0
+    },
+    "14:30": {
+     "scored": 0,
+     "unresolved": 15,
+     "unresolved_share": 1.0
+    },
+    "14:35": {
+     "scored": 0,
+     "unresolved": 15,
+     "unresolved_share": 1.0
+    },
+    "14:40": {
+     "scored": 0,
+     "unresolved": 12,
+     "unresolved_share": 1.0
+    }
+   }
+  }
+ },
+ "common_risk_budget_inr": null,
+ "declared_tick_inr": 0.05,
+ "economic_check_version": "premium_forecast_economic_check_v2_causal",
+ "fill_stress_note": "the decision is made on the UNSTRESSED decision-time estimate and then realised at the stressed fill, so the rule cannot decline the trades its own worse fills would have killed",
+ "horizon_min": 60,
+ "index": "BNF",
+ "label": "PROXY_SIMULATED_FILL -- no order was placed",
+ "stress_version": "range_ev_survival_stress_v1_concentration_unresolved_fills_exposure",
+ "unresolved_policies": [
+  "EXCLUDE",
+  "AT_ARM_MEAN",
+  "AT_TOTAL_LOSS"
+ ]
+}

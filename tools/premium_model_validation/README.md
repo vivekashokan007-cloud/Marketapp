@@ -17,10 +17,12 @@ is empty.
 | `tilt_compare.py` | the runner: `E0_TILT(λ)` through the frozen model, the CRPS decomposition into a tilt cost and a shape value, the λ sensitivity curve, and the declared breakdowns |
 | `economic_check.py` | the **causal** replay: WAIT, a buy-all diagnostic, the median forecast rule and the predeclared `RANGE_EV` rule, all on the same decision-time population. Costs are estimated at the decision and realised after the exit, and the two never meet. It **refuses to run** without the reviewed Stage D ledger rather than reimplement a fee table |
 | `fee_worked_cases.py` | the fee arithmetic printed **by** the governed model, so a figure in a review document cannot drift from the code |
+| `spread_replay.py` | two-leg debit verticals on the same population. Fees are charged on **each executed leg**, not on the net spread price — charging the net understated turnover 2.26× and skipped the short leg's entry STT entirely, which is the defect corrected on 22 November |
+| `stress_range_ev.py` | the survival stress for the one arm that stays positive under every leave-one-session-out. Concentration (remove the best k), the unresolved exits priced three ways, a second adverse tick each way with the **decision left unstressed**, and the split between a capture-window boundary and a genuine hole in the book |
 | `PREDECLARATION_RANGE_AWARE_RULE_20261121.md` | the one range-aware rule, committed before its implementation |
 | `FEE_EXTENSION_REVIEW_20261121.md` | the unapplied fee extension, with dated sources and worked cases, returned for its own review |
 | `OVERNIGHT_CAPTURE_CHECKLIST_20261121.md` | why no overnight pair can be formed from the current capture window, proven rather than inferred |
-| `tests/` | 96 checks across three modules, no network |
+| `tests/` | 155 checks, no network. Seven need real inputs and skip loudly without them |
 | `results/` | the printed runs and machine-readable scores for 12 and 16 November |
 
 ## The answer, in three lines

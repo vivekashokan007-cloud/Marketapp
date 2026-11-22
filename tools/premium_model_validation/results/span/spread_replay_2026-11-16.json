@@ -33,18 +33,18 @@
       "width_points": 200.0
      },
      "mean_max_loss_inr": 2961.105263157893,
-     "mean_net_inr": -202.04152126583855,
-     "median_net_inr": -207.41232736699524,
-     "net_p10_inr": -538.958469469999,
+     "mean_net_inr": -273.81750917994384,
+     "median_net_inr": -274.72674542299933,
+     "net_p10_inr": -609.6114604099989,
      "scored": 57,
      "skipped_by_reason": {
       "exit:leg_quote_missing_at_exit": 11,
       "fill:leg_quote_missing_at_decision": 1
      },
      "total_capital_deployed_inr": 168782.99999999994,
-     "total_net_inr": -11516.366712152796,
-     "win_rate": 0.24561403508771928,
-     "worst_net_inr": -655.9898146159932
+     "total_net_inr": -15607.598023256798,
+     "win_rate": 0.15789473684210525,
+     "worst_net_inr": -727.8126512539932
     },
     "BULL_CALL_DEBIT": {
      "legs": {
@@ -54,18 +54,18 @@
       "width_points": 200.0
      },
      "mean_max_loss_inr": 3135.4736842105244,
-     "mean_net_inr": -215.61375649620658,
-     "median_net_inr": -172.43795648899726,
-     "net_p10_inr": -597.9719487229952,
+     "mean_net_inr": -290.4348490816803,
+     "median_net_inr": -247.9442749249966,
+     "net_p10_inr": -676.6218484009953,
      "scored": 57,
      "skipped_by_reason": {
       "exit:leg_quote_missing_at_exit": 11,
       "fill:leg_quote_missing_at_decision": 1
      },
      "total_capital_deployed_inr": 178721.99999999997,
-     "total_net_inr": -12289.98412028377,
-     "win_rate": 0.22807017543859648,
-     "worst_net_inr": -789.717044338998
+     "total_net_inr": -16554.78639765578,
+     "win_rate": 0.14035087719298245,
+     "worst_net_inr": -866.624620636998
     }
    }
   },
@@ -101,18 +101,18 @@
       "width_points": 100.0
      },
      "mean_max_loss_inr": 3108.1403508771928,
-     "mean_net_inr": 41.01444016681592,
-     "median_net_inr": 31.691206858500294,
-     "net_p10_inr": -741.6948155504997,
+     "mean_net_inr": 19.264810930552766,
+     "median_net_inr": 13.0317531365003,
+     "net_p10_inr": -763.3742964644997,
      "scored": 57,
      "skipped_by_reason": {
       "exit:leg_quote_missing_at_exit": 11,
       "fill:leg_quote_missing_at_decision": 1
      },
      "total_capital_deployed_inr": 177164.0,
-     "total_net_inr": 2337.8230895085094,
+     "total_net_inr": 1098.094223041505,
      "win_rate": 0.5087719298245614,
-     "worst_net_inr": -994.8235934264995
+     "worst_net_inr": -1015.7711799954996
     },
     "BULL_CALL_DEBIT": {
      "legs": {
@@ -122,18 +122,18 @@
       "width_points": 100.0
      },
      "mean_max_loss_inr": 3445.1710526315787,
-     "mean_net_inr": -338.9059608345877,
-     "median_net_inr": -330.60796945200093,
-     "net_p10_inr": -1108.9637924630001,
+     "mean_net_inr": -361.6449652519035,
+     "median_net_inr": -356.5863666240009,
+     "net_p10_inr": -1133.6629889655003,
      "scored": 57,
      "skipped_by_reason": {
       "exit:leg_quote_missing_at_exit": 11,
       "fill:leg_quote_missing_at_decision": 1
      },
      "total_capital_deployed_inr": 196374.75,
-     "total_net_inr": -19317.639767571498,
+     "total_net_inr": -20613.763019358496,
      "win_rate": 0.2631578947368421,
-     "worst_net_inr": -1437.8084290965007
+     "worst_net_inr": -1468.1936006405008
     }
    }
   }

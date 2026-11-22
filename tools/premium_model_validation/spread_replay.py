@@ -166,11 +166,30 @@ def run(export_path, spots_path, ledger_root, horizon_min=60):
     out['session'] = session
     sd = datetime.date.fromisoformat(session)
 
-    def fees_for(lot, debit_in, credit_out):
-        """Four orders across two legs, through the governed dated model."""
-        return FEES.fees_v2(sd, sd, 2, lot,
-                            {'sell_px': 0.0, 'buy_px': max(debit_in, 0.0)},
-                            {'exit_sell_px': max(credit_out, 0.0), 'exit_buy_px': 0.0})
+    def fees_for(lot, entry_detail, exit_detail):
+        """Four orders across two legs, priced on EACH EXECUTED LEG, not on the net.
+
+        DEFECT FIXED (research owner, 22 Nov): this passed the NET debit as `buy_px` with
+        `sell_px: 0`, and the net credit as `exit_sell_px`. The model's own docstring specifies
+        per-leg inputs -- entry {sell_px: short-leg bids, buy_px: long-leg asks}, exit
+        {exit_sell_px: long-leg bids, exit_buy_px: short-leg asks} -- and charging on the net
+        understated the position badly:
+
+          * STT (0.15% of the SALE) was never charged on the short leg's ENTRY sale at all, and
+            at exit was charged on the net credit instead of the long leg's bid;
+          * stamp duty (on PURCHASES) was charged on the net debit instead of the long leg's ask;
+          * exchange, IPFT and SEBI, which are on turnover each side, saw the net instead of
+            both legs -- roughly a halving on a typical vertical.
+
+        Every spread figure in the 22 November memo was computed with the understatement and is
+        superseded.
+        """
+        return FEES.fees_v2(
+            sd, sd, 2, lot,
+            {'sell_px': max(entry_detail['short_bid_received'], 0.0),
+             'buy_px': max(entry_detail['long_ask_paid'], 0.0)},
+            {'exit_sell_px': max(exit_detail['long_bid_received'], 0.0),
+             'exit_buy_px': max(exit_detail['short_ask_paid'], 0.0)})
 
     out['indices'] = {}
     for ix in sorted(((ex.get('premium') or {}).get('indices') or {})):
@@ -214,7 +233,7 @@ def run(export_path, spots_path, ledger_root, horizon_min=60):
                     reasons['exit:%s' % x_detail] += 1
                     continue
                 try:
-                    f = fees_for(lot, fil, max(ex_credit, 0.0))
+                    f = fees_for(lot, f_detail, x_detail)
                 except Exception as exc:
                     reasons['fees:%s' % type(exc).__name__] += 1
                     continue

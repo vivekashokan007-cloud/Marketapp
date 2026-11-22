@@ -310,6 +310,82 @@ class MemoIntegrity(unittest.TestCase):
             self.assertIn(digest, self.text,
                           'the memo cites a stale hash for %s; it is now %s' % (name, digest))
 
+    def test_the_withdrawn_leave_one_out_sentence_is_not_asserted_anywhere(self):
+        """It was wrong, it was in a pushed memo, and it must not survive as a live claim.
+
+        The sentence is allowed to appear STRUCK THROUGH, because the correction is stated in
+        place rather than quietly rewritten. What is forbidden is an unqualified assertion.
+        """
+        bad = 'Remove 20 November and every positive arm is negative'
+        for path in (MEMO, README):
+            if not os.path.exists(path):
+                continue
+            with open(path, encoding='utf-8') as fh:
+                text = fh.read()
+            for m in re.finditer(re.escape(bad), text):
+                head = text[max(0, m.start() - 4):m.start()]
+                self.assertIn('~~', head,
+                              '%s still asserts the withdrawn leave-one-out claim' % path)
+
+    def test_the_memo_states_the_corrected_per_leg_spread_totals(self):
+        """The spread figures were produced on the wrong fee basis. The corrected totals must
+        come from the committed results, not from the prose that reports them."""
+        found = sorted(glob.glob(os.path.join(RESULTS, 'span', 'spread_replay_*.json')))
+        if not found:
+            self.skipTest('no span spread results committed')
+        tot, n = {}, {}
+        for p in found:
+            with open(p, encoding='utf-8') as fh:
+                o = json.load(fh)
+            for ix, node in (o.get('indices') or {}).items():
+                for st, a in (node.get('structures') or {}).items():
+                    k = (ix, st)
+                    tot[k] = tot.get(k, 0.0) + (a.get('total_net_inr') or 0.0)
+                    n[k] = n.get(k, 0) + (a.get('scored') or 0)
+        self.assertTrue(tot, 'the spread results carry no structures')
+        for k, v in tot.items():
+            self.assertLess(v, 0.0, 'all four structures lose; %s does not' % (k,))
+            # the memo prints the total with a thousands comma and the per-trade figure
+            self.assertIn('{:,}'.format(int(round(abs(v)))), self.text,
+                          'the memo does not state the corrected total for %s (%+.0f)' % (k, v))
+            per = v / n[k]
+            self.assertIn('%.1f' % abs(per), self.text,
+                          'the memo does not state the corrected per-trade figure for '
+                          '%s (%+.1f)' % (k, per))
+        # The withdrawn "exactly zero" reading may only appear as a correction -- struck
+        # through, or quoted inside the text that withdraws it -- never as a live assertion.
+        markers = ('~~', 'withdrawn', 'WITHDRAWN', 'is wrong', 'artefact')
+        for m in re.finditer(re.escape('an edge of exactly zero'), self.text):
+            window = self.text[max(0, m.start() - 400):m.end() + 200]
+            self.assertTrue(any(k in window for k in markers),
+                            'the memo still asserts the withdrawn zero-edge reading')
+
+    def test_the_surviving_arm_is_reported_as_not_established(self):
+        """The one leave-one-out survivor is a finding, and so is the hole that blocks it. Both
+        must be in the memo, and the stress artifact must agree with the figures quoted."""
+        p = os.path.join(RESULTS, 'span', 'stress_BNF_RANGE_EV_E0_TILT_0.json')
+        if not os.path.exists(p):
+            self.skipTest('no survival stress committed')
+        with open(p, encoding='utf-8') as fh:
+            o = json.load(fh)
+        node = o['by_extra_tick']['0.00']
+        agg = node['span']['EXCLUDE']
+        self.assertTrue(agg['positive_under_every_leave_one_out'])
+        worst = agg['worst_leave_one_out_inr']
+        self.assertIn('{:,}'.format(int(round(worst))), self.text,
+                      'the memo does not state the surviving worst leave-one-out (%+.0f)'
+                      % worst)
+        # survives the second adverse tick
+        self.assertGreater(node['span']['EXCLUDE']['total_net_inr'], 0.0)
+        self.assertGreater(o['by_extra_tick']['0.05']['span']['EXCLUDE']['total_net_inr'], 0.0)
+        # but the hole is big enough to erase it, which is what "not established" rests on
+        rw = node['resolvable_window']
+        be = node['unresolved_break_even']
+        self.assertLess(be['scored_p10_net_inr'],
+                        rw['break_even_net_per_sporadic_unresolved_inr'])
+        self.assertIn('not established', self.text,
+                      'the memo must not report the exception as an edge')
+
     def test_every_sha256_the_memo_prints_is_well_formed(self):
         for m in re.findall(r'`([0-9a-f]{64})`', self.text):
             self.assertEqual(len(m), 64)
