@@ -68,6 +68,8 @@ OUT_NO_ENTRY = 'NO_ENTRY_QUOTE_WITHIN_TOLERANCE_OF_PUBLICATION'
 OUT_NO_EXIT = 'NO_EXIT_QUOTE_WITHIN_TOLERANCE_OF_TARGET'
 OUT_NO_SERIES = 'NO_QUOTE_SERIES_FOR_CONTRACT'
 OUT_UNSCORABLE = 'UNSCORABLE_NON_POSITIVE_EXIT'
+# a short leg is coverage-only here: reversed execution sides, and margin evidence no export has
+OUT_SELL_NOT_PRICED = 'SELL_COVERAGE_ONLY_NOT_PRICED_UNCOVERED_SHORTS_EXCLUDED'
 
 
 def _hhmmss(iso):
@@ -79,6 +81,12 @@ def _hhmmss(iso):
 def _plus(iso, minutes):
     dt = datetime.datetime.fromisoformat(iso) + datetime.timedelta(minutes=minutes)
     return dt.strftime('%H:%M:%S')
+
+
+def _plus_hhmmss(hhmmss, minutes):
+    """A time of day plus minutes, staying in time-of-day space (no date arithmetic)."""
+    base = datetime.datetime.strptime(hhmmss, '%H:%M:%S')
+    return (base + datetime.timedelta(minutes=minutes)).strftime('%H:%M:%S')
 
 
 def _secs(hhmmss):
@@ -111,8 +119,16 @@ def in_minute(series, start_hhmmss):
     return [{'poll': t, 'bid': bid, 'ask': ask} for t, bid, ask in series if t[:5] == mm]
 
 
-def price(entry, exit_, lot, session, fees_fn):
-    """(result, status). Long option: pay the ask plus a tick, sell the bid less a tick."""
+def price(entry, exit_, lot, session, fees_fn, side='BUY'):
+    """(result, status). Long option: pay the ask plus a tick, sell the bid less a tick.
+
+    DEFECT FIXED (Codex, 22 Nov): this priced EVERY row as a long option, including the 93 SELL
+    intents the first delivery retained in its `all_intents` row. A short leg's execution sides
+    are reversed and it needs margin evidence no export carries, and the app excludes uncovered
+    shorts, so a SELL row is refused here by name rather than quietly valued as a buy.
+    """
+    if side != 'BUY':
+        return None, OUT_SELL_NOT_PRICED
     if entry is None:
         return None, OUT_NO_ENTRY
     if exit_ is None:
@@ -140,7 +156,8 @@ def price(entry, exit_, lot, session, fees_fn):
             'rates_table_version': fees.get('rates_table_version')}, OUT_SCORED
 
 
-def run(ledger_path, chain_path, ledger_root, horizon_min=60, delay_polls=0):
+def run(ledger_path, chain_path, ledger_root, horizon_min=60, delay_polls=0,
+        tolerance_min=TOLERANCE_MIN):
     import economic_check as EC
 
     led, why = EC.load_ledger(ledger_root)
@@ -164,7 +181,7 @@ def run(ledger_path, chain_path, ledger_root, horizon_min=60, delay_polls=0):
     out = {'replay_version': REPLAY_VERSION, 'horizon_min': horizon_min,
            'delay_polls': delay_polls, 'tick_inr': TICK_INR,
            'lot': dict(LOT), 'lot_basis': LOT_BASIS,
-           'tolerance_min': TOLERANCE_MIN, 'tolerance_basis': TOLERANCE_BASIS,
+           'tolerance_min': tolerance_min, 'tolerance_basis': TOLERANCE_BASIS,
            'label': 'PROXY_SIMULATED_FILL -- no order was placed',
            'comparator': 'WAIT = exactly zero rupees at zero risk',
            'provisional_cost_basis': bool(tree.get('modified')),
@@ -209,7 +226,7 @@ def run(ledger_path, chain_path, ledger_root, horizon_min=60, delay_polls=0):
 
         # the causal marks
         pub = _hhmmss(it['causal_from'])
-        entry = first_at_or_after(series, pub)
+        entry = first_at_or_after(series, pub, tolerance_min)
         if entry is not None and delay_polls:
             later = [q for q in (first_at_or_after(series, t['poll'])
                                  for t in [])] or None
@@ -220,12 +237,23 @@ def run(ledger_path, chain_path, ledger_root, horizon_min=60, delay_polls=0):
             else:
                 t, bid, ask = series[idx + delay_polls]
                 entry = {'poll': t, 'bid': bid, 'ask': ask}
-        target = _plus(it['causal_from'], horizon_min)
-        exit_ = first_at_or_after(series, target)
+        # DEFECT FIXED (Codex, 22 Nov): the target was `causal_from + horizon`, measured from
+        # PUBLICATION. When the entry arrived a poll later the hold was already short by that
+        # poll, and under --delay-polls the target stayed put so the hold shrank further -- the
+        # sensitivity run was testing a shorter hold, not a later entry. A declared 60-minute
+        # hold is now 60 minutes FROM THE SIMULATED FILL, in every arm, with the same tolerance.
+        if entry is None:
+            exit_, target = None, None
+        else:
+            target = _plus_hhmmss(entry['poll'], horizon_min)
+            exit_ = first_at_or_after(series, target, tolerance_min)
+        # retained as a separate diagnostic only: the publication-anchored deadline
+        pub_target = _plus(it['causal_from'], horizon_min)
+        pub_exit = first_at_or_after(series, pub_target, tolerance_min)
 
         lot = LOT.get(it['index_key'])
         res, status = (None, 'LOT_AUTHORITY_UNRESOLVED') if not lot else price(
-            entry, exit_, lot, it['session_date'], fees_fn)
+            entry, exit_, lot, it['session_date'], fees_fn, it['side'])
         statuses[status] = statuses.get(status, 0) + 1
         row = dict(it, status=status, contract_key=key,
                    coverage_minute_quotes=len(cov_now),
@@ -233,7 +261,10 @@ def run(ledger_path, chain_path, ledger_root, horizon_min=60, delay_polls=0):
                    causal_entry_poll=(entry or {}).get('poll'),
                    causal_exit_poll=(exit_ or {}).get('poll'),
                    coverage_first_poll=(cov_now[0]['poll'] if cov_now else None),
-                   series_polls=len(series))
+                   series_polls=len(series),
+                   fill_anchored_target=target,
+                   publication_anchored_target=pub_target,
+                   publication_anchored_exit_poll=(pub_exit or {}).get('poll'))
         if res:
             row.update(res)
             # the gap the handoff asked to be shown: coverage says yes, causality moves the mark
@@ -276,7 +307,14 @@ def _agg(rows):
 def summarise(trades):
     buys = [t for t in trades if t['side'] == 'BUY']
     adm = [t for t in buys if not t['entry_window_closed']]
+    sells = [t for t in trades if t['side'] != 'BUY']
     out = {'all_intents': _agg(trades), 'buys': _agg(buys),
+           'sells_coverage_only': {
+               'rows': len(sells),
+               'priced': 0,
+               'note': ('short legs are coverage-only: reversed execution sides, margin '
+                        'evidence no export carries, and the app excludes uncovered shorts. '
+                        'They contribute nothing to any P&L total here.')},
            'buys_admissible': _agg(adm),
            'wait': {'total_net_inr': 0.0, 'total_risk_inr': 0.0,
                     'note': 'WAIT takes no position: exactly zero, the thing to beat'},
@@ -353,7 +391,7 @@ def report(out):
                     out['tolerance_min']))
     L.append('')
     L.append('=== PASS 1 -- recorded buy intents vs WAIT, net of dated costs')
-    for name, key in (('all 232 intents', 'all_intents'), ('139 buys', 'buys'),
+    for name, key in (('all intents (BUY only)', 'all_intents'), ('139 buys', 'buys'),
                       ('97 admissible buys', 'buys_admissible')):
         a = s[key]
         if not a.get('scored'):
@@ -397,14 +435,22 @@ def main(argv=None):
     ap.add_argument('--ledger-root', required=True)
     ap.add_argument('--horizon-min', type=int, default=60)
     ap.add_argument('--delay-polls', type=int, default=0,
-                    help='delay the causal entry by N further polls, for fill sensitivity')
+                    help='delay the causal entry by N further polls, for fill sensitivity. The '
+                         'hold is measured from the DELAYED fill, so it stays the declared '
+                         'length instead of shrinking')
+    ap.add_argument('--tolerance-min', type=int, default=TOLERANCE_MIN,
+                    help='the frozen mark tolerance; report 5 alongside the declared 10')
     ap.add_argument('--out')
     ap.add_argument('--json-only', action='store_true')
     a = ap.parse_args(argv)
-    out = run(a.ledger, a.chain, a.ledger_root, a.horizon_min, a.delay_polls)
+    out = run(a.ledger, a.chain, a.ledger_root, a.horizon_min, a.delay_polls,
+              a.tolerance_min)
     if a.out:
         os.makedirs(a.out, exist_ok=True)
-        tag = '%dmin%s' % (a.horizon_min, '_delay%d' % a.delay_polls if a.delay_polls else '')
+        tag = '%dmin%s%s' % (a.horizon_min,
+                             '_delay%d' % a.delay_polls if a.delay_polls else '',
+                             '_tol%d' % a.tolerance_min
+                             if a.tolerance_min != TOLERANCE_MIN else '')
         p = os.path.join(a.out, 'intent_replay_%s.json' % tag)
         with open(p, 'w', encoding='utf-8') as fh:
             json.dump(out, fh, indent=1, sort_keys=True)

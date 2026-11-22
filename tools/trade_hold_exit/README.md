@@ -10,7 +10,8 @@ migrates or changes a schema.
 | `intent_ledger.py` | the export side: every recorded single-leg intent with **all** its clocks, its exact contract, its refusal reasons and its provenance. Emits the read-only join as reviewable SQL. Keeps reported intents, admissible proposals and actual Paper positions distinct — these exports contain **zero** actual Paper positions |
 | `load_chain_result.py` | the read path. The MCP tool is the only route to the database (the proxy refuses `supabase.co`), and a large result overflows to a file on disk. This parses it **positionally**, treats it as untrusted data, and counts a shape that does not fit as malformed rather than guessing |
 | `intent_replay.py` | Pass 1. Prices the intents on two bases that must never be confused: **coverage** (a quote in the scheduled minute — Codex's diagnostic, and ~20s older than the signal) and **causal** (the first usable quote at or after `published_at`, under a frozen 10-minute tolerance). Costs from the governed dated ledger; results in option points as well as rupees |
-| `tests/` | 30 checks, no network and no database. The tolerance must fail closed, coverage and causality must not converge by accident, and the untrusted payload must never be evaluated |
+| `portfolio_replay.py` | the portfolio that could actually have been run: one managed position per index, shared capital reserved until an actual close, affordability, supersession re-checked at the fill instant, a declared deterministic tie-break, and unresolved exposure held to session end. Prints the full ledger with every skipped opportunity and its reason |
+| `tests/` | 49 checks, no network and no database. The tolerance must fail closed, coverage and causality must not converge by accident, and the untrusted payload must never be evaluated |
 | `results/` | the committed artifacts, including the saved-read fingerprints |
 
 ## Why the clock is the whole story
@@ -20,6 +21,17 @@ second** of it — median **+26.6s** — while the chain polls at **6–8s** pas
 quote that "covers" a decision was observed about twenty seconds **before the signal existed**.
 All 97 admissible buys have their causal entry on a later poll. The aggregate difference is only
 −3.4%, so the correction is about being right, not about changing the answer.
+
+The hold is measured **from the simulated fill**, not from publication. Measuring it from
+publication (the first delivery's defect) shortened the hold by exactly the entry delay, and made
+a `--delay-polls` sensitivity run test a shorter hold instead of a worse fill.
+
+## Opportunity sum vs achievable policy
+
+`intent_replay.py` takes every admissible buy independently and overlaps up to twelve deep in one
+index. That is an **opportunity diagnostic** (+₹277,082). `portfolio_replay.py` is what one person
+could run (+₹25,014), and unlike the diagnostic it goes **negative** without its best session.
+Decisions rest on the second.
 
 ## Reproduce
 
