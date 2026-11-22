@@ -92,6 +92,11 @@ class ProductionConstants(unittest.TestCase):
         return m.group(1).split('#')[0].strip()
 
     def test_the_entry_window_matches_production(self):
+        """SUPERSEDED (F2). The *constants* match production, but v2 compares them as
+        `HH:MM:SS` strings, and production's `_hm` drops seconds -- so production admits
+        14:30:07 and 14:30:59 while v2 refuses them. This test records v2's bounds, not a
+        claim that its comparison is faithful. The fixed comparison and the six boundary
+        seconds, checked against production itself, live in `test_policy_replay_v3.py`."""
         self.assertEqual(self.const('ENTRY_START, ENTRY_END'), '(9, 30), (14, 30)')
         self.assertEqual((PL.ENTRY_START, PL.ENTRY_END), ('09:30:00', '14:30:00'))
 
@@ -189,8 +194,11 @@ class CrossDayUnresolvedExposure(Harness):
         """The defect Codex named: a per-session reset silently frees the index. Carried
         forward, a position with no exit mark keeps its index occupied the next day."""
         S1, S2 = '2026-11-19', '2026-11-20'
-        # decide at 14:20 so the fill lands at 14:25:07, INSIDE the 14:30 window: a 14:25
-        # decision fills at 14:30:07 and the admission-time window check correctly refuses it
+        # decide at 14:20 so the fill lands at 14:25:07, INSIDE the 14:30 window.
+        # CORRECTION (F2): an earlier version of this comment said a 14:25 decision fills at
+        # 14:30:07 and the window check "correctly refuses it". That was wrong -- production
+        # admits 14:30:07. v2 refuses it, and this fixture is written to avoid the boundary
+        # rather than to depend on v2's defect. v3 admits it; see `test_policy_replay_v3.py`.
         ins = [intent(S1, '14:20', 63100), intent(S2, '09:30', 63200)]
         chain = {
             # no poll near 15:25, so the 60-minute target cannot be met
