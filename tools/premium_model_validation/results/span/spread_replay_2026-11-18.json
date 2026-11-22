@@ -1,0 +1,168 @@
+{
+ "horizon_min": 60,
+ "indices": {
+  "BNF": {
+   "expiry": "2026-11-23",
+   "lot": 30,
+   "strike_feasibility": {
+    "CE": {
+     "slots": 69,
+     "slots_with_two_usable_legs": 69,
+     "strikes": [
+      62200.0,
+      62300.0,
+      62400.0
+     ]
+    },
+    "PE": {
+     "slots": 69,
+     "slots_with_two_usable_legs": 69,
+     "strikes": [
+      62200.0,
+      62300.0,
+      62400.0
+     ]
+    }
+   },
+   "structures": {
+    "BEAR_PUT_DEBIT": {
+     "legs": {
+      "buy_strike": 62400.0,
+      "option_type": "PE",
+      "sell_strike": 62200.0,
+      "width_points": 200.0
+     },
+     "mean_max_loss_inr": 3606.4736842105244,
+     "mean_net_inr": -225.26647411815304,
+     "median_net_inr": -275.0065794109932,
+     "net_p10_inr": -588.9997544779911,
+     "scored": 57,
+     "skipped_by_reason": {
+      "exit:leg_quote_missing_at_exit": 11,
+      "fill:leg_quote_missing_at_decision": 1
+     },
+     "total_capital_deployed_inr": 205568.99999999994,
+     "total_net_inr": -12840.189024734724,
+     "win_rate": 0.2982456140350877,
+     "worst_net_inr": -864.9284576719925
+    },
+    "BULL_CALL_DEBIT": {
+     "legs": {
+      "buy_strike": 62200.0,
+      "option_type": "CE",
+      "sell_strike": 62400.0,
+      "width_points": 200.0
+     },
+     "mean_max_loss_inr": 2529.447368421053,
+     "mean_net_inr": -194.163040833475,
+     "median_net_inr": -192.66884376200068,
+     "net_p10_inr": -611.9510873149986,
+     "scored": 57,
+     "skipped_by_reason": {
+      "exit:leg_quote_missing_at_exit": 11,
+      "fill:leg_quote_missing_at_decision": 1
+     },
+     "total_capital_deployed_inr": 144178.50000000003,
+     "total_net_inr": -11067.293327508078,
+     "win_rate": 0.3508771929824561,
+     "worst_net_inr": -869.309875541001
+    }
+   }
+  },
+  "NF": {
+   "expiry": "2026-11-23",
+   "lot": 65,
+   "strike_feasibility": {
+    "CE": {
+     "slots": 69,
+     "slots_with_two_usable_legs": 69,
+     "strikes": [
+      25300.0,
+      25350.0,
+      25400.0
+     ]
+    },
+    "PE": {
+     "slots": 69,
+     "slots_with_two_usable_legs": 69,
+     "strikes": [
+      25300.0,
+      25350.0,
+      25400.0
+     ]
+    }
+   },
+   "structures": {
+    "BEAR_PUT_DEBIT": {
+     "legs": {
+      "buy_strike": 25400.0,
+      "option_type": "PE",
+      "sell_strike": 25300.0,
+      "width_points": 100.0
+     },
+     "mean_max_loss_inr": 4021.6754385964928,
+     "mean_net_inr": -145.87465084632734,
+     "median_net_inr": -98.23604399100591,
+     "net_p10_inr": -704.6495183005036,
+     "scored": 57,
+     "skipped_by_reason": {
+      "exit:leg_quote_missing_at_exit": 11,
+      "fill:leg_quote_missing_at_decision": 1
+     },
+     "total_capital_deployed_inr": 229235.50000000003,
+     "total_net_inr": -8314.855098240658,
+     "win_rate": 0.42105263157894735,
+     "worst_net_inr": -890.0830818170033
+    },
+    "BULL_CALL_DEBIT": {
+     "legs": {
+      "buy_strike": 25300.0,
+      "option_type": "CE",
+      "sell_strike": 25400.0,
+      "width_points": 100.0
+     },
+     "mean_max_loss_inr": 2551.820175438597,
+     "mean_net_inr": -183.30723922942184,
+     "median_net_inr": -253.31275973950147,
+     "net_p10_inr": -601.5352057590012,
+     "scored": 57,
+     "skipped_by_reason": {
+      "exit:leg_quote_missing_at_exit": 11,
+      "fill:leg_quote_missing_at_decision": 1
+     },
+     "total_capital_deployed_inr": 145453.75,
+     "total_net_inr": -10448.51263607705,
+     "win_rate": 0.2807017543859649,
+     "worst_net_inr": -704.8270253770027
+    }
+   }
+  }
+ },
+ "label": "PROXY_SIMULATED_FILL -- no order was placed",
+ "ledger": {
+  "rates_table_version": "nse_equity_index_options_rates_20261120_v3_UNREVIEWED",
+  "rates_verified_through": "2026-11-20",
+  "tree": {
+   "modified": [
+    "research/replay/fee_models.py"
+   ],
+   "note": "the ledger tree is MODIFIED relative to its commit; these figures are not reproducible from the committed tree alone",
+   "revision": "c73b28cd7358ac7e0307af48f8effe40ee430492",
+   "root": "/tmp/claude-0/-home-user-Marketapp/268ce485-daff-5c24-9478-cd84813bcb59/scratchpad/wt-followon"
+  },
+  "version": "premium_followon_stage_d_cost_ledger_v3_bound_authority_and_decision_clock"
+ },
+ "provisional_cost_basis": true,
+ "quote_clock": "receipt_proxy: every instant is the app acquisition receipt",
+ "refused": {
+  "BEAR_CALL_CREDIT": "credit spread: no hedged-margin evidence in the export, so practical executability cannot be claimed",
+  "BULL_PUT_CREDIT": "credit spread: no hedged-margin evidence in the export, so practical executability cannot be claimed"
+ },
+ "session": "2026-11-18",
+ "spread_replay_version": "premium_two_leg_debit_spread_replay_v1",
+ "supported": [
+  "BULL_CALL_DEBIT",
+  "BEAR_PUT_DEBIT"
+ ],
+ "tick_inr": 0.05
+}

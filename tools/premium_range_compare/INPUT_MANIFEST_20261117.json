@@ -35,8 +35,9 @@
   "tools/spot_path_baseline/premium_repricing_v2.py": "95e53e25d24ae0369f2c8d8ab63026a0cda499443ddae4041c6ee7ffb373233a"
  },
  "governed_sources": {
+  "frozen_successor.py": "aa6b2f8e27f6b4d4af58abec322fff12f5113bc9f5e156ee720335b6f88f2327",
   "planned_schedule.py": "4b35e6e7e04dc5ab807f82f46f9566e358d6f6cea61209bca34a8b547efc2bd4",
-  "range_compare.py": "131135129d4b3487277cd3addc2bf98136176c517fef66f153d135b29f5afbb9",
+  "range_compare.py": "a691173311413b24a71e4c31d88611ddde714b674196fd86b0e5495f0314ed87",
   "stopping_rule.py": "8b89535a7d80a74e2bcfa25542ef46b5759dfcd3da09e510144456177482e24b",
   "tools/spot_path_baseline/premium_repricing_v2.py": "95e53e25d24ae0369f2c8d8ab63026a0cda499443ddae4041c6ee7ffb373233a"
  },
@@ -123,11 +124,11 @@
   }
  },
  "manifest_version": "premium_range_comparison_inputs_20261117_v4",
- "note": "Inputs are NOT committed: raw phone exports stay out of the repository. This manifest records what each run read, by SHA-256, so a result can be tied to its input without the input being in the tree.",
+ "note": "Inputs are NOT committed: raw phone exports stay out of the repository. This manifest records what each run read, by SHA-256, so a result can be tied to its input without the input being in the tree. Revised 21 Nov 2026: 10.2 reproduced locally with both digests and the export-equivalence claim scoped to the score comparison actually performed; frozen_successor.py added as a governed source; section 13 freeze record proposed. 22 Nov 2026: range_compare.admit guards a null bbo, met on the 20 November capture where one poll returned MISSING_REQUEST_FAILED for all six contracts in both indices.",
  "protocol": {
   "file": "PROTOCOL_RANGE_TRIAL_DRAFT_v4.md",
   "hashes_checked_by": "tests/test_protocol_hashes.py",
-  "sha256": "87a3e8b3903e4bbe58d659deb71f1e0e44d2c7df33b615008e1d09a27207d1d0",
+  "sha256": "a8c54f52694a90c5ee297d87c5a41fea5cd2d06fbdfa35b7609a419d3bda65bb",
   "supersedes": "PROTOCOL_RANGE_TRIAL_DRAFT_v3.md (deleted)"
  },
  "runs_committed": {

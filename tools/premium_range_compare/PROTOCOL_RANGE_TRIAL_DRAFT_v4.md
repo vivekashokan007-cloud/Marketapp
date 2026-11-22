@@ -1,7 +1,10 @@
-# Protocol draft v4 — does a historical premium range add value over an IV-only range?
+# Protocol v4 — does a historical premium range add value over an IV-only range?
 
-**Status** DRAFT, **ready to freeze** pending one input · **Dated** 17 November 2026 IST ·
-**Supersedes** `PROTOCOL_RANGE_TRIAL_DRAFT_v3.md` (deleted; §0 lists every change and why)
+**Status** **PROPOSED FOR FREEZE** — every input is now present and every setting is confirmed.
+See §13 for the freeze record awaiting a dated countersignature.
+**Dated** 17 November 2026 IST, **revised** 21 November 2026 IST (§10.2 reproduced locally,
+§13 freeze record added) · **Supersedes** `PROTOCOL_RANGE_TRIAL_DRAFT_v3.md` (deleted; §0 lists
+every change and why)
 
 The hashes below are **checked by a test** (`tests/test_protocol_hashes.py`), which also
 requires the input manifest to agree with them and the version strings named here to exist in
@@ -11,16 +14,18 @@ the code. v3 claimed a stale hash for `stopping_rule.py`; a hash nobody checks i
 
 | file | sha256 |
 | --- | --- |
-| `tools/premium_range_compare/range_compare.py` | `131135129d4b3487277cd3addc2bf98136176c517fef66f153d135b29f5afbb9` |
+| `tools/premium_range_compare/range_compare.py` | `a691173311413b24a71e4c31d88611ddde714b674196fd86b0e5495f0314ed87` |
 | `tools/premium_range_compare/planned_schedule.py` | `4b35e6e7e04dc5ab807f82f46f9566e358d6f6cea61209bca34a8b547efc2bd4` |
 | `tools/premium_range_compare/stopping_rule.py` | `8b89535a7d80a74e2bcfa25542ef46b5759dfcd3da09e510144456177482e24b` |
+| `tools/premium_range_compare/frozen_successor.py` | `aa6b2f8e27f6b4d4af58abec322fff12f5113bc9f5e156ee720335b6f88f2327` |
 | `tools/spot_path_baseline/premium_repricing_v2.py` (frozen R7, **unmodified**) | `95e53e25d24ae0369f2c8d8ab63026a0cda499443ddae4041c6ee7ffb373233a` |
 
 **Versions** comparison `premium_neutral_range_comparison_v2_planned_coverage` · schedule
 `premium_range_planned_schedule_v3_authoritative_rules` · capture rules
 `premium_capture_cohort_pilot_window_0920_1505_exclusive_v1` · session calendar
 `nse_regular_session_calendar_v1_app_holidays` · stopping rule
-`premium_range_stopping_rule_v1_exact` ·
+`premium_range_stopping_rule_v1_exact` · frozen successor
+`premium_repricing_v2_successor_v2_null_authority_doc_and_bbo` ·
 R7 pricing contract `2.6` · **branch** `review/premium-neutral-range-comparison-20261116`,
 base `124d62ee027941e43decc737e53d202c32b1d214`
 
@@ -373,38 +378,164 @@ the original **30.84**, nominal 80% coverage **41.4%** on the 101-point grid. Re
 CRPS by 0.17 and coverage by under a point, so it was never a location problem — it is a width
 problem, and `HIST` covers 75.9% at the same horizon.
 
-### 10.2 · 16 November, independent — not reproduced here
+### 10.2 · 16 November — reproduced locally on 21 November 2026
 
-Codex **reran the corrected runner** on the evening export
-(`903225d9826dfbcac5011a099da1706f901854d40bc2e6d02d7ebdd43f9625e1`) on 17 November 2026. That
-file **has never been on this machine**, so these remain independent evidence. Codex reports the
-corrected runner scored **342 of 342 planned sixty-minute rows per index — 100% usable coverage**
-— with scores matching the prior replay:
+Codex reran the corrected runner on the evening export on 17 November 2026 and reported the
+figures below. **That export reached this machine on 21 November 2026, and every figure
+reproduced from it exactly**, so these are no longer independent-only:
 
 | index, 60 min | matched | `IV_ONLY` CRPS | `HIST` CRPS | `IV_ONLY` cov80 | `HIST` cov80 | MAE (all common-centre variants) |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | NIFTY | 342 | 14.369 | 15.450 | 74.0% | 81.0% | 20.779 |
 | BANKNIFTY | 342 | 41.306 | 43.819 | 63.5% | 78.1% | 58.562 |
 
-Unchanged R7 again SPLIT on both indices. These figures are **pinned as a regression**, keyed to
-that digest, in `tests/test_range_compare.py`. The **digest guard** decides whether the
-assertion runs; the provenance label is recorded on the test and never used to skip it. So the
-assertion is live the moment that file is present, and until then it skips naming the digest it
-wants.
+342 of 342 planned sixty-minute rows per index, **100% usable coverage**. Unchanged R7 again
+SPLIT on both indices.
 
-The 414-admitted / 342-planned / 72-late shape is tested now rather than waited on:
-`CompleteCapture` builds a fixture covering the whole authoritative 69-slot grid and asserts
-exactly those three numbers, with `usable_coverage` 1.0.
+#### 10.2.1 · Two digests, and what the match does and does not establish
 
-Under §9 they read: NIFTY **both pass** (74.0% and 81.0%) with `IV_ONLY` better on CRPS by 7.0%;
-BANKNIFTY **one passes** — `HIST` at 78.1%, `IV_ONLY` at 63.5% below the band — so `HIST`
-qualifies on calibration there and no comparative CRPS result is claimed, even though `IV_ONLY`
-scores 5.7% better. That is the same structural disagreement between the indices as 12 November,
-with the sides swapped, which §1's separate treatment of the two indices exists for.
+The file that arrived carries SHA-256
+**`2cd2006626d3a72713b017c9352232538abfadab07258938ed5395058b380f17`**. Codex's run was on
+**`903225d9826dfbcac5011a099da1706f901854d40bc2e6d02d7ebdd43f9625e1`**. The digests differ.
 
-Codex's 342 matched quotes per index also **corroborates the planned count independently**: 342
-is the full sixty-minute plan, so that capture was complete, and the 414 admitted quotes Codex
-reports are 69 × 6 with 72 late — exactly the shape §4.2's invariant describes.
+**What the matching scores establish:** every figure in the table above reproduces from the file
+this machine holds. That is a reproduction of those figures, and it is what the regression
+asserts.
+
+**What they do not establish:** anything about the relationship between the two files. The
+`903225d9…` file has never been on this machine, so no byte-level, key-level or record-level
+comparison between the two was performed, and none is claimed. An earlier draft of the
+21 November reply called them "content-identical evidence, different bytes" — that overstated a
+score comparison as a file comparison, and the claim is withdrawn. Matching scores on the fields
+the runner reads are consistent with, but do not demonstrate, equivalence elsewhere in the file.
+
+**Both digests stay pinned, with their provenance distinguished**, in
+`tests/test_range_compare.py`: `903225d9…` as Codex's independently reported figures,
+`2cd20066…` as the local reproduction. The **digest guard** decides whether an assertion runs;
+the provenance label is recorded on the test and never used to skip it. Whichever file is
+supplied is checked against its own expectations.
+
+#### 10.2.2 · This export cannot be read by two frozen functions
+
+`premium_repricing_v2.spot_timeline` (L382) and `reverse_input` (L853) subscript
+`ex['parts']['authority_doc']` with no guard. In this export that key is JSON **null**, so both
+raise and the frozen replay cannot read the file at all.
+
+The frozen module is **not patched** — it is byte-identical to the base commit and the hash above
+asserts it. The guard lives in a versioned successor,
+`frozen_successor.py` / `premium_repricing_v2_successor_v2_null_authority_doc_and_bbo`, which calls
+the frozen reader directly wherever it works and is asserted to return exactly what it returns
+there. Where it cannot, the successor returns an empty spot timeline — an absent authority
+document provides no history, which is a missing input, not a zero reading — and names the shape
+it found.
+
+**Direct versus parity is reported, never inferred.** Every call returns which chain ran:
+
+```
+    export_2026-11-12.json      DIRECT_FROZEN      -
+    export_2026-11-16.json      GUARDED_SUCCESSOR  parts.authority_doc is null
+```
+
+`tests/test_frozen_successor.py` (16 checks) asserts the frozen reader still raises — if it ever
+stops, the successor should be retired rather than left in the path — that the guard's prediction
+matches the frozen reader's actual behaviour on a real export, that the successor is a guard and
+not a reimplementation, and that the frozen module is never mutated.
+
+The three `premium_range_compare` tests that chain to the frozen replay **skip, naming this
+reason**, on an export the frozen reader cannot read. A skip is not a pass: it records that the
+direct frozen comparison was unavailable on that input.
+
+### 10.3 · The 414-admitted shape, now observed rather than predicted
+
+`CompleteCapture` was written before the evening export existed and asserted 414 admitted,
+342 planned, 342 scored, `usable_coverage` 1.0, 72 late. The real export matches that shape on
+both indices.
+
+## 13 · The freeze record, proposed
+
+A trial that counts fresh sessions is only honest if its rules were fixed **before** those
+outcomes were examined. This section is that record. It is **proposed**, not asserted: it needs a
+dated countersignature from the reviewer, and until it carries one no fresh session may be
+counted under it.
+
+### 13.1 · Confirmed settings, carried verbatim from the 21 November review
+
+| item | setting |
+| --- | --- |
+| **Primary comparison** | 60-minute `IV_ONLY` versus `HIST`, **both centred on the entry midpoint**, on identical eligible exact-contract rows. NIFTY and BANKNIFTY each get their own result. |
+| **Usable coverage** | at least **60%** of planned opportunities per index/session at the primary horizon. The **authoritative** denominator (capture-window rules × session calendar, never the export's claim) and exclusions logged. |
+| **Interval calibration** | observed coverage **70–90%** for the nominal 80% interval, with width and the misses on **each side** reported. Both CRPS scores shown when calibration and CRPS disagree. If only one qualifies, its calibration result is stated and **no comparative CRPS result is claimed**. If neither qualifies, **no range selection is recorded**. |
+| **Comparative rule** | **one decision at 20 eligible sessions per index**. `HIST` over `IV_ONLY` requires **both** at least a **5%** mean relative CRPS gain **and** at least **15 wins of 20**. Ties and session dependence reported. |
+| **Secondary diagnostics** | 15, 30 and 120 minutes, each under its own coverage. The primary horizon is never chosen from them. |
+
+**The exact sign-test probability assumes independent fair signs**, which these rows are not:
+sessions share index paths and neighbouring strikes and overlapping windows are not independent.
+≥15 of 20 is **2.069473%** under that assumption (`5425/262144`, computed exactly in
+`stopping_rule.py`, not asserted). It is a declared decision threshold, **not a p-value for this
+data**, and the memo must not present it as one.
+
+### 13.2 · Inferred-slot handling, as frozen
+
+The pinned historical file carries **no scheduled-slot field** — the handoff's claim of explicit
+fields on 233 of 855 rows does not hold for the file whose digest matches the handoff's own; its
+only partially-present fields are recorded *directions*, non-null on 234 rows. Therefore:
+
+* every historical join under this protocol reads an **inferred** slot and is labelled so on
+  every row and every table;
+* the `explicit` slot policy **fails closed** on this source by name rather than inferring
+  quietly;
+* 41 of 855 observation minutes are off the five-minute grid; flooring them collides with an
+  existing observation **0** times;
+* collisions, where they occur, are resolved **before admission**: identical readings collapse,
+  conflicting ones are excluded whole, and a verified scheduled slot is preferred over an
+  inferred one wherever one exists.
+
+### 13.3 · The first eligible session rule
+
+**12 and 16 November 2026 are development evidence and are not counted.** They were examined in
+full before this record existed, so counting them would defeat its purpose.
+
+The **first eligible session** is the first regular NSE session, strictly **after the date this
+freeze record is countersigned**, whose capture satisfies:
+
+1. the schedule state is `VERIFIED` against the authoritative plan (§4.1);
+2. usable coverage **≥ 60%** of planned opportunities for that index at 60 minutes;
+3. both indices are evaluated independently — one index qualifying does not enrol the other;
+4. the session is not a declared non-regular session (§4's calendar refusals).
+
+Sessions are counted **in date order**, per index, until 20 eligible sessions exist for that
+index. The decision is taken then, once, per index.
+
+### 13.4 · Governed hashes at the proposed freeze
+
+The table in the header governs; `tests/test_protocol_hashes.py` asserts each hash against its
+file, requires the input manifest to agree, requires the manifest to carry this protocol's own
+hash, requires the frozen R7 module to still hash to the base commit's value, and requires every
+version string named here to exist in the code.
+
+History and inputs are recorded by SHA-256 in `INPUT_MANIFEST_20261117.json`. **Raw exports are
+not committed**; the manifest ties a result to its input without the input entering the tree.
+
+### 13.5 · What this freeze does NOT cover
+
+* **The centre challenger** — `E0_TILT(λ)`, closed for this round on the 21 November review. It
+  is a historical comparison and does **not** join this trial.
+* **Any range-aware economic rule.** This protocol scores distributions, not decisions. A rule
+  that trades on them needs its own predeclaration, which the 21 November review states
+  explicitly.
+* **Overnight and longer holds**, which need their own capture (see the overnight checklist) and
+  their own rules.
+
+### 13.6 · Countersignature
+
+```
+  proposed by   Claude Code    21 November 2026 IST    commit <this commit>
+  countersigned by  ____________________    date ____________________
+  first eligible session is the first VERIFIED session after the countersignature date
+```
+
+**Unsigned, this is a proposal.** No fresh session is counted, no decision clock starts, and the
+trial remains in draft.
 
 ## 12 · The commands this protocol is run with
 

@@ -67,6 +67,7 @@ sys.path.insert(0, os.path.join(HERE, '..', 'spot_path_baseline'))
 
 import premium_repricing_v2 as R7          # noqa: E402  the frozen R7 module, unmodified
 import planned_schedule as PS              # noqa: E402
+import frozen_successor as FS              # noqa: E402  guards two unguarded frozen readers
 
 COMPARISON_VERSION = 'premium_neutral_range_comparison_v2_planned_coverage'
 COMPARISON_VERSION_V1 = 'premium_neutral_range_comparison_v1'
@@ -435,8 +436,16 @@ def admit(ex, ix):
         if r['instrument_key'] not in pc:
             cov['rej_no_contract_identity'] += 1
             continue
-        b = (r['bbo'].get('bid_raw') or {}).get('raw')
-        k = (r['bbo'].get('ask_raw') or {}).get('raw')
+        # A record whose poll FAILED carries `bbo: null`, not an empty book -- on 20 November
+        # one poll at 13:25 did exactly that for all six contracts in both indices. The export
+        # records the failure faithfully; dereferencing it unguarded crashed admission for the
+        # whole session. It is rejected by name instead, like every other unusable quote.
+        bbo = r.get('bbo')
+        if not isinstance(bbo, dict):
+            cov['rej_bbo_absent'] += 1
+            continue
+        b = (bbo.get('bid_raw') or {}).get('raw')
+        k = (bbo.get('ask_raw') or {}).get('raw')
         idn = r.get('identity') or {}
         if idn.get('identity_verified') is not True:
             cov['rej_identity_unverified'] += 1
@@ -858,14 +867,25 @@ def run_session(export_path, spots_path, horizons=HORIZONS_MIN,
     """One session's comparison, for every index and horizon."""
     import hashlib
     ex = json.load(open(export_path))
+    # `R7.reverse_input` subscripts parts.authority_doc, which is JSON null in some real
+    # exports. The guarded successor delegates to it wherever it works and reports which chain
+    # ran, so a reversed run is possible on an export the frozen reader cannot read -- and the
+    # result says which reader produced it rather than leaving the caller to guess.
+    frozen_chain, frozen_chain_reason = FS.CHAIN_DIRECT, None
     if reverse_input:
-        ex = R7.reverse_input(ex)
+        ex, frozen_chain, frozen_chain_reason = FS.reverse_input_guarded(ex)
+    else:
+        _ok, frozen_chain_reason = FS.authority_doc_state(ex)
+        frozen_chain = FS.CHAIN_DIRECT if _ok else FS.CHAIN_SUCCESSOR
     session = ex['manifest']['session_date_used']
     hist, hmeta = load_history(spots_path, slot_policy)
     hist_dates = sorted(d for d in hist if d < session)
     calendar = PS.load_session_calendar()
 
     out = {'session': session,
+           'frozen_reader_chain': frozen_chain,
+           'frozen_reader_chain_reason': frozen_chain_reason,
+           'frozen_successor_version': FS.FROZEN_SUCCESSOR_VERSION,
            'session_calendar': {k: v for k, v in calendar.items() if k != 'holidays'},
            'export': {'path': os.path.basename(export_path),
                       'sha256': hashlib.sha256(open(export_path, 'rb').read()).hexdigest()},

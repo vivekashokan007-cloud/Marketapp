@@ -1,0 +1,68 @@
+====================================================================================================
+STAGE G NEXT-SESSION MATCHING   premium_followon_stage_g_next_session_match_v3_explicit_section
+====================================================================================================
+calendar: app NSE_HOLIDAYS, 15 dates, covered years (2026, 2026), last holiday 2026-12-25
+close window 15:10-15:30   open 09:15   opening tolerance 30 min   staleness bound 120 s
+section premium   index NF   exports 5   sessions 2026-11-16 (premium.slot_envelopes.session_date), 2026-11-17 (premium.slot_envelopes.session_date), 2026-11-18 (premium.slot_envelopes.session_date), 2026-11-19 (premium.slot_envelopes.session_date), 2026-11-20 (premium.slot_envelopes.session_date)
+attempted pairs 24
+  REFUSED  2026-11-16 -> 2026-11-17   no_close_mark_in_window            15:00
+  REFUSED  2026-11-16 -> 2026-11-17   no_close_mark_in_window            15:00
+  REFUSED  2026-11-16 -> 2026-11-17   no_close_mark_in_window            15:00
+  REFUSED  2026-11-16 -> 2026-11-17   no_close_mark_in_window            15:00
+  REFUSED  2026-11-16 -> 2026-11-17   no_close_mark_in_window            15:00
+  REFUSED  2026-11-16 -> 2026-11-17   no_close_mark_in_window            15:00
+  REFUSED  2026-11-17 -> 2026-11-18   no_close_mark_in_window            15:00
+  REFUSED  2026-11-17 -> 2026-11-18   no_close_mark_in_window            15:00
+  REFUSED  2026-11-17 -> 2026-11-18   no_close_mark_in_window            15:00
+  REFUSED  2026-11-17 -> 2026-11-18   no_close_mark_in_window            15:00
+  REFUSED  2026-11-17 -> 2026-11-18   no_close_mark_in_window            15:00
+  REFUSED  2026-11-17 -> 2026-11-18   no_close_mark_in_window            15:00
+  REFUSED  2026-11-18 -> 2026-11-19   no_close_mark_in_window            15:00
+  REFUSED  2026-11-18 -> 2026-11-19   no_close_mark_in_window            15:00
+  REFUSED  2026-11-18 -> 2026-11-19   no_close_mark_in_window            15:00
+  REFUSED  2026-11-18 -> 2026-11-19   no_close_mark_in_window            15:00
+  REFUSED  2026-11-18 -> 2026-11-19   no_close_mark_in_window            15:00
+  REFUSED  2026-11-18 -> 2026-11-19   no_close_mark_in_window            15:00
+  REFUSED  2026-11-19 -> 2026-11-20   no_close_mark_in_window            15:00
+  REFUSED  2026-11-19 -> 2026-11-20   no_close_mark_in_window            15:00
+  REFUSED  2026-11-19 -> 2026-11-20   no_close_mark_in_window            15:00
+  REFUSED  2026-11-19 -> 2026-11-20   no_close_mark_in_window            15:00
+  REFUSED  2026-11-19 -> 2026-11-20   no_close_mark_in_window            15:00
+  REFUSED  2026-11-19 -> 2026-11-20   no_close_mark_in_window            15:00
+
+refusals by reason:
+  no_close_mark_in_window                  24
+====================================================================================================
+STAGE G NEXT-SESSION MATCHING   premium_followon_stage_g_next_session_match_v3_explicit_section
+====================================================================================================
+calendar: app NSE_HOLIDAYS, 15 dates, covered years (2026, 2026), last holiday 2026-12-25
+close window 15:10-15:30   open 09:15   opening tolerance 30 min   staleness bound 120 s
+section premium   index BNF   exports 5   sessions 2026-11-16 (premium.slot_envelopes.session_date), 2026-11-17 (premium.slot_envelopes.session_date), 2026-11-18 (premium.slot_envelopes.session_date), 2026-11-19 (premium.slot_envelopes.session_date), 2026-11-20 (premium.slot_envelopes.session_date)
+attempted pairs 24
+  REFUSED  2026-11-16 -> 2026-11-17   no_close_mark_in_window            15:00
+  REFUSED  2026-11-16 -> 2026-11-17   no_close_mark_in_window            15:00
+  REFUSED  2026-11-16 -> 2026-11-17   no_close_mark_in_window            15:00
+  REFUSED  2026-11-16 -> 2026-11-17   no_close_mark_in_window            15:00
+  REFUSED  2026-11-16 -> 2026-11-17   no_close_mark_in_window            15:00
+  REFUSED  2026-11-16 -> 2026-11-17   no_close_mark_in_window            15:00
+  REFUSED  2026-11-17 -> 2026-11-18   no_close_mark_in_window            15:00
+  REFUSED  2026-11-17 -> 2026-11-18   no_close_mark_in_window            15:00
+  REFUSED  2026-11-17 -> 2026-11-18   no_close_mark_in_window            15:00
+  REFUSED  2026-11-17 -> 2026-11-18   no_close_mark_in_window            15:00
+  REFUSED  2026-11-17 -> 2026-11-18   no_close_mark_in_window            15:00
+  REFUSED  2026-11-17 -> 2026-11-18   no_close_mark_in_window            15:00
+  REFUSED  2026-11-18 -> 2026-11-19   no_close_mark_in_window            15:00
+  REFUSED  2026-11-18 -> 2026-11-19   no_close_mark_in_window            15:00
+  REFUSED  2026-11-18 -> 2026-11-19   no_close_mark_in_window            15:00
+  REFUSED  2026-11-18 -> 2026-11-19   no_close_mark_in_window            15:00
+  REFUSED  2026-11-18 -> 2026-11-19   no_close_mark_in_window            15:00
+  REFUSED  2026-11-18 -> 2026-11-19   no_close_mark_in_window            15:00
+  REFUSED  2026-11-19 -> 2026-11-20   no_close_mark_in_window            15:00
+  REFUSED  2026-11-19 -> 2026-11-20   no_close_mark_in_window            15:00
+  REFUSED  2026-11-19 -> 2026-11-20   no_close_mark_in_window            15:00
+  REFUSED  2026-11-19 -> 2026-11-20   no_close_mark_in_window            15:00
+  REFUSED  2026-11-19 -> 2026-11-20   no_close_mark_in_window            15:00
+  REFUSED  2026-11-19 -> 2026-11-20   no_close_mark_in_window            15:00
+
+refusals by reason:
+  no_close_mark_in_window                  24

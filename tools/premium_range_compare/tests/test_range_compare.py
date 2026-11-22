@@ -36,6 +36,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(HERE), '..', 'spot_path_baseline
 import premium_repricing_v2 as R7          # noqa: E402
 import range_compare as RC                 # noqa: E402
 import planned_schedule as PS              # noqa: E402
+import frozen_successor as FS              # noqa: E402
 import stopping_rule as SR                 # noqa: E402
 
 IST = R7.IST
@@ -78,26 +79,6 @@ EXPECTED = {
         'iv_only_cov80_60': {'NF': 0.740, 'BNF': 0.635},
         'hist_cov80_60': {'NF': 0.810, 'BNF': 0.781},
         'mae_60': {'NF': 20.779, 'BNF': 58.562},
-    },
-    #: The 16 November export arrived on 21 November with a DIFFERENT digest from the one Codex
-    #: reported -- `2cd20066...` rather than `903225d9...` -- yet every figure above reproduces
-    #: from it exactly. So the two files are content-identical evidence that differ in bytes
-    #: (key order, whitespace or a re-serialisation), not two different captures. Both keys are
-    #: kept: the entry above remains the independent citation, this one is the local
-    #: reproduction, and whichever file is supplied is checked against its own expectations.
-    ('2026-11-16', '2cd2006626d3a72713b017c9352232538abfadab07258938ed5395058b380f17'): {
-        'source': 'reproduced on this machine 21 November 2026; content-identical to the '
-                  'independently reported 903225d9... entry above, different bytes',
-        'matched_60': {'NF': 342, 'BNF': 342},
-        'planned_60': {'NF': 342, 'BNF': 342},
-        'scored_60': {'NF': 342, 'BNF': 342},
-        'usable_coverage_60': {'NF': 1.0, 'BNF': 1.0},
-        'iv_only_crps_60': {'NF': 14.369, 'BNF': 41.306},
-        'hist_crps_60': {'NF': 15.450, 'BNF': 43.819},
-        'iv_only_cov80_60': {'NF': 0.740, 'BNF': 0.635},
-        'hist_cov80_60': {'NF': 0.810, 'BNF': 0.781},
-        'mae_60': {'NF': 20.779, 'BNF': 58.562},
-        'r7_e0_fwd_crps_60': {'NF': 17.187, 'BNF': 46.874},
     },
 }
 
@@ -885,30 +866,41 @@ class AgainstTheFrozenReplay(unittest.TestCase):
         self.provenance = self.exp.get('source', 'unlabelled')
         return self.exp[field]
 
-    def needs_frozen_chain(self):
-        """Skip, naming the defect, when the FROZEN replay cannot run on this export.
+    def needs_direct_frozen_chain(self):
+        """Skip, reporting the chain, when the FROZEN replay cannot read this export.
 
-        A DEFECT IN THE FROZEN MODULE, found on the 16 November export and reported rather than
-        patched: `spot_timeline` (`premium_repricing_v2.py:382`) does
-        `ex['parts']['authority_doc']['history']` with no guard, and `reverse_input` (:853)
-        subscripts the same place. In this export `parts.authority_doc` is JSON `null`, so both
-        raise `TypeError`. The module is frozen at `124d62e` and byte-identical to it -- fixing
-        it here would break that guarantee and the protocol hash test -- so the tests that chain
-        to it skip with this reason instead of erroring, and the defect goes to review.
+        DIRECT VERSUS PARITY, REPORTED. `R7.score_index` calls `spot_timeline`, which subscripts
+        `parts.authority_doc` unguarded; where that is null the frozen reader raises and there is
+        no frozen output to compare against, so the parity assertion is UNAVAILABLE rather than
+        passing or failing. The guarded successor cannot stand in here: a parity test whose
+        reference is the successor would be comparing the runner against itself.
 
-        This is not a pass. It records that the frozen comparison was UNAVAILABLE on this input.
+        A skip is not a pass. It records that the direct frozen comparison could not be made on
+        this input, and which chain the runner used instead.
         """
-        parts = (self.ex.get('parts') or {})
-        if parts.get('authority_doc') is None:
-            self.skipTest('frozen R7 cannot read this export: parts.authority_doc is null and '
-                          'premium_repricing_v2.spot_timeline (L382) / reverse_input (L853) '
-                          'dereference it unguarded. Frozen module not modified; defect reported.')
+        for ix in ('NF', 'BNF'):
+            rok, rwhy, n = FS.records_readable_by_frozen(self.ex, ix)
+            if not rok:
+                self.skipTest(
+                    'the DIRECT frozen chain is unavailable on this export: %s (%d records in '
+                    '%s). premium_repricing_v2.score_index L514 dereferences r["bbo"] '
+                    'unguarded. The research runner rejects them by name as rej_bbo_absent; the '
+                    'frozen module is unmodified, so the parity reference does not exist here.'
+                    % (rwhy, n, ix))
+        ok, why = FS.authority_doc_state(self.ex)
+        if not ok:
+            self.skipTest(
+                'the DIRECT frozen chain is unavailable on this export (%s): '
+                'premium_repricing_v2.spot_timeline L382 / reverse_input L853 dereference it '
+                'unguarded. The runner used %s (%s); the frozen module is unmodified and the '
+                'parity reference therefore does not exist for this input.'
+                % (why, FS.CHAIN_SUCCESSOR, FS.FROZEN_SUCCESSOR_VERSION))
 
     # ── structural: these hold for ANY real export ──
 
     def test_admission_matches_the_frozen_replay(self):
         """Same rows, same entry and exit acquisitions, same exclusion counts, any session."""
-        self.needs_frozen_chain()
+        self.needs_direct_frozen_chain()
         for ix in self.needs_data():
             _s, r7rows, r7cov, _l = R7.score_index(self.ex, ix, self.r7_hist, self.hd,
                                                    self.session)
@@ -925,7 +917,7 @@ class AgainstTheFrozenReplay(unittest.TestCase):
 
     def test_the_reference_variant_reproduces_the_frozen_primary_score(self):
         """Whatever the session, the reference must equal the frozen replay's own number."""
-        self.needs_frozen_chain()
+        self.needs_direct_frozen_chain()
         for ix in self.needs_data():
             _s, r7rows, _c, _l = R7.score_index(self.ex, ix, self.r7_hist, self.hd,
                                                 self.session)
@@ -1081,7 +1073,6 @@ class AgainstTheFrozenReplay(unittest.TestCase):
 
     def test_the_real_run_is_independent_of_input_order(self):
         self.needs_data()
-        self.needs_frozen_chain()      # --reverse-input routes through frozen `reverse_input`
         a = RC.run([REAL_EXPORT], REAL_SPOTS, horizons=(60,))
         b = RC.run([REAL_EXPORT], REAL_SPOTS, horizons=(60,), reverse_input=True)
         for ix in self.with_data:

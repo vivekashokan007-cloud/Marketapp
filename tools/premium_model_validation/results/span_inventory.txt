@@ -2,7 +2,7 @@
 PREMIUM SPAN INVENTORY   premium_span_inventory_v1   2026-11-12 to 2026-11-20
 ======================================================================================================================
 calendar nse_regular_session_calendar_v1_app_holidays   source app/src/main/python/brain.py   sha 304115d9f9f347a3
-scanned 457 json files under 1 root(s); 27 claim a session in the span
+scanned 7 json files under 1 root(s); 7 claim a session in the span
 
 --- the span, from the app calendar alone (no file consulted) ---
     2026-11-12 Thu   REGULAR SESSION
@@ -17,88 +17,29 @@ scanned 457 json files under 1 root(s); 27 claim a session in the span
 
 --- every candidate file claiming a session in the span ---
     session     idx  kind       sha256[:12] / basename              pinned    recs  usable planned  first   last    state
-    2026-11-12  BNF  SYNTHETIC  08a649fd0437                             0     323     323       0  09:20  13:45 INCOMPLE
-    2026-11-12  NF   SYNTHETIC  08a649fd0437                             6     318     318     342  09:20  13:40 VERIFIED
-    2026-11-12  BNF  SYNTHETIC  1dfb5423310e                             0     323     323     342  09:20  13:45 VERIFIED
-    2026-11-12  NF   SYNTHETIC  1dfb5423310e                             6     318     318     342  09:20  13:40 VERIFIED
-    2026-11-12  BNF  SYNTHETIC  4062b6e0c931                             6     323     323       0  09:20  13:45 INCOMPLE
-    2026-11-12  NF   SYNTHETIC  4062b6e0c931                             6     318     318     342  09:20  13:40 VERIFIED
-    2026-11-12  NF   SYNTHETIC  74571ac467b2                             6     318     318     342  09:20  13:40 VERIFIED
-    2026-11-12  BNF  SYNTHETIC  5312b656cf0d                             0     323     323       0  09:20  13:45 INCOMPLE
-    2026-11-12  NF   SYNTHETIC  5312b656cf0d                             6     318     318     342  09:20  13:40 VERIFIED
-    2026-11-12  BNF  SYNTHETIC  c147f9196355                             0     323     323       0  09:20  13:45 INCOMPLE
-    2026-11-12  NF   SYNTHETIC  c147f9196355                             6     318     318     342  09:20  13:40 VERIFIED
     2026-11-12  BNF  CAPTURE    5f399accefab                             6     323     323     342  09:20  13:45 VERIFIED
     2026-11-12  NF   CAPTURE    5f399accefab                             6     318     318     342  09:20  13:40 VERIFIED
     2026-11-13  BNF  CAPTURE    4f544bee59af                             0       0       0       0      -      - INCOMPLE
     2026-11-13  NF   CAPTURE    4f544bee59af                             0       0       0       0      -      - INCOMPLE
-    2026-11-13  BNF  CAPTURE    4b18570f740c                             0       0       0       0      -      - INCOMPLE
-    2026-11-13  NF   CAPTURE    4b18570f740c                             0       0       0       0      -      - INCOMPLE
     2026-11-16  BNF  CAPTURE    2cd2006626d3                             6     414     414     342  09:20  15:00 VERIFIED
     2026-11-16  NF   CAPTURE    2cd2006626d3                             6     414     414     342  09:20  15:00 VERIFIED
-    2026-11-16  BNF  SYNTHETIC  618a5b5368f0                             6     414     414     342  09:20  15:00 VERIFIED
-    2026-11-16  NF   SYNTHETIC  618a5b5368f0                             6     414     414     342  09:20  15:00 VERIFIED
-    2026-11-16  BNF  SYNTHETIC  1f38688a933e                             6     414     414     342  09:20  15:00 VERIFIED
-    2026-11-16  NF   SYNTHETIC  1f38688a933e                             6     414     414     342  09:20  15:00 VERIFIED
-    2026-11-16  BNF  SYNTHETIC  85706b15ef2e                             6     414     414     342  09:20  15:00 VERIFIED
-    2026-11-16  NF   SYNTHETIC  85706b15ef2e                             6     414     414     342  09:20  15:00 VERIFIED
-    2026-11-16  BNF  SYNTHETIC  89d1b11e3c4d                             6     414     414     342  09:20  15:00 VERIFIED
-    2026-11-16  NF   SYNTHETIC  89d1b11e3c4d                             6     414     414     342  09:20  15:00 VERIFIED
-    2026-11-17  BNF  SYNTHETIC  08f1c9cb5502                             6     414     414     342  09:20  15:00 VERIFIED
-    2026-11-17  NF   SYNTHETIC  08f1c9cb5502                             6     414     414     342  09:20  15:00 VERIFIED
-    2026-11-17  BNF  SYNTHETIC  1401e90bfd2b                             6     414     414     342  09:20  15:00 VERIFIED
-    2026-11-17  NF   SYNTHETIC  1401e90bfd2b                             6     414     414     342  09:20  15:00 VERIFIED
-    2026-11-17  BNF  SYNTHETIC  7aff0c94b7fa                             6     414     414     342  09:20  15:00 VERIFIED
-    2026-11-17  NF   SYNTHETIC  7aff0c94b7fa                             6     414     414     342  09:20  15:00 VERIFIED
-    2026-11-17  BNF  SYNTHETIC  87cb7e25ddb8                             6     414     414     342  09:20  15:00 VERIFIED
-    2026-11-17  NF   SYNTHETIC  87cb7e25ddb8                             6     414     414     342  09:20  15:00 VERIFIED
-    2026-11-18  BNF  SYNTHETIC  239cf9035274                             6     414     414     342  09:20  15:00 VERIFIED
-    2026-11-18  NF   SYNTHETIC  239cf9035274                             6     414     414     342  09:20  15:00 VERIFIED
-    2026-11-18  BNF  SYNTHETIC  2687fa1abc28                             6     414     414     342  09:20  15:00 VERIFIED
-    2026-11-18  NF   SYNTHETIC  2687fa1abc28                             6     414     414     342  09:20  15:00 VERIFIED
-    2026-11-18  BNF  SYNTHETIC  86533f80d2e7                             6     414     414     342  09:20  15:00 VERIFIED
-    2026-11-18  NF   SYNTHETIC  86533f80d2e7                             6     414     414     342  09:20  15:00 VERIFIED
-    2026-11-19  BNF  SYNTHETIC  359ca38d7c3c                             0       0       0       0      -      - INCOMPLE
-    2026-11-19  NF   SYNTHETIC  359ca38d7c3c                             0       0       0       0      -      - INCOMPLE
-    2026-11-19  BNF  SYNTHETIC  37b019984cf8                             0       0       0       0      -      - INCOMPLE
-    2026-11-19  NF   SYNTHETIC  37b019984cf8                             0       0       0       0      -      - INCOMPLE
-    2026-11-19  BNF  SYNTHETIC  0e301481048a                             0       0       0       0      -      - INCOMPLE
-    2026-11-19  NF   SYNTHETIC  0e301481048a                             0       0       0       0      -      - INCOMPLE
-    2026-11-19  BNF  SYNTHETIC  35fbe9d91f08                             0       0       0       0      -      - INCOMPLE
-    2026-11-19  NF   SYNTHETIC  35fbe9d91f08                             0       0       0       0      -      - INCOMPLE
-    2026-11-19  BNF  SYNTHETIC  679f07df231c                             0       0       0       0      -      - INCOMPLE
-    2026-11-19  NF   SYNTHETIC  679f07df231c                             0       0       0       0      -      - INCOMPLE
-    2026-11-19  BNF  SYNTHETIC  dbefa97326fd                             0       0       0       0      -      - INCOMPLE
-    2026-11-19  NF   SYNTHETIC  dbefa97326fd                             0       0       0       0      -      - INCOMPLE
+    2026-11-17  BNF  CAPTURE    e97198f28ea1                             6     414     414     342  09:20  15:00 VERIFIED
+    2026-11-17  NF   CAPTURE    e97198f28ea1                             6     414     414     342  09:20  15:00 VERIFIED
+    2026-11-18  BNF  CAPTURE    31b58b582751                             6     414     414     342  09:20  15:00 VERIFIED
+    2026-11-18  NF   CAPTURE    31b58b582751                             6     414     414     342  09:20  15:00 VERIFIED
+    2026-11-19  BNF  CAPTURE    0b50c96e47fd                             6     414     414     342  09:20  15:00 VERIFIED
+    2026-11-19  NF   CAPTURE    0b50c96e47fd                             6     414     414     342  09:20  15:00 VERIFIED
+    2026-11-20  BNF  CAPTURE    67e14b90b0fb                             6     414     408     342  09:20  15:00 VERIFIED
+    2026-11-20  NF   CAPTURE    67e14b90b0fb                             6     414     408     342  09:20  15:00 VERIFIED
 
     sha256[:12]    copies first path, and the basename
-    08a649fd0437   2      fixture_A_bnf_no_contract_list.json
-    1dfb5423310e   3      fixture_B_bnf_cohort_removed.json
-    4062b6e0c931   2      fixture_C_bnf_copies_disagree.json
-    5312b656cf0d   1      fixture_E_undeclared_alpha_first.json
-    5f399accefab   4      phone_2026-11-12.json
-    74571ac467b2   1      fixture_D_bnf_section_removed.json
-    c147f9196355   1      fixture_F_undeclared_omega_first.json
-    4b18570f740c   1      phone_2026-11-13.json
+    5f399accefab   1      export_2026-11-12.json
     4f544bee59af   1      export_2026-11-13.json
-    1f38688a933e   1      export_full_session_2026-11-16.json
     2cd2006626d3   1      export_2026-11-16.json
-    618a5b5368f0   1      export_2026-11-16.json
-    85706b15ef2e   3      export_full_session_2026-11-16.json
-    89d1b11e3c4d   3      synthetic_HEAD_2026-11-16.json
-    08f1c9cb5502   1      export_2026-11-17.json
-    1401e90bfd2b   2      export_full_session_2026-11-17.json
-    7aff0c94b7fa   1      export_full_session_2026-11-17.json
-    87cb7e25ddb8   3      export_full_session_2026-11-17.json
-    239cf9035274   2      export_full_session_2026-11-18.json
-    2687fa1abc28   3      export_full_session_2026-11-18.json
-    86533f80d2e7   1      export_full_session_2026-11-18.json
-    0e301481048a   1      export_refused_at_cap_2026-11-19.json
-    359ca38d7c3c   1      export_refusal_after_full_day_2026-11-19.json
-    35fbe9d91f08   2      export_refused_at_cap_2026-11-19.json
-    37b019984cf8   2      export_refusal_after_full_day_2026-11-19.json
-    679f07df231c   1      export_refused_at_cap_2026-11-19.json
-    dbefa97326fd   2      export_refused_at_cap_2026-11-19.json
+    e97198f28ea1   1      export_2026-11-17.json
+    31b58b582751   1      export_2026-11-18.json
+    0b50c96e47fd   1      export_2026-11-19.json
+    67e14b90b0fb   1      export_2026-11-20.json
 
 --- EXACT-CONTRACT COVERAGE, from CAPTURE rows only ---
     2026-11-12  NF    318 records
@@ -109,14 +50,14 @@ scanned 457 json files under 1 root(s); 27 claim a session in the span
     2026-11-15  -     NO TRADING SESSION
     2026-11-16  NF    414 records
     2026-11-16  BNF   414 records
-    2026-11-17  NF    NO CAPTURE IN THIS ENVIRONMENT
-    2026-11-17  BNF   NO CAPTURE IN THIS ENVIRONMENT
-    2026-11-18  NF    NO CAPTURE IN THIS ENVIRONMENT
-    2026-11-18  BNF   NO CAPTURE IN THIS ENVIRONMENT
-    2026-11-19  NF    NO CAPTURE IN THIS ENVIRONMENT
-    2026-11-19  BNF   NO CAPTURE IN THIS ENVIRONMENT
-    2026-11-20  NF    NO CAPTURE IN THIS ENVIRONMENT
-    2026-11-20  BNF   NO CAPTURE IN THIS ENVIRONMENT
+    2026-11-17  NF    414 records
+    2026-11-17  BNF   414 records
+    2026-11-18  NF    414 records
+    2026-11-18  BNF   414 records
+    2026-11-19  NF    414 records
+    2026-11-19  BNF   414 records
+    2026-11-20  NF    414 records
+    2026-11-20  BNF   414 records
 
 ======================================================================================================================
 A SYNTHETIC file is a generated fixture, not evidence. It is listed so it cannot be
