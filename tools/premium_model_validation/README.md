@@ -22,7 +22,8 @@ is empty.
 | `PREDECLARATION_RANGE_AWARE_RULE_20261121.md` | the one range-aware rule, committed before its implementation |
 | `FEE_EXTENSION_REVIEW_20261121.md` | the unapplied fee extension, with dated sources and worked cases, returned for its own review |
 | `OVERNIGHT_CAPTURE_CHECKLIST_20261121.md` | why no overnight pair can be formed from the current capture window, proven rather than inferred |
-| `tests/` | 155 checks, no network. Seven need real inputs and skip loudly without them |
+| `index_direction.py` | realised index direction from `parts.authority_doc.history[index].spot`, the decision-poll trail, with the premium proxy recomputed beside it. A session whose `authority_doc` is null is reported UNOBSERVABLE; no direction is claimed for it |
+| `tests/` | 170 checks, no network. Seven need real inputs and skip loudly without them |
 | `results/` | the printed runs and machine-readable scores for 12 and 16 November |
 
 ## The answer, in three lines

@@ -1,0 +1,563 @@
+{
+ "clock_note": "spot.asof is the decision poll's own receipt stamp, not a verified exchange event time; direction is used to DIAGNOSE the replay, never to decide in it",
+ "direction_version": "realised_index_direction_v1_time_aligned_spot_observations",
+ "horizon_min": 60,
+ "proxy_disagreements": [
+  {
+   "basis": "open_to_close",
+   "index": "BNF",
+   "observed": "UP",
+   "proxy": "DOWN",
+   "session": "2026-11-12"
+  },
+  {
+   "basis": "capture_window",
+   "index": "BNF",
+   "observed": "UP",
+   "proxy": "DOWN",
+   "session": "2026-11-12"
+  },
+  {
+   "basis": "median_horizon",
+   "index": "BNF",
+   "observed": "UP",
+   "proxy": "DOWN",
+   "session": "2026-11-12"
+  },
+  {
+   "basis": "open_to_close",
+   "index": "NF",
+   "observed": "UP",
+   "proxy": "DOWN",
+   "session": "2026-11-12"
+  }
+ ],
+ "sessions": {
+  "2026-11-12": {
+   "export": "export_2026-11-12.json",
+   "indices": {
+    "BNF": {
+     "capture_window_direction": "UP",
+     "capture_window_move_inr": 257.75,
+     "capture_window_span": [
+      "09:20",
+      "13:45"
+     ],
+     "horizon_moves_n": 61,
+     "horizon_up_down": [
+      31,
+      30
+     ],
+     "index": "BNF",
+     "median_horizon_direction": "UP",
+     "median_horizon_move_inr": 0.10000000000582077,
+     "open_to_close_direction": "UP",
+     "open_to_close_inr": 644.7999999999956,
+     "premium_capture_window": [
+      "09:20",
+      "13:45"
+     ],
+     "premium_proxy_direction": "DOWN",
+     "premium_proxy_median_move": {
+      "CE": -20.087499999999977,
+      "PE": 1.6749999999999545
+     },
+     "premium_proxy_n": {
+      "CE": 126,
+      "PE": 125
+     },
+     "proxy_agrees_with_capture_window": false,
+     "proxy_agrees_with_median_horizon": false,
+     "proxy_agrees_with_open_to_close": false,
+     "spot_close": 61467.95,
+     "spot_observation_state": "OBSERVED",
+     "spot_observations": 73,
+     "spot_open": 60823.15,
+     "spot_span": [
+      "09:15",
+      "15:15"
+     ]
+    },
+    "NF": {
+     "capture_window_direction": "DOWN",
+     "capture_window_move_inr": -48.54999999999927,
+     "capture_window_span": [
+      "09:20",
+      "13:40"
+     ],
+     "horizon_moves_n": 61,
+     "horizon_up_down": [
+      25,
+      36
+     ],
+     "index": "NF",
+     "median_horizon_direction": "DOWN",
+     "median_horizon_move_inr": -8.25,
+     "open_to_close_direction": "UP",
+     "open_to_close_inr": 65.70000000000073,
+     "premium_capture_window": [
+      "09:20",
+      "13:40"
+     ],
+     "premium_proxy_direction": "DOWN",
+     "premium_proxy_median_move": {
+      "CE": -27.649999999999977,
+      "PE": 18.774999999999977
+     },
+     "premium_proxy_n": {
+      "CE": 123,
+      "PE": 123
+     },
+     "proxy_agrees_with_capture_window": true,
+     "proxy_agrees_with_median_horizon": true,
+     "proxy_agrees_with_open_to_close": false,
+     "spot_close": 25275.25,
+     "spot_observation_state": "OBSERVED",
+     "spot_observations": 73,
+     "spot_open": 25209.55,
+     "spot_span": [
+      "09:15",
+      "15:15"
+     ]
+    }
+   }
+  },
+  "2026-11-13": {
+   "export": "export_2026-11-13.json",
+   "indices": {
+    "BNF": {
+     "horizon_moves_n": 29,
+     "horizon_up_down": [
+      11,
+      18
+     ],
+     "index": "BNF",
+     "median_horizon_direction": "DOWN",
+     "median_horizon_move_inr": -32.049999999995634,
+     "open_to_close_direction": "DOWN",
+     "open_to_close_inr": -139.10000000000582,
+     "premium_capture_window": [
+      null,
+      null
+     ],
+     "premium_proxy_direction": null,
+     "premium_proxy_median_move": {
+      "CE": null,
+      "PE": null
+     },
+     "premium_proxy_n": {
+      "CE": 0,
+      "PE": 0
+     },
+     "proxy_agrees_with_capture_window": null,
+     "proxy_agrees_with_median_horizon": null,
+     "proxy_agrees_with_open_to_close": null,
+     "spot_close": 60960.95,
+     "spot_observation_state": "OBSERVED",
+     "spot_observations": 41,
+     "spot_open": 61100.05,
+     "spot_span": [
+      "09:15",
+      "12:35"
+     ]
+    },
+    "NF": {
+     "horizon_moves_n": 29,
+     "horizon_up_down": [
+      9,
+      20
+     ],
+     "index": "NF",
+     "median_horizon_direction": "DOWN",
+     "median_horizon_move_inr": -21.049999999999272,
+     "open_to_close_direction": "DOWN",
+     "open_to_close_inr": -37.099999999998545,
+     "premium_capture_window": [
+      null,
+      null
+     ],
+     "premium_proxy_direction": null,
+     "premium_proxy_median_move": {
+      "CE": null,
+      "PE": null
+     },
+     "premium_proxy_n": {
+      "CE": 0,
+      "PE": 0
+     },
+     "proxy_agrees_with_capture_window": null,
+     "proxy_agrees_with_median_horizon": null,
+     "proxy_agrees_with_open_to_close": null,
+     "spot_close": 25113.65,
+     "spot_observation_state": "OBSERVED",
+     "spot_observations": 41,
+     "spot_open": 25150.75,
+     "spot_span": [
+      "09:15",
+      "12:35"
+     ]
+    }
+   }
+  },
+  "2026-11-16": {
+   "export": "export_2026-11-16.json",
+   "indices": {
+    "BNF": {
+     "index": "BNF",
+     "note": "this export carries authority_doc: null, so no time-aligned spot series exists for it. No direction is claimed.",
+     "premium_capture_window": [
+      "09:20",
+      "15:00"
+     ],
+     "premium_proxy_direction": "DOWN",
+     "premium_proxy_median_move": {
+      "CE": -3.8250000000000455,
+      "PE": -0.7749999999999773
+     },
+     "premium_proxy_n": {
+      "CE": 171,
+      "PE": 171
+     },
+     "spot_observation_state": "UNOBSERVABLE_NO_AUTHORITY_DOC"
+    },
+    "NF": {
+     "index": "NF",
+     "note": "this export carries authority_doc: null, so no time-aligned spot series exists for it. No direction is claimed.",
+     "premium_capture_window": [
+      "09:20",
+      "15:00"
+     ],
+     "premium_proxy_direction": "DOWN",
+     "premium_proxy_median_move": {
+      "CE": -9.050000000000011,
+      "PE": 0.9249999999999972
+     },
+     "premium_proxy_n": {
+      "CE": 171,
+      "PE": 171
+     },
+     "spot_observation_state": "UNOBSERVABLE_NO_AUTHORITY_DOC"
+    }
+   }
+  },
+  "2026-11-17": {
+   "export": "export_2026-11-17.json",
+   "indices": {
+    "BNF": {
+     "index": "BNF",
+     "note": "this export carries authority_doc: null, so no time-aligned spot series exists for it. No direction is claimed.",
+     "premium_capture_window": [
+      "09:20",
+      "15:00"
+     ],
+     "premium_proxy_direction": "UP",
+     "premium_proxy_median_move": {
+      "CE": 27.875000000000114,
+      "PE": -27.700000000000045
+     },
+     "premium_proxy_n": {
+      "CE": 171,
+      "PE": 171
+     },
+     "spot_observation_state": "UNOBSERVABLE_NO_AUTHORITY_DOC"
+    },
+    "NF": {
+     "index": "NF",
+     "note": "this export carries authority_doc: null, so no time-aligned spot series exists for it. No direction is claimed.",
+     "premium_capture_window": [
+      "09:20",
+      "15:00"
+     ],
+     "premium_proxy_direction": "UP",
+     "premium_proxy_median_move": {
+      "CE": 25.650000000000006,
+      "PE": -10.100000000000003
+     },
+     "premium_proxy_n": {
+      "CE": 171,
+      "PE": 171
+     },
+     "spot_observation_state": "UNOBSERVABLE_NO_AUTHORITY_DOC"
+    }
+   }
+  },
+  "2026-11-18": {
+   "export": "export_2026-11-18.json",
+   "indices": {
+    "BNF": {
+     "capture_window_direction": "DOWN",
+     "capture_window_move_inr": -341.0,
+     "capture_window_span": [
+      "09:20",
+      "15:00"
+     ],
+     "horizon_moves_n": 64,
+     "horizon_up_down": [
+      30,
+      34
+     ],
+     "index": "BNF",
+     "median_horizon_direction": "DOWN",
+     "median_horizon_move_inr": -22.200000000000728,
+     "open_to_close_direction": "DOWN",
+     "open_to_close_inr": -159.09999999999854,
+     "premium_capture_window": [
+      "09:20",
+      "15:00"
+     ],
+     "premium_proxy_direction": "DOWN",
+     "premium_proxy_median_move": {
+      "CE": -5.125,
+      "PE": -10.074999999999932
+     },
+     "premium_proxy_n": {
+      "CE": 171,
+      "PE": 171
+     },
+     "proxy_agrees_with_capture_window": true,
+     "proxy_agrees_with_median_horizon": true,
+     "proxy_agrees_with_open_to_close": true,
+     "spot_close": 62038.65,
+     "spot_observation_state": "OBSERVED",
+     "spot_observations": 76,
+     "spot_open": 62197.75,
+     "spot_span": [
+      "09:15",
+      "15:30"
+     ]
+    },
+    "NF": {
+     "capture_window_direction": "DOWN",
+     "capture_window_move_inr": -141.70000000000073,
+     "capture_window_span": [
+      "09:20",
+      "15:00"
+     ],
+     "horizon_moves_n": 64,
+     "horizon_up_down": [
+      23,
+      41
+     ],
+     "index": "NF",
+     "median_horizon_direction": "DOWN",
+     "median_horizon_move_inr": -20.75,
+     "open_to_close_direction": "DOWN",
+     "open_to_close_inr": -80.34999999999854,
+     "premium_capture_window": [
+      "09:20",
+      "15:00"
+     ],
+     "premium_proxy_direction": "DOWN",
+     "premium_proxy_median_move": {
+      "CE": -7.525000000000006,
+      "PE": 3.4749999999999943
+     },
+     "premium_proxy_n": {
+      "CE": 171,
+      "PE": 171
+     },
+     "proxy_agrees_with_capture_window": true,
+     "proxy_agrees_with_median_horizon": true,
+     "proxy_agrees_with_open_to_close": true,
+     "spot_close": 25227.95,
+     "spot_observation_state": "OBSERVED",
+     "spot_observations": 76,
+     "spot_open": 25308.3,
+     "spot_span": [
+      "09:15",
+      "15:30"
+     ]
+    }
+   }
+  },
+  "2026-11-19": {
+   "export": "export_2026-11-19.json",
+   "indices": {
+    "BNF": {
+     "capture_window_direction": "UP",
+     "capture_window_move_inr": 737.7999999999956,
+     "capture_window_span": [
+      "09:20",
+      "15:00"
+     ],
+     "horizon_moves_n": 64,
+     "horizon_up_down": [
+      59,
+      5
+     ],
+     "index": "BNF",
+     "median_horizon_direction": "UP",
+     "median_horizon_move_inr": 123.375,
+     "open_to_close_direction": "UP",
+     "open_to_close_inr": 1078.300000000003,
+     "premium_capture_window": [
+      "09:20",
+      "15:00"
+     ],
+     "premium_proxy_direction": "UP",
+     "premium_proxy_median_move": {
+      "CE": 79.07499999999993,
+      "PE": -41.67499999999998
+     },
+     "premium_proxy_n": {
+      "CE": 171,
+      "PE": 171
+     },
+     "proxy_agrees_with_capture_window": true,
+     "proxy_agrees_with_median_horizon": true,
+     "proxy_agrees_with_open_to_close": true,
+     "spot_close": 63063.0,
+     "spot_observation_state": "OBSERVED",
+     "spot_observations": 76,
+     "spot_open": 61984.7,
+     "spot_span": [
+      "09:15",
+      "15:30"
+     ]
+    },
+    "NF": {
+     "capture_window_direction": "UP",
+     "capture_window_move_inr": 259.1000000000022,
+     "capture_window_span": [
+      "09:20",
+      "15:00"
+     ],
+     "horizon_moves_n": 64,
+     "horizon_up_down": [
+      63,
+      1
+     ],
+     "index": "NF",
+     "median_horizon_direction": "UP",
+     "median_horizon_move_inr": 46.649999999999636,
+     "open_to_close_direction": "UP",
+     "open_to_close_inr": 337.0499999999993,
+     "premium_capture_window": [
+      "09:20",
+      "15:00"
+     ],
+     "premium_proxy_direction": "UP",
+     "premium_proxy_median_move": {
+      "CE": 32.95000000000002,
+      "PE": -17.700000000000003
+     },
+     "premium_proxy_n": {
+      "CE": 171,
+      "PE": 171
+     },
+     "proxy_agrees_with_capture_window": true,
+     "proxy_agrees_with_median_horizon": true,
+     "proxy_agrees_with_open_to_close": true,
+     "spot_close": 25514.3,
+     "spot_observation_state": "OBSERVED",
+     "spot_observations": 76,
+     "spot_open": 25177.25,
+     "spot_span": [
+      "09:15",
+      "15:30"
+     ]
+    }
+   }
+  },
+  "2026-11-20": {
+   "export": "export_2026-11-20.json",
+   "indices": {
+    "BNF": {
+     "capture_window_direction": "UP",
+     "capture_window_move_inr": 1771.1500000000015,
+     "capture_window_span": [
+      "09:20",
+      "15:00"
+     ],
+     "horizon_moves_n": 62,
+     "horizon_up_down": [
+      62,
+      0
+     ],
+     "index": "BNF",
+     "median_horizon_direction": "UP",
+     "median_horizon_move_inr": 183.47500000000218,
+     "open_to_close_direction": "UP",
+     "open_to_close_inr": 2007.2999999999956,
+     "premium_capture_window": [
+      "09:20",
+      "15:00"
+     ],
+     "premium_proxy_direction": "UP",
+     "premium_proxy_median_move": {
+      "CE": 149.17500000000007,
+      "PE": -60.5
+     },
+     "premium_proxy_n": {
+      "CE": 165,
+      "PE": 165
+     },
+     "proxy_agrees_with_capture_window": true,
+     "proxy_agrees_with_median_horizon": true,
+     "proxy_agrees_with_open_to_close": true,
+     "spot_close": 64635.2,
+     "spot_observation_state": "OBSERVED",
+     "spot_observations": 75,
+     "spot_open": 62627.9,
+     "spot_span": [
+      "09:15",
+      "15:30"
+     ]
+    },
+    "NF": {
+     "capture_window_direction": "UP",
+     "capture_window_move_inr": 315.0,
+     "capture_window_span": [
+      "09:20",
+      "15:00"
+     ],
+     "horizon_moves_n": 62,
+     "horizon_up_down": [
+      58,
+      4
+     ],
+     "index": "NF",
+     "median_horizon_direction": "UP",
+     "median_horizon_move_inr": 36.32499999999891,
+     "open_to_close_direction": "UP",
+     "open_to_close_inr": 430.1499999999978,
+     "premium_capture_window": [
+      "09:20",
+      "15:00"
+     ],
+     "premium_proxy_direction": "UP",
+     "premium_proxy_median_move": {
+      "CE": 23.0,
+      "PE": -18.17500000000001
+     },
+     "premium_proxy_n": {
+      "CE": 165,
+      "PE": 165
+     },
+     "proxy_agrees_with_capture_window": true,
+     "proxy_agrees_with_median_horizon": true,
+     "proxy_agrees_with_open_to_close": true,
+     "spot_close": 25800.6,
+     "spot_observation_state": "OBSERVED",
+     "spot_observations": 75,
+     "spot_open": 25370.45,
+     "spot_span": [
+      "09:15",
+      "15:30"
+     ]
+    }
+   }
+  }
+ },
+ "sessions_unobservable": [
+  "2026-11-16",
+  "2026-11-17"
+ ],
+ "sessions_with_observed_spot": [
+  "2026-11-12",
+  "2026-11-13",
+  "2026-11-18",
+  "2026-11-19",
+  "2026-11-20"
+ ]
+}

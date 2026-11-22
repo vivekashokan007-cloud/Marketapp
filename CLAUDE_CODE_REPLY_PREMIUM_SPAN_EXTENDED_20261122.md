@@ -30,8 +30,10 @@ extension → `ba595ec` this memo
 
 **My previous memo said the span did not extend and that the NIFTY put result was probably
 direction rather than edge. The data has now arrived and settled it: it was direction.** The put
-arms invert on the three up days, the call arms invert the other way, and every pooled positive
-total is **more than entirely attributable to one session**.
+arms invert on the up days — **two of them confirmed against the observed index, the third
+inferred from the premium proxy because its export carries no spot trail** — the call arms invert
+the other way, and every pooled positive total is **more than entirely attributable to one
+session**.
 
 ---
 
@@ -40,13 +42,33 @@ total is **more than entirely attributable to one session**.
 All four new exports are genuine captures by provenance — their digests are in the upload channel,
 and each carries 414 records, 342 planned opportunities, `VERIFIED`, 09:20–15:00.
 
-| date | NIFTY direction | NF records / usable | BNF records / usable | planned | state |
+> **The "NIFTY direction" column below is a PREMIUM PROXY, and on 12 November it is wrong.** The
+> owner asked for direction from time-aligned observations, and the exports carry them:
+> `parts.authority_doc.history[index]` stamps an index `spot.value` with its own `spot.asof` on
+> every decision poll, independent of any option quote. `index_direction.py` reads it. The
+> observed series is in the table after the proxy table, and it changes two labels:
+>
+> * **12 November NIFTY closed UP, +65.70** (25,209.55 → 25,275.25). The proxy said down. Both
+>   are defensible readings of different things — inside the capture window, which ends 13:45
+>   that day, NIFTY was **down −48.55** and the median 60-minute move was **−8.25**, so the
+>   replay's population really did see a falling index. The *day* did not fall. BANKNIFTY on 12
+>   November disagrees on **all three** bases: proxy down, observed up on the day (+644.80), up
+>   in the window (+257.75) and flat-to-up on the median horizon (+0.10).
+> * **16 and 17 November carry `authority_doc: null`, so no direction is observable for them at
+>   all.** The "17 Nov was UP" label rests on the premium proxy alone. **Only two of the three
+>   up days are confirmed** — the 19th (+337.05) and the 20th (+430.15).
+>
+> 18, 19 and 20 November agree with the proxy on every basis. §2's conclusion survives — it rests
+> on the 19th and 20th, both confirmed, with the 17th consistent but unobserved — but "three up
+> days" should read "two confirmed and one inferred".
+
+| date | NIFTY direction (proxy) | NF records / usable | BNF records / usable | planned | state |
 | --- | --- | ---: | ---: | ---: | --- |
-| 12 Nov | **down** | 318 / 318 | 323 / 323 | 342 | VERIFIED (capture ends 13:40/13:45) |
+| 12 Nov | ~~**down**~~ **UP on the day, down in the capture window** | 318 / 318 | 323 / 323 | 342 | VERIFIED (capture ends 13:40/13:45) |
 | 13 Nov | — | **0** | **0** | — | capture present, **zero premium records** |
 | 14–15 Nov | — | — | — | — | no trading session (weekend) |
-| 16 Nov | **down** | 414 / 414 | 414 / 414 | 342 | VERIFIED, 100% coverage |
-| 17 Nov | **UP** | 414 / 414 | 414 / 414 | 342 | VERIFIED, 100% |
+| 16 Nov | **down** — *proxy only, unobservable* | 414 / 414 | 414 / 414 | 342 | VERIFIED, 100% coverage |
+| 17 Nov | **UP** — *proxy only, unobservable* | 414 / 414 | 414 / 414 | 342 | VERIFIED, 100% |
 | 18 Nov | down | 414 / 414 | 414 / 414 | 342 | VERIFIED, 100% |
 | 19 Nov | **UP** | 414 / 414 | 414 / 414 | 342 | VERIFIED, 100% |
 | 20 Nov | **UP** | 414 / **408** | 414 / **408** | 342 | VERIFIED; one failed poll, §6 |
@@ -67,7 +89,38 @@ Digests: `e97198f2…` (17th), `31b58b58…` (18th), `0b50c96e…` (19th), `67e1
 19 November had **every** NIFTY put fall and 158 of 159 calls rise. On 20 November BANKNIFTY
 calls rose a median **+148.64** points with a best of **+842.87**.
 
-## 2 · The put result was direction. Confirmed.
+**And now the observed index itself**, from the decision-poll spot trail rather than the premium.
+`spot.asof` is the poll's own receipt stamp, not a verified exchange event time, so this is used
+to diagnose the replay and never to decide inside it:
+
+| session | idx | obs | open → close | dir | inside capture window | dir | median 60-min | dir | proxy said |
+| --- | --- | ---: | ---: | --- | ---: | --- | ---: | --- | --- |
+| 12 Nov | NF | 73 | 25,209.55 → 25,275.25, **+65.70** | **UP** | −48.55 | DOWN | −8.25 | DOWN | DOWN |
+| 12 Nov | BNF | 73 | 60,823.15 → 61,467.95, **+644.80** | **UP** | +257.75 | UP | +0.10 | UP | **DOWN ✗** |
+| 13 Nov | NF | 41 | −37.10 (series ends 12:35) | DOWN | — | — | −21.05 | DOWN | *no premium* |
+| 13 Nov | BNF | 41 | −139.10 | DOWN | — | — | −32.05 | DOWN | *no premium* |
+| 16 Nov | both | — | **`authority_doc: null`** | — | — | — | — | — | down |
+| 17 Nov | both | — | **`authority_doc: null`** | — | — | — | — | — | UP |
+| 18 Nov | NF | 76 | 25,308.30 → 25,227.95, −80.35 | DOWN | −141.70 | DOWN | −20.75 | DOWN | DOWN ✓ |
+| 18 Nov | BNF | 76 | 62,197.75 → 62,038.65, −159.10 | DOWN | −341.00 | DOWN | −22.20 | DOWN | DOWN ✓ |
+| 19 Nov | NF | 76 | 25,177.25 → 25,514.30, **+337.05** | UP | +259.10 | UP | +46.65 | UP | UP ✓ |
+| 19 Nov | BNF | 76 | 61,984.70 → 63,063.00, **+1,078.30** | UP | +737.80 | UP | +123.38 | UP | UP ✓ |
+| 20 Nov | NF | 75 | 25,370.45 → 25,800.60, **+430.15** | UP | +315.00 | UP | +36.32 | UP | UP ✓ |
+| 20 Nov | BNF | 75 | 62,627.90 → 64,635.20, **+2,007.30** | UP | +1,771.15 | UP | +183.48 | UP | UP ✓ |
+
+Three incidental findings worth keeping:
+
+* **BANKNIFTY's 20 November was a +2,007-point day, 3.2%.** That is the session that carries every
+  positive total in §3.2, and it is not a subtle regime — it is a very large one-directional move
+  in a six-session sample.
+* **12 November BNF's median 60-minute move is +0.10 points.** Calling that "up" is within noise;
+  what is not within noise is that the premium proxy called it *down* while the index rose 644
+  points on the day.
+* **13 November has a complete 41-poll spot trail and zero premium records.** The brain's own
+  decision trail persisted that day; the premium capture did not. That is independent evidence
+  for the persistence defect in §12.1, from the same file that lacks the data.
+
+## 2 · The put result was direction. Confirmed on two observed up days, inferred on the third.
 
 Per-session net rupees, 60 minutes, decision-anchored, one-sided populations:
 
@@ -291,6 +344,8 @@ with worked cases) and 16 Nov → 20 Nov (this one, with the §8 listing evidenc
 | "debit spreads are defined-risk and marginally positive on NIFTY puts" | **withdrawn** — over six sessions all four structures lose (§4), and that is the cleaner result |
 | "remove 20 November and every positive arm is negative" | **withdrawn, my error** — BNF RANGE_EV survives every leave-one-out at +16,433 (λ=0) and +14,205 (HIST); §3.2 now carries the full grid |
 | "NIFTY bull call is an edge of exactly zero, −₹1.2 a trade" | **withdrawn, my error** — the fees were charged on the net spread price; per leg it is **−₹42.8 a trade** (§4) |
+| "12 November was a down day" | **corrected** — NIFTY closed **UP +65.70**; it fell only inside the capture window (−48.55). BANKNIFTY rose on all three bases while the proxy said down (§1) |
+| "the sample contains three up days" | **corrected to two confirmed and one inferred** — 16 and 17 November carry `authority_doc: null`, so no index direction is observable for either (§1) |
 | the BNF RANGE_EV exception is an edge | **not established** — it survives concentration and a second adverse tick each way, but 5% of the book has no exit quote and −₹2,152 average on those 61 positions erases the whole gain, against a scored p10 of −₹3,009 (§3.2) |
 | "overnight is blocked by the window constant" | **proven** on real adjacent sessions (§7) |
 
@@ -314,12 +369,14 @@ python3 -I tools/premium_followon/next_session_match.py \
 # which frozen chain an export can take
 python3 -I tools/premium_range_compare/frozen_successor.py <export.json>
 # suites
+# realised index direction from the decision-poll spot trail, not the premium proxy
+python3 -I tools/premium_model_validation/index_direction.py <export...> --out <out>
 # the survival stress on the one arm that passes every leave-one-out
 python3 -I tools/premium_model_validation/stress_range_ev.py \
     --span <dir-of-exports> --spots <spots> --ledger-root <tree> \
     --index BNF --arm RANGE_EV_E0_TILT_0 --out <out>
 # suites. SR_SPAN / SR_SPOTS / SR_LEDGER_ROOT unskip the stress integration guard
-cd tools/premium_model_validation && python3 -m unittest discover -s tests     # 152
+cd tools/premium_model_validation && python3 -m unittest discover -s tests     # 170
 cd tools/premium_range_compare   && python3 -m unittest discover -s tests     # 158
 ```
 
@@ -331,6 +388,7 @@ cd tools/premium_range_compare   && python3 -m unittest discover -s tests     # 
 | `two_sided_diagnostics.py` | `8bf242c905b34c8fbafe2ebb7bb1baf41634b7a644b8278e7039347e8d645cc8` |
 | `spread_replay.py` (per-leg fee basis; was `d376c7df…` on the net basis) | `b13d9f5c1f56368e6f9f27b20dbd447cc0bae5eae786f2410f31ee9521ffb7aa` |
 | `stress_range_ev.py` | `5b4a977d07f38c0042f1025b07d704b7ab3b8d425cd497df29129227b286bbee` |
+| `index_direction.py` | `64e6ed9491b87ae9d7133fed8c1067bf2eea1737789af9054938bb6393abd099` |
 | `inventory_span.py` | `14edbb1a3fb60a17d2e3aa2a0544fff0fd0454639d345b3d100013ad3940f0d5` |
 | `tilt_compare.py` | `3054291875958076ea7673d9617d2b02948226f8c0d4b7f4d295d18d24950c78` |
 | `fee_worked_cases.py` | `c876b3b840a684f0e3a1322c7bdb724f65218c8fa904e300dcd191001519f91f` |
