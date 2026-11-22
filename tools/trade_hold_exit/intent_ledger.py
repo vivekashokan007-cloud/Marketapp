@@ -165,6 +165,45 @@ def intents_for(export, index, horizon_min):
     return out
 
 
+def all_decisions_for(export, index):
+    """EVERY authority decision for one index, not only the ones carrying a single-leg plan.
+
+    Supersession needs this. A pending entry is stale if ANY newer decision for that index was
+    published before the fill -- including a newer NEUTRAL, an UNAVAILABLE, or one blocked for
+    another reason. Taking the list from trade intents alone (the first version's defect, found
+    by Codex) misses exactly the cases where the app would have stopped wanting the trade.
+    """
+    ad = (export.get('parts') or {}).get('authority_doc')
+    if not isinstance(ad, dict):
+        return None
+    rows = (ad.get('history') or {}).get(index)
+    if rows is None:
+        return None
+    out = []
+    for r in rows:
+        pub = _parse(r.get('published_at'))
+        receipt = _parse(r.get('receipt_ts')) or _parse(r.get('computed_at'))
+        causal = pub or receipt
+        if causal is None:
+            continue
+        why = r.get('why') or {}
+        sl = why.get('sl') or {}
+        out.append({'decision_id': r.get('decision_id'),
+                    'index_key': index,
+                    'causal_from': _iso(causal),
+                    'causal_clock_basis': (BASIS_PUBLISHED if pub is not None
+                                           else BASIS_RECEIPT),
+                    'direction': (r.get('direction') or {}).get('value'),
+                    'availability': r.get('availability'),
+                    'app_action': why.get('act'),
+                    'has_single_leg_plan': bool(sl.get('a')),
+                    'single_leg_action': sl.get('a'),
+                    'single_leg_strike': sl.get('k'),
+                    'single_leg_state': sl.get('st')})
+    out.sort(key=lambda d: (d['causal_from'], d['decision_id'] or ''))
+    return out
+
+
 def run(export_paths, horizon_min=60):
     out = {'ledger_version': LEDGER_VERSION, 'horizon_min': horizon_min,
            'clock_note': ('decision_poll_ts is a SCHEDULE LABEL; causal_from is published_at '
@@ -175,7 +214,10 @@ def run(export_paths, horizon_min=60):
                              'option_type); an incomplete tuple is unjoinable, never guessed'),
            'population_note': ('reported intent != admissible proposal != actual Paper position. '
                                'These exports contain NO actual Paper positions.'),
-           'sources': [], 'intents': [], 'sessions': {}}
+           'supersession_note': ('`decisions` is EVERY authority decision, including NEUTRAL '
+                                 'and UNAVAILABLE ones. A pending entry is superseded if any '
+                                 'newer decision for that index was published before the fill.'),
+           'sources': [], 'intents': [], 'decisions': [], 'sessions': {}}
     for p in sorted(export_paths):
         with open(p, encoding='utf-8') as fh:
             ex = json.load(fh)
@@ -207,6 +249,9 @@ def run(export_paths, horizon_min=60):
                 'joinable': sum(1 for i in got if i['joinable']),
                 'identity_incomplete': sum(1 for i in got if not i['identity_complete'])}
             out['intents'].extend(got)
+            out['decisions'].extend(all_decisions_for(ex, ix) or [])
+            node['indices'][ix]['authority_decisions'] = len(
+                all_decisions_for(ex, ix) or [])
         out['sessions'][session] = node
         out['sources'].append(src)
 
@@ -225,6 +270,9 @@ def run(export_paths, horizon_min=60):
         'identity_incomplete': sum(1 for i in ins if not i['identity_complete']),
         'joinable': sum(1 for i in ins if i['joinable']),
         'actual_paper_positions': 0,
+        'authority_decisions': len(out['decisions']),
+        'authority_decisions_without_a_plan': sum(
+            1 for d in out['decisions'] if not d['has_single_leg_plan']),
         'clock_basis': {b: sum(1 for i in ins if i['causal_clock_basis'] == b)
                         for b in (BASIS_PUBLISHED, BASIS_RECEIPT, BASIS_NONE)},
         'publication_delay_s': ({'min': delays[0], 'median': delays[len(delays) // 2],

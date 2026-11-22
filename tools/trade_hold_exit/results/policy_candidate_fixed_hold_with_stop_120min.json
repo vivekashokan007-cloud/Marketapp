@@ -1,0 +1,2444 @@
+{
+ "account_end": {
+  "accrued_fees_inr": 376.41,
+  "cash_inr": 237147.84,
+  "equity_at_cost_inr": 249597.84,
+  "equity_interval_note": "equity = cash + reserved only if every open position is worth exactly what was reserved. Where open exposure cannot be priced the equity is an INTERVAL: lower bound cash (total loss of the open premium), upper bound cash + reserved + any unrealised gain, which is not computed here.",
+  "equity_lower_bound_inr": 237147.84,
+  "open_positions": [
+   {
+    "contract": "62800CE",
+    "entry_poll": "13:45:07",
+    "index_key": "BNF",
+    "reserved_inr": 12450.0,
+    "session_date": "2026-11-19"
+   }
+  ],
+  "realised_pnl_inr": -402.16,
+  "reserved_inr": 12450.0
+ },
+ "account_note": "cash, realised P&L, reserved capital and open positions are carried across sessions chronologically; no per-session reset",
+ "horizon_min": 120,
+ "label": "PROXY_SIMULATED_FILL -- no order was placed",
+ "ledger_tree": {
+  "modified": [
+   "research/replay/fee_models.py"
+  ],
+  "note": "the ledger tree is MODIFIED relative to its commit; these figures are not reproducible from the committed tree alone",
+  "revision": "c73b28cd7358ac7e0307af48f8effe40ee430492",
+  "root": "/tmp/claude-0/-home-user-Marketapp/268ce485-daff-5c24-9478-cd84813bcb59/scratchpad/wt-followon"
+ },
+ "lot": {
+  "BNF": 30,
+  "NF": 65
+ },
+ "lot_basis": "cost_ledger production authority, cross-checked against brain.py BNF_LOT/NF_LOT; the exports' own contract_lot_table reference is UNRESOLVED_REFERENCE",
+ "max_risk_pct": 10.0,
+ "per_position_capital_cap_inr": 25000.0,
+ "policy": "CANDIDATE_FIXED_HOLD_WITH_STOP",
+ "policy_constants": {
+  "entry_window": [
+   "09:30:00",
+   "14:30:00"
+  ],
+  "exit_rule": "FIXED_HOLD",
+  "max_entries_per_session": 2,
+  "max_rel_spread": 0.03,
+  "reentry_gap_min": 30,
+  "stop_frac": 0.7
+ },
+ "policy_kind": "CANDIDATE_POLICY",
+ "policy_version": "trade_hold_exit_policy_replay_v2_current_policy_fidelity_cross_session",
+ "pooled": {
+  "best_net_inr": 5664.569021854998,
+  "best_session_removed_per_branch": {
+   "BNF|CE": {
+    "its_net_inr": -1620.63,
+    "own_best_session": "2026-11-19",
+    "sessions_with_trades": [
+     "2026-11-19"
+    ],
+    "total_without_it_inr": 0
+   },
+   "BNF|PE": {
+    "its_net_inr": -4404.11,
+    "own_best_session": "2026-11-18",
+    "sessions_with_trades": [
+     "2026-11-18"
+    ],
+    "total_without_it_inr": 0
+   },
+   "NF|CE": {
+    "its_net_inr": 5664.57,
+    "own_best_session": "2026-11-20",
+    "sessions_with_trades": [
+     "2026-11-19",
+     "2026-11-20"
+    ],
+    "total_without_it_inr": 1714.27
+   },
+   "NF|PE": {
+    "its_net_inr": -1756.26,
+    "own_best_session": "2026-11-18",
+    "sessions_with_trades": [
+     "2026-11-18"
+    ],
+    "total_without_it_inr": 0
+   }
+  },
+  "by_index_side": {
+   "BNF|CE": {
+    "gross_points": -51.35000000000002,
+    "n": 1,
+    "net_inr": -1620.6265988170007,
+    "wins": 0
+   },
+   "BNF|PE": {
+    "gross_points": -144.40000000000003,
+    "n": 1,
+    "net_inr": -4404.113611324001,
+    "wins": 0
+   },
+   "NF|CE": {
+    "gross_points": 115.84999999999997,
+    "n": 2,
+    "net_inr": 7378.839981343497,
+    "wins": 2
+   },
+   "NF|PE": {
+    "gross_points": -25.900000000000034,
+    "n": 1,
+    "net_inr": -1756.2576646780024,
+    "wins": 0
+   }
+  },
+  "closed_positions": 5,
+  "concentration": {
+   "total_without_best_1_inr": -6066.726915330505,
+   "total_without_best_3_inr": -6160.3712760020035
+  },
+  "exit_reasons": {
+   "EXIT_FIXED_HOLD": 4,
+   "EXIT_PROTECTIVE_STOP": 1,
+   "UNRESOLVED_NO_EXIT_QUOTE": 1
+  },
+  "leave_one_session_out_inr": {
+   "2026-11-18": 5758.213382526496,
+   "2026-11-19": -495.80225414700544,
+   "2026-11-20": -6066.726915330505
+  },
+  "max_simultaneous_reserved_inr": 26164.25,
+  "mean_net_inr": -80.43157869510132,
+  "per_session_net_inr": {
+   "2026-11-18": -6160.3712760020035,
+   "2026-11-19": 93.64436067149859,
+   "2026-11-20": 5664.569021854998
+  },
+  "return_on_starting_capital": -0.0016086315739020282,
+  "return_on_sum_of_reservations": -0.00678724589002071,
+  "skips": {
+   "SKIP_ENTRY_WINDOW_CLOSED": 46,
+   "SKIP_MANAGED_POLICY_CAP_ONE_PER_INDEX": 79,
+   "SKIP_REENTRY_GAP_LT_30M": 8,
+   "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED": 93
+  },
+  "sum_of_reservations_over_closed_inr": 59252.0,
+  "total_gross_points_lot_independent": -105.80000000000013,
+  "total_net_inr": -402.1578934755071,
+  "total_net_points_quantity_dependent": -114.32340726112832,
+  "unresolved_at_end_of_study": 1,
+  "unresolved_capital_inr": 12450.0,
+  "win_rate": 0.4,
+  "worst_net_inr": -4404.113611324001,
+  "worst_session_net_inr": -6160.3712760020035
+ },
+ "production_source": "app/src/main/python/index_single_leg_v1.py",
+ "provisional_cost_basis": true,
+ "sessions": {
+  "2026-11-18": {
+   "cash_end_inr": 243839.63,
+   "closed": 2,
+   "entries": {
+    "BNF": 1,
+    "NF": 1
+   },
+   "exit_reasons": {
+    "EXIT_FIXED_HOLD": 1,
+    "EXIT_PROTECTIVE_STOP": 1
+   },
+   "ledger": [
+    {
+     "at": "09:45:27",
+     "cash_after_inr": 237854.75,
+     "contract": "25250PE",
+     "cost_inr": 12145.25,
+     "decision_id": "idx1_a4e76e6928c47d55db98",
+     "direction": "BEAR",
+     "entry_fill": 186.85,
+     "entry_poll": "09:50:06",
+     "exit_poll": "11:50:06",
+     "exit_reason": "EXIT_FIXED_HOLD",
+     "index_key": "NF",
+     "lot": 65,
+     "net_inr": -1756.26,
+     "outcome": "TAKEN",
+     "rel_spread": 0.00268,
+     "reserved_after_inr": 12145.25,
+     "state": "OPEN"
+    },
+    {
+     "at": "09:45:27",
+     "cash_after_inr": 223835.75,
+     "contract": "61800PE",
+     "cost_inr": 14019.0,
+     "decision_id": "idx1_b4482696ebe6fee757c7",
+     "direction": "BEAR",
+     "entry_fill": 467.3,
+     "entry_poll": "09:50:06",
+     "exit_poll": "11:30:06",
+     "exit_reason": "EXIT_PROTECTIVE_STOP",
+     "index_key": "BNF",
+     "lot": 30,
+     "net_inr": -4404.11,
+     "outcome": "TAKEN",
+     "rel_spread": 0.003323,
+     "reserved_after_inr": 26164.25,
+     "state": "OPEN"
+    },
+    {
+     "at": "09:50:28",
+     "contract": "61800PE",
+     "decision_id": "idx1_8a4b1db99f2ce453757a",
+     "direction": "BEAR",
+     "held": "61800PE",
+     "index_key": "BNF",
+     "outcome": "SKIP_MANAGED_POLICY_CAP_ONE_PER_INDEX"
+    },
+    {
+     "at": "10:45:26",
+     "contract": "25200PE",
+     "decision_id": "idx1_de9f15b4131f0ca54414",
+     "direction": "BEAR",
+     "held": "25250PE",
+     "index_key": "NF",
+     "outcome": "SKIP_MANAGED_POLICY_CAP_ONE_PER_INDEX"
+    },
+    {
+     "at": "10:50:25",
+     "contract": "25250PE",
+     "decision_id": "idx1_2985d2d2f1281f98c19a",
+     "direction": "BEAR",
+     "held": "25250PE",
+     "index_key": "NF",
+     "outcome": "SKIP_MANAGED_POLICY_CAP_ONE_PER_INDEX"
+    },
+    {
+     "at": "11:00:25",
+     "contract": "25250PE",
+     "decision_id": "idx1_09e88ed3839f92dca670",
+     "direction": "BEAR",
+     "held": "25250PE",
+     "index_key": "NF",
+     "outcome": "SKIP_MANAGED_POLICY_CAP_ONE_PER_INDEX"
+    },
+    {
+     "at": "11:05:25",
+     "contract": "25250PE",
+     "decision_id": "idx1_348bae5ba1b08b97eb37",
+     "direction": "BEAR",
+     "held": "25250PE",
+     "index_key": "NF",
+     "outcome": "SKIP_MANAGED_POLICY_CAP_ONE_PER_INDEX"
+    },
+    {
+     "at": "11:55:25",
+     "contract": "25250CE",
+     "decision_id": "idx1_1bedb859e68846accf8b",
+     "direction": "BEAR",
+     "index_key": "NF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "12:05:25",
+     "contract": "25250CE",
+     "decision_id": "idx1_0afd9edefb65ade02254",
+     "direction": "BEAR",
+     "index_key": "NF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "12:20:25",
+     "contract": "25250CE",
+     "decision_id": "idx1_8e4afae231118eb0e07f",
+     "direction": "BEAR",
+     "index_key": "NF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "12:30:55",
+     "contract": "25250CE",
+     "decision_id": "idx1_648b06bcea06b00ce494",
+     "direction": "BEAR",
+     "index_key": "NF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "12:35:56",
+     "contract": "25250CE",
+     "decision_id": "idx1_24e9d4b2fae17c21b1c4",
+     "direction": "BEAR",
+     "index_key": "NF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "12:40:25",
+     "contract": "25200CE",
+     "decision_id": "idx1_464bcef4ea045023c7e5",
+     "direction": "BEAR",
+     "index_key": "NF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "12:45:24",
+     "contract": "25200CE",
+     "decision_id": "idx1_cb4acb533982cee505f7",
+     "direction": "BEAR",
+     "index_key": "NF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "12:50:09",
+     "contract": "25200CE",
+     "decision_id": "idx1_d40cee39729bd2b3d2eb",
+     "direction": "BEAR",
+     "index_key": "NF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "12:55:36",
+     "contract": "25200CE",
+     "decision_id": "idx1_8d974bb995a37e2643c0",
+     "direction": "BEAR",
+     "index_key": "NF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "13:00:25",
+     "contract": "25200CE",
+     "decision_id": "idx1_1c70a2d2415117042aa7",
+     "direction": "BEAR",
+     "index_key": "NF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "13:05:56",
+     "contract": "25200CE",
+     "decision_id": "idx1_edf35dd29f1ea8109348",
+     "direction": "BEAR",
+     "index_key": "NF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "13:10:27",
+     "contract": "25200CE",
+     "decision_id": "idx1_ce29f1fcd779bcf23d1c",
+     "direction": "BEAR",
+     "index_key": "NF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "13:15:25",
+     "contract": "62000CE",
+     "decision_id": "idx1_cf7f484d0ddcc2142fb2",
+     "direction": "BEAR",
+     "index_key": "BNF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "13:15:25",
+     "contract": "25200CE",
+     "decision_id": "idx1_ef6ef96f06df887e2315",
+     "direction": "BEAR",
+     "index_key": "NF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "13:20:24",
+     "contract": "62000CE",
+     "decision_id": "idx1_00131ab69acf56dfb0e9",
+     "direction": "BEAR",
+     "index_key": "BNF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "13:25:24",
+     "contract": "25200CE",
+     "decision_id": "idx1_8aefbe85354ccfdc0980",
+     "direction": "BEAR",
+     "index_key": "NF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "13:25:24",
+     "contract": "61900CE",
+     "decision_id": "idx1_c5f39f8fc23df4b1f428",
+     "direction": "BEAR",
+     "index_key": "BNF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "13:30:25",
+     "contract": "25200CE",
+     "decision_id": "idx1_5b659b894c1b8de3f762",
+     "direction": "BEAR",
+     "index_key": "NF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "13:30:25",
+     "contract": "61900CE",
+     "decision_id": "idx1_7e34e6ebbac97e761f40",
+     "direction": "BEAR",
+     "index_key": "BNF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "13:35:50",
+     "contract": "25200CE",
+     "decision_id": "idx1_657eb4f34f926c0ab57c",
+     "direction": "BEAR",
+     "index_key": "NF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "13:35:50",
+     "contract": "61900CE",
+     "decision_id": "idx1_f80e97554b52c8958bc6",
+     "direction": "BEAR",
+     "index_key": "BNF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "13:40:25",
+     "contract": "61800CE",
+     "decision_id": "idx1_374bb664abe3bfbf79b8",
+     "direction": "BEAR",
+     "index_key": "BNF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "13:40:25",
+     "contract": "25200CE",
+     "decision_id": "idx1_f6809a392cf83658caab",
+     "direction": "BEAR",
+     "index_key": "NF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "13:45:25",
+     "contract": "61900CE",
+     "decision_id": "idx1_c1efe73b68e34720436c",
+     "direction": "BEAR",
+     "index_key": "BNF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "13:50:26",
+     "contract": "61900CE",
+     "decision_id": "idx1_19d0ecee4bf669f71a71",
+     "direction": "BEAR",
+     "index_key": "BNF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "13:50:26",
+     "contract": "25200CE",
+     "decision_id": "idx1_a69f85a55856b1b33d2e",
+     "direction": "BEAR",
+     "index_key": "NF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "14:45:27",
+     "contract": "25250CE",
+     "decision_id": "idx1_7e45a7a9e9cc4c070273",
+     "direction": "BEAR",
+     "index_key": "NF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "14:50:25",
+     "contract": "25250CE",
+     "decision_id": "idx1_ac1c3802cb0a93a9fee6",
+     "direction": "BEAR",
+     "index_key": "NF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "14:55:25",
+     "contract": "25250CE",
+     "decision_id": "idx1_7b09baac467175d075ab",
+     "direction": "BEAR",
+     "index_key": "NF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "15:00:24",
+     "contract": "62000CE",
+     "decision_id": "idx1_218f5a0f9d07f78b2f6a",
+     "direction": "BEAR",
+     "index_key": "BNF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "15:00:24",
+     "contract": "25250CE",
+     "decision_id": "idx1_4e86ec0c92e27598e15a",
+     "direction": "BEAR",
+     "index_key": "NF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "15:05:28",
+     "contract": "25200CE",
+     "decision_id": "idx1_57be3da699bf448b913d",
+     "direction": "BEAR",
+     "index_key": "NF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "15:05:28",
+     "contract": "61900CE",
+     "decision_id": "idx1_eb9c2f1b316de273ae07",
+     "direction": "BEAR",
+     "index_key": "BNF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "15:10:26",
+     "contract": "25250CE",
+     "decision_id": "idx1_56056efac9ad6e0df4e3",
+     "direction": "BEAR",
+     "index_key": "NF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "15:10:26",
+     "contract": "62000CE",
+     "decision_id": "idx1_b444d881e7bd6e43ae4c",
+     "direction": "BEAR",
+     "index_key": "BNF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "15:15:25",
+     "contract": "62000CE",
+     "decision_id": "idx1_1f55be7a279336c8fdcf",
+     "direction": "BEAR",
+     "index_key": "BNF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "15:15:25",
+     "contract": "25250CE",
+     "decision_id": "idx1_24667b2f7da54bc92d68",
+     "direction": "BEAR",
+     "index_key": "NF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "15:20:26",
+     "contract": "62000CE",
+     "decision_id": "idx1_37db59b2967865b57b8f",
+     "direction": "BEAR",
+     "index_key": "BNF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "15:20:26",
+     "contract": "25250CE",
+     "decision_id": "idx1_ae4143373604e50a7b1c",
+     "direction": "BEAR",
+     "index_key": "NF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "15:25:25",
+     "contract": "62000CE",
+     "decision_id": "idx1_5df139bbc3c656897ebf",
+     "direction": "BEAR",
+     "index_key": "BNF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "15:25:25",
+     "contract": "25250CE",
+     "decision_id": "idx1_c22155734daaef7ce3df",
+     "direction": "BEAR",
+     "index_key": "NF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    }
+   ],
+   "net_inr": -6160.3712760020035,
+   "net_points": -173.82313573148724,
+   "open_at_session_end": [],
+   "positions": [
+    {
+     "contract": "25250PE",
+     "decision_id": "idx1_a4e76e6928c47d55db98",
+     "direction": "BEAR",
+     "entry_ask": 186.8,
+     "entry_fill": 186.85000000000002,
+     "entry_poll": "09:50:06",
+     "exit_bid": 161.0,
+     "exit_poll": "11:50:06",
+     "exit_reason": "EXIT_FIXED_HOLD",
+     "fees_inr": 72.757664678,
+     "gross_points": -25.900000000000034,
+     "held_minutes": 120.0,
+     "index_key": "NF",
+     "lot": 65,
+     "net_inr": -1756.2576646780024,
+     "net_points": -27.01934868735388,
+     "rel_spread": 0.00268,
+     "reserved": 12145.250000000002,
+     "session_date": "2026-11-18",
+     "side": "PE",
+     "state": "CLOSED"
+    },
+    {
+     "contract": "61800PE",
+     "decision_id": "idx1_b4482696ebe6fee757c7",
+     "direction": "BEAR",
+     "entry_ask": 467.25,
+     "entry_fill": 467.3,
+     "entry_poll": "09:50:06",
+     "exit_bid": 322.95,
+     "exit_poll": "11:30:06",
+     "exit_reason": "EXIT_PROTECTIVE_STOP",
+     "fees_inr": 72.113611324,
+     "gross_points": -144.40000000000003,
+     "held_minutes": 100.0,
+     "index_key": "BNF",
+     "lot": 30,
+     "net_inr": -4404.113611324001,
+     "net_points": -146.80378704413337,
+     "rel_spread": 0.003323,
+     "reserved": 14019.0,
+     "session_date": "2026-11-18",
+     "side": "PE",
+     "state": "CLOSED"
+    }
+   ],
+   "realised_close_drawdown_inr": -6160.37,
+   "realised_pnl_to_date_inr": -6160.37,
+   "reserved_end_inr": -0.0,
+   "skips": {
+    "SKIP_MANAGED_POLICY_CAP_ONE_PER_INDEX": 5,
+    "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED": 41
+   },
+   "unresolved_opened_here": 0,
+   "win_rate": 0.0
+  },
+  "2026-11-19": {
+   "cash_end_inr": 231483.27,
+   "closed": 2,
+   "entries": {
+    "BNF": 2,
+    "NF": 1
+   },
+   "exit_reasons": {
+    "EXIT_FIXED_HOLD": 2,
+    "UNRESOLVED_NO_EXIT_QUOTE": 1
+   },
+   "ledger": [
+    {
+     "at": "10:15:34",
+     "cash_after_inr": 228701.63,
+     "contract": "62400CE",
+     "cost_inr": 15138.0,
+     "decision_id": "idx1_5f5997d1f6754b74a720",
+     "direction": "BULL",
+     "entry_fill": 504.6,
+     "entry_poll": "10:20:06",
+     "exit_poll": "12:20:07",
+     "exit_reason": "EXIT_FIXED_HOLD",
+     "index_key": "BNF",
+     "lot": 30,
+     "net_inr": -1620.63,
+     "outcome": "TAKEN",
+     "rel_spread": 0.001885,
+     "reserved_after_inr": 15138.0,
+     "state": "OPEN"
+    },
+    {
+     "at": "10:20:24",
+     "contract": "62600CE",
+     "decision_id": "idx1_af953490560579c4a634",
+     "direction": "BULL",
+     "held": "62400CE",
+     "index_key": "BNF",
+     "outcome": "SKIP_MANAGED_POLICY_CAP_ONE_PER_INDEX"
+    },
+    {
+     "at": "10:25:24",
+     "contract": "62500CE",
+     "decision_id": "idx1_459ec610a6f7dd723d94",
+     "direction": "BULL",
+     "held": "62400CE",
+     "index_key": "BNF",
+     "outcome": "SKIP_MANAGED_POLICY_CAP_ONE_PER_INDEX"
+    },
+    {
+     "at": "10:40:26",
+     "contract": "62400PE",
+     "decision_id": "idx1_2a3d6eb7da7d48862a07",
+     "direction": "BULL",
+     "index_key": "BNF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "10:55:24",
+     "contract": "25300PE",
+     "decision_id": "idx1_7bef76f531e5b867d0d7",
+     "direction": "BULL",
+     "index_key": "NF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "11:05:30",
+     "contract": "25300PE",
+     "decision_id": "idx1_eedf84658e4776f47c5a",
+     "direction": "BULL",
+     "index_key": "NF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "11:15:27",
+     "contract": "25300PE",
+     "decision_id": "idx1_448dd545d130099f2f5a",
+     "direction": "BULL",
+     "index_key": "NF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "11:20:25",
+     "contract": "25300PE",
+     "decision_id": "idx1_dc53b3af53612a5a571f",
+     "direction": "BULL",
+     "index_key": "NF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "11:25:25",
+     "contract": "25300PE",
+     "decision_id": "idx1_a0a4f783d0084475df08",
+     "direction": "BULL",
+     "index_key": "NF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "11:30:27",
+     "contract": "25300PE",
+     "decision_id": "idx1_53025c96d208220d96b0",
+     "direction": "BULL",
+     "index_key": "NF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "11:35:28",
+     "contract": "25300PE",
+     "decision_id": "idx1_edcae3f08576fc2fc543",
+     "direction": "BULL",
+     "index_key": "NF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "11:40:25",
+     "contract": "25300PE",
+     "decision_id": "idx1_9a8cc2c41864a99892ee",
+     "direction": "BULL",
+     "index_key": "NF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "11:40:25",
+     "contract": "62400PE",
+     "decision_id": "idx1_bcdbfc31e0cd3879b24a",
+     "direction": "BULL",
+     "index_key": "BNF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "11:45:25",
+     "contract": "25300PE",
+     "decision_id": "idx1_2ce26ab6dff90515a410",
+     "direction": "BULL",
+     "index_key": "NF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "11:50:25",
+     "contract": "62400PE",
+     "decision_id": "idx1_3acc7758714e939e8047",
+     "direction": "BULL",
+     "index_key": "BNF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "11:50:25",
+     "contract": "25300PE",
+     "decision_id": "idx1_dbc9635359450db0060c",
+     "direction": "BULL",
+     "index_key": "NF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "11:55:36",
+     "contract": "62500PE",
+     "decision_id": "idx1_572ad065c2c7582f0138",
+     "direction": "BULL",
+     "index_key": "BNF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "11:55:36",
+     "contract": "25350PE",
+     "decision_id": "idx1_85c65c79d9e039b701a0",
+     "direction": "BULL",
+     "index_key": "NF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "12:00:26",
+     "cash_after_inr": 220537.63,
+     "contract": "25400CE",
+     "cost_inr": 8164.0,
+     "decision_id": "idx1_88c03bad9cfd6d2fdf42",
+     "direction": "BULL",
+     "entry_fill": 125.6,
+     "entry_poll": "12:05:06",
+     "exit_poll": "14:05:07",
+     "exit_reason": "EXIT_FIXED_HOLD",
+     "index_key": "NF",
+     "lot": 65,
+     "net_inr": 1714.27,
+     "outcome": "TAKEN",
+     "rel_spread": 0.002392,
+     "reserved_after_inr": 23302.0,
+     "state": "OPEN"
+    },
+    {
+     "at": "12:00:26",
+     "contract": "62500PE",
+     "decision_id": "idx1_c78c54302d97c06089d4",
+     "direction": "BULL",
+     "index_key": "BNF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "12:05:25",
+     "contract": "25350PE",
+     "decision_id": "idx1_20b5750916aece47f4c1",
+     "direction": "BULL",
+     "index_key": "NF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "12:05:25",
+     "contract": "62500PE",
+     "decision_id": "idx1_e7dd1b5e1f10f3e8f2cd",
+     "direction": "BULL",
+     "index_key": "BNF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "12:10:24",
+     "contract": "62400PE",
+     "decision_id": "idx1_77c169578b6bbe693113",
+     "direction": "BULL",
+     "index_key": "BNF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "12:10:24",
+     "contract": "25300PE",
+     "decision_id": "idx1_e87716942ee9e85bf624",
+     "direction": "BULL",
+     "index_key": "NF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "12:15:25",
+     "contract": "25350PE",
+     "decision_id": "idx1_0ed04d89493e192f9e9c",
+     "direction": "BULL",
+     "index_key": "NF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "12:15:25",
+     "contract": "62500PE",
+     "decision_id": "idx1_eafbeaad6024f66d98e7",
+     "direction": "BULL",
+     "index_key": "BNF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "12:20:25",
+     "contract": "62500PE",
+     "decision_id": "idx1_6e899b21139c74b0e1b7",
+     "direction": "BULL",
+     "index_key": "BNF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "12:20:25",
+     "contract": "25300PE",
+     "decision_id": "idx1_d1b46527187954f15b6e",
+     "direction": "BULL",
+     "index_key": "NF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "12:25:25",
+     "contract": "62500PE",
+     "decision_id": "idx1_378a8c28ca02d6e9685a",
+     "direction": "BULL",
+     "index_key": "BNF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "12:30:25",
+     "contract": "62500PE",
+     "decision_id": "idx1_936b48fa5f85d3b87e36",
+     "direction": "BULL",
+     "index_key": "BNF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "12:35:26",
+     "contract": "25350PE",
+     "decision_id": "idx1_5bef21a1d238f02ee1fa",
+     "direction": "BULL",
+     "index_key": "NF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "12:35:26",
+     "contract": "62600PE",
+     "decision_id": "idx1_8723966d2710fa42347e",
+     "direction": "BULL",
+     "index_key": "BNF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "12:40:49",
+     "contract": "25350PE",
+     "decision_id": "idx1_265b2370d3bafeb86476",
+     "direction": "BULL",
+     "index_key": "NF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "12:40:49",
+     "contract": "62700CE",
+     "decision_id": "idx1_f175756a4db09bf58b63",
+     "direction": "BULL",
+     "index_key": "BNF",
+     "minutes_since_last_exit": 20.7,
+     "outcome": "SKIP_REENTRY_GAP_LT_30M"
+    },
+    {
+     "at": "12:45:25",
+     "contract": "62600PE",
+     "decision_id": "idx1_133324613075a99e4762",
+     "direction": "BULL",
+     "index_key": "BNF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "12:45:25",
+     "contract": "25350PE",
+     "decision_id": "idx1_5c2bb9242af18b28eb16",
+     "direction": "BULL",
+     "index_key": "NF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "12:50:26",
+     "contract": "25350PE",
+     "decision_id": "idx1_31dcc895e382d3520636",
+     "direction": "BULL",
+     "index_key": "NF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "12:50:26",
+     "contract": "62600PE",
+     "decision_id": "idx1_f43d902f145b021f0307",
+     "direction": "BULL",
+     "index_key": "BNF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "12:55:27",
+     "contract": "62600PE",
+     "decision_id": "idx1_7e7fe8ec7e775c094089",
+     "direction": "BULL",
+     "index_key": "BNF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "12:55:27",
+     "contract": "25350PE",
+     "decision_id": "idx1_8577962769ba397b188f",
+     "direction": "BULL",
+     "index_key": "NF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "13:00:25",
+     "contract": "62600PE",
+     "decision_id": "idx1_aa806a28d37b6e938697",
+     "direction": "BULL",
+     "index_key": "BNF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "13:00:25",
+     "contract": "25350PE",
+     "decision_id": "idx1_ce6fe0820b6fc46369ed",
+     "direction": "BULL",
+     "index_key": "NF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "13:15:25",
+     "contract": "62600PE",
+     "decision_id": "idx1_4502d3e2ba7dda96bb44",
+     "direction": "BULL",
+     "index_key": "BNF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "13:25:24",
+     "contract": "62600PE",
+     "decision_id": "idx1_ab8c328fdc896648f82c",
+     "direction": "BULL",
+     "index_key": "BNF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "13:30:27",
+     "contract": "62600PE",
+     "decision_id": "idx1_ee1ec181d7a818022e3e",
+     "direction": "BULL",
+     "index_key": "BNF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "13:35:27",
+     "contract": "62700PE",
+     "decision_id": "idx1_61cae5c6fe11e68833c2",
+     "direction": "BULL",
+     "index_key": "BNF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "13:35:27",
+     "contract": "25350PE",
+     "decision_id": "idx1_ccb9ef1cea6c65576da8",
+     "direction": "BULL",
+     "index_key": "NF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "13:40:32",
+     "contract": "25350PE",
+     "decision_id": "idx1_b78504aa6d78314f2b6f",
+     "direction": "BULL",
+     "index_key": "NF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "13:40:32",
+     "cash_after_inr": 221605.0,
+     "contract": "62800CE",
+     "cost_inr": 12450.0,
+     "decision_id": "idx1_f24d1f8cf8ed05e5175e",
+     "direction": "BULL",
+     "entry_fill": 415.0,
+     "entry_poll": "13:45:07",
+     "exit_poll": null,
+     "exit_reason": "UNRESOLVED_NO_EXIT_QUOTE",
+     "index_key": "BNF",
+     "lot": 30,
+     "net_inr": 0.0,
+     "outcome": "TAKEN",
+     "rel_spread": 0.002534,
+     "reserved_after_inr": 20614.0,
+     "state": "UNRESOLVED"
+    },
+    {
+     "at": "13:45:25",
+     "contract": "25350PE",
+     "decision_id": "idx1_25da1b3ee36adc3f84d8",
+     "direction": "BULL",
+     "index_key": "NF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "13:45:25",
+     "contract": "62800CE",
+     "decision_id": "idx1_46995809b9199979cc36",
+     "direction": "BULL",
+     "held": "62800CE",
+     "index_key": "BNF",
+     "outcome": "SKIP_MANAGED_POLICY_CAP_ONE_PER_INDEX"
+    },
+    {
+     "at": "13:50:26",
+     "contract": "25350PE",
+     "decision_id": "idx1_0f9882d45901c380f2ed",
+     "direction": "BULL",
+     "index_key": "NF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "13:50:26",
+     "contract": "62900CE",
+     "decision_id": "idx1_4ef6527b4d9daa7efe3e",
+     "direction": "BULL",
+     "held": "62800CE",
+     "index_key": "BNF",
+     "outcome": "SKIP_MANAGED_POLICY_CAP_ONE_PER_INDEX"
+    },
+    {
+     "at": "13:55:45",
+     "contract": "25350PE",
+     "decision_id": "idx1_9c16850bf20a26c5b6b6",
+     "direction": "BULL",
+     "index_key": "NF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "13:55:45",
+     "contract": "62900CE",
+     "decision_id": "idx1_ef331ae87ff41bd7c66e",
+     "direction": "BULL",
+     "held": "62800CE",
+     "index_key": "BNF",
+     "outcome": "SKIP_MANAGED_POLICY_CAP_ONE_PER_INDEX"
+    },
+    {
+     "at": "14:00:52",
+     "contract": "62900CE",
+     "decision_id": "idx1_a1cb1576728610ce15ae",
+     "direction": "BULL",
+     "held": "62800CE",
+     "index_key": "BNF",
+     "outcome": "SKIP_MANAGED_POLICY_CAP_ONE_PER_INDEX"
+    },
+    {
+     "at": "14:00:52",
+     "contract": "25350PE",
+     "decision_id": "idx1_f175722413dd86d40f81",
+     "direction": "BULL",
+     "index_key": "NF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "14:05:24",
+     "contract": "62900CE",
+     "decision_id": "idx1_4be5d3295e38872e9aa1",
+     "direction": "BULL",
+     "held": "62800CE",
+     "index_key": "BNF",
+     "outcome": "SKIP_MANAGED_POLICY_CAP_ONE_PER_INDEX"
+    },
+    {
+     "at": "14:05:24",
+     "contract": "25400PE",
+     "decision_id": "idx1_509445db35afe94f85a6",
+     "direction": "BULL",
+     "index_key": "NF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "14:10:26",
+     "contract": "25400PE",
+     "decision_id": "idx1_59fb0a988bcf876a02c3",
+     "direction": "BULL",
+     "index_key": "NF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "14:10:26",
+     "contract": "62900CE",
+     "decision_id": "idx1_a596181105a5bb450804",
+     "direction": "BULL",
+     "held": "62800CE",
+     "index_key": "BNF",
+     "outcome": "SKIP_MANAGED_POLICY_CAP_ONE_PER_INDEX"
+    },
+    {
+     "at": "14:15:25",
+     "contract": "62900CE",
+     "decision_id": "idx1_572a57ff7508d7e930ef",
+     "direction": "BULL",
+     "held": "62800CE",
+     "index_key": "BNF",
+     "outcome": "SKIP_MANAGED_POLICY_CAP_ONE_PER_INDEX"
+    },
+    {
+     "at": "14:15:25",
+     "contract": "25400PE",
+     "decision_id": "idx1_ca9dd5c288b3910ebb2f",
+     "direction": "BULL",
+     "index_key": "NF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "14:20:26",
+     "contract": "62900CE",
+     "decision_id": "idx1_7f63257d4a7a0cbd2153",
+     "direction": "BULL",
+     "held": "62800CE",
+     "index_key": "BNF",
+     "outcome": "SKIP_MANAGED_POLICY_CAP_ONE_PER_INDEX"
+    },
+    {
+     "at": "14:20:26",
+     "contract": "25500CE",
+     "decision_id": "idx1_d7cee90ccf14b68bac0d",
+     "direction": "BULL",
+     "index_key": "NF",
+     "minutes_since_last_exit": 15.3,
+     "outcome": "SKIP_REENTRY_GAP_LT_30M"
+    },
+    {
+     "at": "14:25:24",
+     "contract": "25500CE",
+     "decision_id": "idx1_c1dea147fe4f0976285e",
+     "direction": "BULL",
+     "index_key": "NF",
+     "minutes_since_last_exit": 20.3,
+     "outcome": "SKIP_REENTRY_GAP_LT_30M"
+    },
+    {
+     "at": "14:25:24",
+     "contract": "62900CE",
+     "decision_id": "idx1_eac83a18a975e05bd059",
+     "direction": "BULL",
+     "held": "62800CE",
+     "index_key": "BNF",
+     "outcome": "SKIP_MANAGED_POLICY_CAP_ONE_PER_INDEX"
+    },
+    {
+     "at": "14:30:27",
+     "contract": "25500CE",
+     "decision_id": "idx1_392caf8f3c10a1addfba",
+     "direction": "BULL",
+     "index_key": "NF",
+     "outcome": "SKIP_ENTRY_WINDOW_CLOSED",
+     "window": "09:30:00-14:30:00"
+    },
+    {
+     "at": "14:30:27",
+     "contract": "62900CE",
+     "decision_id": "idx1_eccc62fdc98a585fa1f4",
+     "direction": "BULL",
+     "index_key": "BNF",
+     "outcome": "SKIP_ENTRY_WINDOW_CLOSED",
+     "window": "09:30:00-14:30:00"
+    },
+    {
+     "at": "14:35:25",
+     "contract": "25500CE",
+     "decision_id": "idx1_4d5ac35206940b7b3612",
+     "direction": "BULL",
+     "index_key": "NF",
+     "outcome": "SKIP_ENTRY_WINDOW_CLOSED",
+     "window": "09:30:00-14:30:00"
+    },
+    {
+     "at": "14:35:25",
+     "contract": "62900CE",
+     "decision_id": "idx1_c385d02aa6344e497f50",
+     "direction": "BULL",
+     "index_key": "BNF",
+     "outcome": "SKIP_ENTRY_WINDOW_CLOSED",
+     "window": "09:30:00-14:30:00"
+    },
+    {
+     "at": "14:40:27",
+     "contract": "62900CE",
+     "decision_id": "idx1_302ea6f15fed9f849b63",
+     "direction": "BULL",
+     "index_key": "BNF",
+     "outcome": "SKIP_ENTRY_WINDOW_CLOSED",
+     "window": "09:30:00-14:30:00"
+    },
+    {
+     "at": "14:40:27",
+     "contract": "25500CE",
+     "decision_id": "idx1_c30c485ff16740604deb",
+     "direction": "BULL",
+     "index_key": "NF",
+     "outcome": "SKIP_ENTRY_WINDOW_CLOSED",
+     "window": "09:30:00-14:30:00"
+    },
+    {
+     "at": "14:45:29",
+     "contract": "62900CE",
+     "decision_id": "idx1_a5000ab8535ac2acbc8a",
+     "direction": "BULL",
+     "index_key": "BNF",
+     "outcome": "SKIP_ENTRY_WINDOW_CLOSED",
+     "window": "09:30:00-14:30:00"
+    },
+    {
+     "at": "14:45:29",
+     "contract": "25500CE",
+     "decision_id": "idx1_b466071db814d6bfcdb6",
+     "direction": "BULL",
+     "index_key": "NF",
+     "outcome": "SKIP_ENTRY_WINDOW_CLOSED",
+     "window": "09:30:00-14:30:00"
+    },
+    {
+     "at": "14:50:25",
+     "contract": "25450PE",
+     "decision_id": "idx1_874df247c23be7bef54b",
+     "direction": "BULL",
+     "index_key": "NF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "14:55:24",
+     "contract": "25450PE",
+     "decision_id": "idx1_cd15847d3fa707fdf008",
+     "direction": "BULL",
+     "index_key": "NF",
+     "outcome": "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED"
+    },
+    {
+     "at": "15:10:24",
+     "contract": "25500CE",
+     "decision_id": "idx1_2f31516a759f1f71b7c1",
+     "direction": "BULL",
+     "index_key": "NF",
+     "outcome": "SKIP_ENTRY_WINDOW_CLOSED",
+     "window": "09:30:00-14:30:00"
+    },
+    {
+     "at": "15:10:24",
+     "contract": "63000CE",
+     "decision_id": "idx1_bc62bec2c45b1220f75b",
+     "direction": "BULL",
+     "index_key": "BNF",
+     "outcome": "SKIP_ENTRY_WINDOW_CLOSED",
+     "window": "09:30:00-14:30:00"
+    },
+    {
+     "at": "15:15:24",
+     "contract": "25500CE",
+     "decision_id": "idx1_03f0cd5d26bdcf8c6834",
+     "direction": "BULL",
+     "index_key": "NF",
+     "outcome": "SKIP_ENTRY_WINDOW_CLOSED",
+     "window": "09:30:00-14:30:00"
+    },
+    {
+     "at": "15:15:24",
+     "contract": "63000CE",
+     "decision_id": "idx1_317ceb2be98efb5646bf",
+     "direction": "BULL",
+     "index_key": "BNF",
+     "outcome": "SKIP_ENTRY_WINDOW_CLOSED",
+     "window": "09:30:00-14:30:00"
+    },
+    {
+     "at": "15:20:26",
+     "contract": "25550CE",
+     "decision_id": "idx1_4c6d22bf27123cadb259",
+     "direction": "BULL",
+     "index_key": "NF",
+     "outcome": "SKIP_ENTRY_WINDOW_CLOSED",
+     "window": "09:30:00-14:30:00"
+    },
+    {
+     "at": "15:20:26",
+     "contract": "63100CE",
+     "decision_id": "idx1_b78d8e295d008baccb84",
+     "direction": "BULL",
+     "index_key": "BNF",
+     "outcome": "SKIP_ENTRY_WINDOW_CLOSED",
+     "window": "09:30:00-14:30:00"
+    },
+    {
+     "at": "15:25:25",
+     "contract": "63000CE",
+     "decision_id": "idx1_233e29aa7dc2b537d0d1",
+     "direction": "BULL",
+     "index_key": "BNF",
+     "outcome": "SKIP_ENTRY_WINDOW_CLOSED",
+     "window": "09:30:00-14:30:00"
+    },
+    {
+     "at": "15:25:25",
+     "contract": "25500CE",
+     "decision_id": "idx1_9fd3374867bce0a02c2f",
+     "direction": "BULL",
+     "index_key": "NF",
+     "outcome": "SKIP_ENTRY_WINDOW_CLOSED",
+     "window": "09:30:00-14:30:00"
+    },
+    {
+     "at": "15:30:25",
+     "contract": "25500CE",
+     "decision_id": "idx1_503742f618a01fb1b36c",
+     "direction": "BULL",
+     "index_key": "NF",
+     "outcome": "SKIP_ENTRY_WINDOW_CLOSED",
+     "window": "09:30:00-14:30:00"
+    },
+    {
+     "at": "15:30:25",
+     "contract": "63000CE",
+     "decision_id": "idx1_a37717bbd04f4b75dcdc",
+     "direction": "BULL",
+     "index_key": "BNF",
+     "outcome": "SKIP_ENTRY_WINDOW_CLOSED",
+     "window": "09:30:00-14:30:00"
+    },
+    {
+     "at": "15:35:24",
+     "contract": "63100CE",
+     "decision_id": "idx1_c7df3d78fd7aaab584c2",
+     "direction": "BULL",
+     "index_key": "BNF",
+     "outcome": "SKIP_ENTRY_WINDOW_CLOSED",
+     "window": "09:30:00-14:30:00"
+    },
+    {
+     "at": "15:35:24",
+     "contract": "25550CE",
+     "decision_id": "idx1_e62f9496a0cffddcc241",
+     "direction": "BULL",
+     "index_key": "NF",
+     "outcome": "SKIP_ENTRY_WINDOW_CLOSED",
+     "window": "09:30:00-14:30:00"
+    },
+    {
+     "at": "15:40:25",
+     "contract": "63100CE",
+     "decision_id": "idx1_d4ba1c52345dcbb9b55a",
+     "direction": "BULL",
+     "index_key": "BNF",
+     "outcome": "SKIP_ENTRY_WINDOW_CLOSED",
+     "window": "09:30:00-14:30:00"
+    },
+    {
+     "at": "15:40:25",
+     "contract": "25550CE",
+     "decision_id": "idx1_e1167d2b261142f5bd95",
+     "direction": "BULL",
+     "index_key": "NF",
+     "outcome": "SKIP_ENTRY_WINDOW_CLOSED",
+     "window": "09:30:00-14:30:00"
+    }
+   ],
+   "net_inr": 93.64436067149859,
+   "net_points": -27.647487250487217,
+   "open_at_session_end": [
+    "62800CE"
+   ],
+   "positions": [
+    {
+     "contract": "62400CE",
+     "decision_id": "idx1_5f5997d1f6754b74a720",
+     "direction": "BULL",
+     "entry_ask": 504.55,
+     "entry_fill": 504.6,
+     "entry_poll": "10:20:06",
+     "exit_bid": 453.3,
+     "exit_poll": "12:20:07",
+     "exit_reason": "EXIT_FIXED_HOLD",
+     "fees_inr": 80.126598817,
+     "gross_points": -51.35000000000002,
+     "held_minutes": 120.02,
+     "index_key": "BNF",
+     "lot": 30,
+     "net_inr": -1620.6265988170007,
+     "net_points": -54.02088662723336,
+     "rel_spread": 0.001885,
+     "reserved": 15138.0,
+     "session_date": "2026-11-19",
+     "side": "CE",
+     "state": "CLOSED"
+    },
+    {
+     "contract": "25400CE",
+     "decision_id": "idx1_88c03bad9cfd6d2fdf42",
+     "direction": "BULL",
+     "entry_ask": 125.55,
+     "entry_fill": 125.6,
+     "entry_poll": "12:05:06",
+     "exit_bid": 153.1,
+     "exit_poll": "14:05:07",
+     "exit_reason": "EXIT_FIXED_HOLD",
+     "fees_inr": 69.97904051149999,
+     "gross_points": 27.44999999999999,
+     "held_minutes": 120.02,
+     "index_key": "NF",
+     "lot": 65,
+     "net_inr": 1714.2709594884993,
+     "net_points": 26.373399376746143,
+     "rel_spread": 0.002392,
+     "reserved": 8164.0,
+     "session_date": "2026-11-19",
+     "side": "CE",
+     "state": "CLOSED"
+    },
+    {
+     "contract": "62800CE",
+     "decision_id": "idx1_f24d1f8cf8ed05e5175e",
+     "direction": "BULL",
+     "entry_ask": 414.95,
+     "entry_fill": 415.0,
+     "entry_poll": "13:45:07",
+     "exit_poll": null,
+     "exit_reason": "UNRESOLVED_NO_EXIT_QUOTE",
+     "fees_inr": 0.0,
+     "gross_points": 0.0,
+     "index_key": "BNF",
+     "lot": 30,
+     "net_inr": 0.0,
+     "net_points": 0.0,
+     "rel_spread": 0.002534,
+     "reserved": 12450.0,
+     "session_date": "2026-11-19",
+     "side": "CE",
+     "state": "UNRESOLVED"
+    }
+   ],
+   "realised_close_drawdown_inr": -1620.63,
+   "realised_pnl_to_date_inr": -6066.73,
+   "reserved_end_inr": 12450.0,
+   "skips": {
+    "SKIP_ENTRY_WINDOW_CLOSED": 22,
+    "SKIP_MANAGED_POLICY_CAP_ONE_PER_INDEX": 11,
+    "SKIP_REENTRY_GAP_LT_30M": 3,
+    "SKIP_SELL_UNCOVERED_SHORTS_EXCLUDED": 52
+   },
+   "unresolved_opened_here": 1,
+   "win_rate": 0.5
+  },
+  "2026-11-20": {
+   "cash_end_inr": 237147.84,
+   "closed": 1,
+   "entries": {
+    "NF": 1
+   },
+   "exit_reasons": {
+    "EXIT_FIXED_HOLD": 1
+   },
+   "ledger": [
+    {
+     "at": "09:50:24",
+     "contract": "63100CE",
+     "decision_id": "idx1_7b0ed554f47aecfc5e88",
+     "direction": "BULL",
+     "held": "62800CE",
+     "index_key": "BNF",
+     "outcome": "SKIP_MANAGED_POLICY_CAP_ONE_PER_INDEX"
+    },
+    {
+     "at": "09:55:27",
+     "contract": "63200CE",
+     "decision_id": "idx1_d683b7ed649e55ce6506",
+     "direction": "BULL",
+     "held": "62800CE",
+     "index_key": "BNF",
+     "outcome": "SKIP_MANAGED_POLICY_CAP_ONE_PER_INDEX"
+    },
+    {
+     "at": "10:00:25",
+     "contract": "63100CE",
+     "decision_id": "idx1_386232d212d99b56510e",
+     "direction": "BULL",
+     "held": "62800CE",
+     "index_key": "BNF",
+     "outcome": "SKIP_MANAGED_POLICY_CAP_ONE_PER_INDEX"
+    },
+    {
+     "at": "10:15:28",
+     "contract": "63100CE",
+     "decision_id": "idx1_d299ab2c1a7179857346",
+     "direction": "BULL",
+     "held": "62800CE",
+     "index_key": "BNF",
+     "outcome": "SKIP_MANAGED_POLICY_CAP_ONE_PER_INDEX"
+    },
+    {
+     "at": "10:40:27",
+     "contract": "63200CE",
+     "decision_id": "idx1_03b3632fa64f14b64406",
+     "direction": "BULL",
+     "held": "62800CE",
+     "index_key": "BNF",
+     "outcome": "SKIP_MANAGED_POLICY_CAP_ONE_PER_INDEX"
+    },
+    {
+     "at": "10:45:23",
+     "contract": "63200CE",
+     "decision_id": "idx1_afaf5e9066e28422dbba",
+     "direction": "BULL",
+     "held": "62800CE",
+     "index_key": "BNF",
+     "outcome": "SKIP_MANAGED_POLICY_CAP_ONE_PER_INDEX"
+    },
+    {
+     "at": "10:50:23",
+     "contract": "63300CE",
+     "decision_id": "idx1_398162e82db3c6aa11b7",
+     "direction": "BULL",
+     "held": "62800CE",
+     "index_key": "BNF",
+     "outcome": "SKIP_MANAGED_POLICY_CAP_ONE_PER_INDEX"
+    },
+    {
+     "at": "10:55:24",
+     "contract": "63300CE",
+     "decision_id": "idx1_224930cc9a93991486fb",
+     "direction": "BULL",
+     "held": "62800CE",
+     "index_key": "BNF",
+     "outcome": "SKIP_MANAGED_POLICY_CAP_ONE_PER_INDEX"
+    },
+    {
+     "at": "11:00:24",
+     "contract": "63300CE",
+     "decision_id": "idx1_ff3d5cbafb2622beb09d",
+     "direction": "BULL",
+     "held": "62800CE",
+     "index_key": "BNF",
+     "outcome": "SKIP_MANAGED_POLICY_CAP_ONE_PER_INDEX"
+    },
+    {
+     "at": "11:05:27",
+     "contract": "63300CE",
+     "decision_id": "idx1_c2705439dc15dba67b75",
+     "direction": "BULL",
+     "held": "62800CE",
+     "index_key": "BNF",
+     "outcome": "SKIP_MANAGED_POLICY_CAP_ONE_PER_INDEX"
+    },
+    {
+     "at": "11:10:24",
+     "contract": "63200CE",
+     "decision_id": "idx1_e5c57cab1dad43836334",
+     "direction": "BULL",
+     "held": "62800CE",
+     "index_key": "BNF",
+     "outcome": "SKIP_MANAGED_POLICY_CAP_ONE_PER_INDEX"
+    },
+    {
+     "at": "11:15:26",
+     "contract": "63300CE",
+     "decision_id": "idx1_d56d73d7f406d567747e",
+     "direction": "BULL",
+     "held": "62800CE",
+     "index_key": "BNF",
+     "outcome": "SKIP_MANAGED_POLICY_CAP_ONE_PER_INDEX"
+    },
+    {
+     "at": "11:20:24",
+     "contract": "63300CE",
+     "decision_id": "idx1_1e8c66d50cee28b1dfb5",
+     "direction": "BULL",
+     "held": "62800CE",
+     "index_key": "BNF",
+     "outcome": "SKIP_MANAGED_POLICY_CAP_ONE_PER_INDEX"
+    },
+    {
+     "at": "11:25:24",
+     "contract": "63400CE",
+     "decision_id": "idx1_d7c616401dd52f10c1aa",
+     "direction": "BULL",
+     "held": "62800CE",
+     "index_key": "BNF",
+     "outcome": "SKIP_MANAGED_POLICY_CAP_ONE_PER_INDEX"
+    },
+    {
+     "at": "11:35:25",
+     "contract": "63300CE",
+     "decision_id": "idx1_092626b3505df5ecefd8",
+     "direction": "BULL",
+     "held": "62800CE",
+     "index_key": "BNF",
+     "outcome": "SKIP_MANAGED_POLICY_CAP_ONE_PER_INDEX"
+    },
+    {
+     "at": "11:40:25",
+     "contract": "63400CE",
+     "decision_id": "idx1_dc7a8508552f1494c04f",
+     "direction": "BULL",
+     "held": "62800CE",
+     "index_key": "BNF",
+     "outcome": "SKIP_MANAGED_POLICY_CAP_ONE_PER_INDEX"
+    },
+    {
+     "at": "11:45:24",
+     "contract": "63400CE",
+     "decision_id": "idx1_19a7879084db731a0b4e",
+     "direction": "BULL",
+     "held": "62800CE",
+     "index_key": "BNF",
+     "outcome": "SKIP_MANAGED_POLICY_CAP_ONE_PER_INDEX"
+    },
+    {
+     "at": "11:50:27",
+     "contract": "63400CE",
+     "decision_id": "idx1_0b3aa178b10c82e00732",
+     "direction": "BULL",
+     "held": "62800CE",
+     "index_key": "BNF",
+     "outcome": "SKIP_MANAGED_POLICY_CAP_ONE_PER_INDEX"
+    },
+    {
+     "at": "11:55:24",
+     "contract": "63500CE",
+     "decision_id": "idx1_72a2011fef72f070b342",
+     "direction": "BULL",
+     "held": "62800CE",
+     "index_key": "BNF",
+     "outcome": "SKIP_MANAGED_POLICY_CAP_ONE_PER_INDEX"
+    },
+    {
+     "at": "11:55:24",
+     "cash_after_inr": 221697.52,
+     "contract": "25550CE",
+     "cost_inr": 9785.75,
+     "decision_id": "idx1_a2e22137fec2350dae0f",
+     "direction": "BULL",
+     "entry_fill": 150.55,
+     "entry_poll": "12:00:08",
+     "exit_poll": "14:05:07",
+     "exit_reason": "EXIT_FIXED_HOLD",
+     "index_key": "NF",
+     "lot": 65,
+     "net_inr": 5664.57,
+     "outcome": "TAKEN",
+     "rel_spread": 0.00133,
+     "reserved_after_inr": 22235.75,
+     "state": "OPEN"
+    },
+    {
+     "at": "12:00:29",
+     "contract": "25600CE",
+     "decision_id": "idx1_8913064b031acb3934d3",
+     "direction": "BULL",
+     "held": "25550CE",
+     "index_key": "NF",
+     "outcome": "SKIP_MANAGED_POLICY_CAP_ONE_PER_INDEX"
+    },
+    {
+     "at": "12:00:29",
+     "contract": "63700CE",
+     "decision_id": "idx1_9fe8849b6a9c5b63019b",
+     "direction": "BULL",
+     "held": "62800CE",
+     "index_key": "BNF",
+     "outcome": "SKIP_MANAGED_POLICY_CAP_ONE_PER_INDEX"
+    },
+    {
+     "at": "12:05:25",
+     "contract": "25650CE",
+     "decision_id": "idx1_15a2ad07069267c12b54",
+     "direction": "BULL",
+     "held": "25550CE",
+     "index_key": "NF",
+     "outcome": "SKIP_MANAGED_POLICY_CAP_ONE_PER_INDEX"
+    },
+    {
+     "at": "12:05:25",
+     "contract": "63900CE",
+     "decision_id": "idx1_81eb4b85d4fe7fd1f88d",
+     "direction": "BULL",
+     "held": "62800CE",
+     "index_key": "BNF",
+     "outcome": "SKIP_MANAGED_POLICY_CAP_ONE_PER_INDEX"
+    },
+    {
+     "at": "12:10:31",
+     "contract": "63900CE",
+     "decision_id": "idx1_794e17b756ff7c4b21aa",
+     "direction": "BULL",
+     "held": "62800CE",
+     "index_key": "BNF",
+     "outcome": "SKIP_MANAGED_POLICY_CAP_ONE_PER_INDEX"
+    },
+    {
+     "at": "12:10:31",
+     "contract": "25650CE",
+     "decision_id": "idx1_9fb52feda1b031ef1547",
+     "direction": "BULL",
+     "held": "25550CE",
+     "index_key": "NF",
+     "outcome": "SKIP_MANAGED_POLICY_CAP_ONE_PER_INDEX"
+    },
+    {
+     "at": "12:15:30",
+     "contract": "63900CE",
+     "decision_id": "idx1_7f7e5d6a6ae4529f1eee",
+     "direction": "BULL",
+     "held": "62800CE",
+     "index_key": "BNF",
+     "outcome": "SKIP_MANAGED_POLICY_CAP_ONE_PER_INDEX"
+    },
+    {
+     "at": "12:15:30",
+     "contract": "25650CE",
+     "decision_id": "idx1_f1cd32f1c134c4e801f3",
+     "direction": "BULL",
+     "held": "25550CE",
+     "index_key": "NF",
+     "outcome": "SKIP_MANAGED_POLICY_CAP_ONE_PER_INDEX"
+    },
+    {
+     "at": "12:20:30",
+     "contract": "63900CE",
+     "decision_id": "idx1_9c4e85a8f51aae4989cb",
+     "direction": "BULL",
+     "held": "62800CE",
+     "index_key": "BNF",
+     "outcome": "SKIP_MANAGED_POLICY_CAP_ONE_PER_INDEX"
+    },
+    {
+     "at": "12:20:30",
+     "contract": "25650CE",
+     "decision_id": "idx1_eb4532b5ae42b7791c74",
+     "direction": "BULL",
+     "held": "25550CE",
+     "index_key": "NF",
+     "outcome": "SKIP_MANAGED_POLICY_CAP_ONE_PER_INDEX"
+    },
+    {
+     "at": "12:25:30",
+     "contract": "64000CE",
+     "decision_id": "idx1_3731de693fd43cde18d6",
+     "direction": "BULL",
+     "held": "62800CE",
+     "index_key": "BNF",
+     "outcome": "SKIP_MANAGED_POLICY_CAP_ONE_PER_INDEX"
+    },
+    {
+     "at": "12:25:30",
+     "contract": "25700CE",
+     "decision_id": "idx1_c2573f7763472634ffda",
+     "direction": "BULL",
+     "held": "25550CE",
+     "index_key": "NF",
+     "outcome": "SKIP_MANAGED_POLICY_CAP_ONE_PER_INDEX"
+    },
+    {
+     "at": "12:30:31",
+     "contract": "64100CE",
+     "decision_id": "idx1_9674a6d785cbf11e3136",
+     "direction": "BULL",
+     "held": "62800CE",
+     "index_key": "BNF",
+     "outcome": "SKIP_MANAGED_POLICY_CAP_ONE_PER_INDEX"
+    },
+    {
+     "at": "12:30:31",
+     "contract": "25700CE",
+     "decision_id": "idx1_a1fa4e1e5bbf5c02f73c",
+     "direction": "BULL",
+     "held": "25550CE",
+     "index_key": "NF",
+     "outcome": "SKIP_MANAGED_POLICY_CAP_ONE_PER_INDEX"
+    },
+    {
+     "at": "12:35:27",
+     "contract": "64200CE",
+     "decision_id": "idx1_6c8e85ee41f95937f844",
+     "direction": "BULL",
+     "held": "62800CE",
+     "index_key": "BNF",
+     "outcome": "SKIP_MANAGED_POLICY_CAP_ONE_PER_INDEX"
+    },
+    {
+     "at": "12:35:27",
+     "contract": "25700CE",
+     "decision_id": "idx1_6e34da96386565fc99b8",
+     "direction": "BULL",
+     "held": "25550CE",
+     "index_key": "NF",
+     "outcome": "SKIP_MANAGED_POLICY_CAP_ONE_PER_INDEX"
+    },
+    {
+     "at": "12:40:32",
+     "contract": "64300CE",
+     "decision_id": "idx1_08760220d4ef64b838c1",
+     "direction": "BULL",
+     "held": "62800CE",
+     "index_key": "BNF",
+     "outcome": "SKIP_MANAGED_POLICY_CAP_ONE_PER_INDEX"
+    },
+    {
+     "at": "12:40:32",
+     "contract": "25700CE",
+     "decision_id": "idx1_1f69ae8083bc6923f0ba",
+     "direction": "BULL",
+     "held": "25550CE",
+     "index_key": "NF",
+     "outcome": "SKIP_MANAGED_POLICY_CAP_ONE_PER_INDEX"
+    },
+    {
+     "at": "12:45:25",
+     "contract": "25700CE",
+     "decision_id": "idx1_15143ccb64a799de8cda",
+     "direction": "BULL",
+     "held": "25550CE",
+     "index_key": "NF",
+     "outcome": "SKIP_MANAGED_POLICY_CAP_ONE_PER_INDEX"
+    },
+    {
+     "at": "12:45:25",
+     "contract": "64200CE",
+     "decision_id": "idx1_ceea942eadebf83d25cb",
+     "direction": "BULL",
+     "held": "62800CE",
+     "index_key": "BNF",
+     "outcome": "SKIP_MANAGED_POLICY_CAP_ONE_PER_INDEX"
+    },
+    {
+     "at": "12:50:24",
+     "contract": "64300CE",
+     "decision_id": "idx1_4f05ea9f1424193ed0de",
+     "direction": "BULL",
+     "held": "62800CE",
+     "index_key": "BNF",
+     "outcome": "SKIP_MANAGED_POLICY_CAP_ONE_PER_INDEX"
+    },
+    {
+     "at": "12:50:24",
+     "contract": "25700CE",
+     "decision_id": "idx1_e8b1ba22512511d5c987",
+     "direction": "BULL",
+     "held": "25550CE",
+     "index_key": "NF",
+     "outcome": "SKIP_MANAGED_POLICY_CAP_ONE_PER_INDEX"
+    },
+    {
+     "at": "12:55:27",
+     "contract": "25700CE",
+     "decision_id": "idx1_07096ac0fcebffd50a8f",
+     "direction": "BULL",
+     "held": "25550CE",
+     "index_key": "NF",
+     "outcome": "SKIP_MANAGED_POLICY_CAP_ONE_PER_INDEX"
+    },
+    {
+     "at": "12:55:27",
+     "contract": "64300CE",
+     "decision_id": "idx1_8c5af259b9b40e21f2ad",
+     "direction": "BULL",
+     "held": "62800CE",
+     "index_key": "BNF",
+     "outcome": "SKIP_MANAGED_POLICY_CAP_ONE_PER_INDEX"
+    },
+    {
+     "at": "13:00:24",
+     "contract": "64200CE",
+     "decision_id": "idx1_354d6a9fba7efcd0a2bd",
+     "direction": "BULL",
+     "held": "62800CE",
+     "index_key": "BNF",
+     "outcome": "SKIP_MANAGED_POLICY_CAP_ONE_PER_INDEX"
+    },
+    {
+     "at": "13:00:24",
+     "contract": "25700CE",
+     "decision_id": "idx1_4e77f9fdb099c99ef6b4",
+     "direction": "BULL",
+     "held": "25550CE",
+     "index_key": "NF",
+     "outcome": "SKIP_MANAGED_POLICY_CAP_ONE_PER_INDEX"
+    },
+    {
+     "at": "13:05:26",
+     "contract": "25700CE",
+     "decision_id": "idx1_3df267fb4222f0ba163c",
+     "direction": "BULL",
+     "held": "25550CE",
+     "index_key": "NF",
+     "outcome": "SKIP_MANAGED_POLICY_CAP_ONE_PER_INDEX"
+    },
+    {
+     "at": "13:05:26",
+     "contract": "64300CE",
+     "decision_id": "idx1_f4a2175218239fd01aec",
+     "direction": "BULL",
+     "held": "62800CE",
+     "index_key": "BNF",
+     "outcome": "SKIP_MANAGED_POLICY_CAP_ONE_PER_INDEX"
+    },
+    {
+     "at": "13:10:26",
+     "contract": "25750CE",
+     "decision_id": "idx1_39ff93ba1b2913c924fc",
+     "direction": "BULL",
+     "held": "25550CE",
+     "index_key": "NF",
+     "outcome": "SKIP_MANAGED_POLICY_CAP_ONE_PER_INDEX"
+    },
+    {
+     "at": "13:10:26",
+     "contract": "64400CE",
+     "decision_id": "idx1_b048bf3c444e4256b6bb",
+     "direction": "BULL",
+     "held": "62800CE",
+     "index_key": "BNF",
+     "outcome": "SKIP_MANAGED_POLICY_CAP_ONE_PER_INDEX"
+    },
+    {
+     "at": "13:15:27",
+     "contract": "64400CE",
+     "decision_id": "idx1_2bc03b70c91ae0939e5e",
+     "direction": "BULL",
+     "held": "62800CE",
+     "index_key": "BNF",
+     "outcome": "SKIP_MANAGED_POLICY_CAP_ONE_PER_INDEX"
+    },
+    {
+     "at": "13:15:27",
+     "contract": "25700CE",
+     "decision_id": "idx1_6d5bc74a2315374e33f7",
+     "direction": "BULL",
+     "held": "25550CE",
+     "index_key": "NF",
+     "outcome": "SKIP_MANAGED_POLICY_CAP_ONE_PER_INDEX"
+    },
+    {
+     "at": "13:20:26",
+     "contract": "64400CE",
+     "decision_id": "idx1_c812a03a5d9c47a7d586",
+     "direction": "BULL",
+     "held": "62800CE",
+     "index_key": "BNF",
+     "outcome": "SKIP_MANAGED_POLICY_CAP_ONE_PER_INDEX"
+    },
+    {
+     "at": "13:45:25",
+     "contract": "64400CE",
+     "decision_id": "idx1_1b703fd035654a706897",
+     "direction": "BULL",
+     "held": "62800CE",
+     "index_key": "BNF",
+     "outcome": "SKIP_MANAGED_POLICY_CAP_ONE_PER_INDEX"
+    },
+    {
+     "at": "13:45:25",
+     "contract": "25750CE",
+     "decision_id": "idx1_89a12ee62220e808b603",
+     "direction": "BULL",
+     "held": "25550CE",
+     "index_key": "NF",
+     "outcome": "SKIP_MANAGED_POLICY_CAP_ONE_PER_INDEX"
+    },
+    {
+     "at": "13:50:26",
+     "contract": "25750CE",
+     "decision_id": "idx1_a4dffa7231511e1a31f4",
+     "direction": "BULL",
+     "held": "25550CE",
+     "index_key": "NF",
+     "outcome": "SKIP_MANAGED_POLICY_CAP_ONE_PER_INDEX"
+    },
+    {
+     "at": "13:55:25",
+     "contract": "25750CE",
+     "decision_id": "idx1_d00f6da0b6497aaf99ba",
+     "direction": "BULL",
+     "held": "25550CE",
+     "index_key": "NF",
+     "outcome": "SKIP_MANAGED_POLICY_CAP_ONE_PER_INDEX"
+    },
+    {
+     "at": "14:00:28",
+     "contract": "64400CE",
+     "decision_id": "idx1_3a2ea8e57c466752728c",
+     "direction": "BULL",
+     "held": "62800CE",
+     "index_key": "BNF",
+     "outcome": "SKIP_MANAGED_POLICY_CAP_ONE_PER_INDEX"
+    },
+    {
+     "at": "14:00:28",
+     "contract": "25750CE",
+     "decision_id": "idx1_8c557ecdfbf44453bd2a",
+     "direction": "BULL",
+     "held": "25550CE",
+     "index_key": "NF",
+     "outcome": "SKIP_MANAGED_POLICY_CAP_ONE_PER_INDEX"
+    },
+    {
+     "at": "14:05:25",
+     "contract": "64400CE",
+     "decision_id": "idx1_6d4ead8765508350e878",
+     "direction": "BULL",
+     "held": "62800CE",
+     "index_key": "BNF",
+     "outcome": "SKIP_MANAGED_POLICY_CAP_ONE_PER_INDEX"
+    },
+    {
+     "at": "14:05:25",
+     "contract": "25750CE",
+     "decision_id": "idx1_c64f08e61525eb43e9c0",
+     "direction": "BULL",
+     "index_key": "NF",
+     "minutes_since_last_exit": 0.3,
+     "outcome": "SKIP_REENTRY_GAP_LT_30M"
+    },
+    {
+     "at": "14:10:28",
+     "contract": "25750CE",
+     "decision_id": "idx1_264f81674bfd41f6f8cc",
+     "direction": "BULL",
+     "index_key": "NF",
+     "minutes_since_last_exit": 5.3,
+     "outcome": "SKIP_REENTRY_GAP_LT_30M"
+    },
+    {
+     "at": "14:10:28",
+     "contract": "64400CE",
+     "decision_id": "idx1_9ab9b30fda864f48fc2c",
+     "direction": "BULL",
+     "held": "62800CE",
+     "index_key": "BNF",
+     "outcome": "SKIP_MANAGED_POLICY_CAP_ONE_PER_INDEX"
+    },
+    {
+     "at": "14:15:26",
+     "contract": "25800CE",
+     "decision_id": "idx1_07a655e981e57264225f",
+     "direction": "BULL",
+     "index_key": "NF",
+     "minutes_since_last_exit": 10.3,
+     "outcome": "SKIP_REENTRY_GAP_LT_30M"
+    },
+    {
+     "at": "14:15:26",
+     "contract": "64500CE",
+     "decision_id": "idx1_bf98e28326278255e97b",
+     "direction": "BULL",
+     "held": "62800CE",
+     "index_key": "BNF",
+     "outcome": "SKIP_MANAGED_POLICY_CAP_ONE_PER_INDEX"
+    },
+    {
+     "at": "14:20:27",
+     "contract": "64600CE",
+     "decision_id": "idx1_aeac90325e21540aea2c",
+     "direction": "BULL",
+     "held": "62800CE",
+     "index_key": "BNF",
+     "outcome": "SKIP_MANAGED_POLICY_CAP_ONE_PER_INDEX"
+    },
+    {
+     "at": "14:20:27",
+     "contract": "25800CE",
+     "decision_id": "idx1_af1fcde098497e75b609",
+     "direction": "BULL",
+     "index_key": "NF",
+     "minutes_since_last_exit": 15.3,
+     "outcome": "SKIP_REENTRY_GAP_LT_30M"
+    },
+    {
+     "at": "14:25:31",
+     "contract": "25800CE",
+     "decision_id": "idx1_02970f2c809057e441a8",
+     "direction": "BULL",
+     "index_key": "NF",
+     "minutes_since_last_exit": 20.4,
+     "outcome": "SKIP_REENTRY_GAP_LT_30M"
+    },
+    {
+     "at": "14:25:31",
+     "contract": "64600CE",
+     "decision_id": "idx1_9b67d022c59ededc1747",
+     "direction": "BULL",
+     "held": "62800CE",
+     "index_key": "BNF",
+     "outcome": "SKIP_MANAGED_POLICY_CAP_ONE_PER_INDEX"
+    },
+    {
+     "at": "14:30:33",
+     "contract": "25750CE",
+     "decision_id": "idx1_d8abe2690b57be47f3a8",
+     "direction": "BULL",
+     "index_key": "NF",
+     "outcome": "SKIP_ENTRY_WINDOW_CLOSED",
+     "window": "09:30:00-14:30:00"
+    },
+    {
+     "at": "14:30:33",
+     "contract": "64600CE",
+     "decision_id": "idx1_ea0237dcae289a7aed4e",
+     "direction": "BULL",
+     "index_key": "BNF",
+     "outcome": "SKIP_ENTRY_WINDOW_CLOSED",
+     "window": "09:30:00-14:30:00"
+    },
+    {
+     "at": "14:35:40",
+     "contract": "64500CE",
+     "decision_id": "idx1_c10d105dd9a38078a029",
+     "direction": "BULL",
+     "index_key": "BNF",
+     "outcome": "SKIP_ENTRY_WINDOW_CLOSED",
+     "window": "09:30:00-14:30:00"
+    },
+    {
+     "at": "14:35:40",
+     "contract": "25750CE",
+     "decision_id": "idx1_f4912e8352e7c459b5e2",
+     "direction": "BULL",
+     "index_key": "NF",
+     "outcome": "SKIP_ENTRY_WINDOW_CLOSED",
+     "window": "09:30:00-14:30:00"
+    },
+    {
+     "at": "14:40:26",
+     "contract": "64500CE",
+     "decision_id": "idx1_4924db77c14ae4780387",
+     "direction": "BULL",
+     "index_key": "BNF",
+     "outcome": "SKIP_ENTRY_WINDOW_CLOSED",
+     "window": "09:30:00-14:30:00"
+    },
+    {
+     "at": "14:55:30",
+     "contract": "25800CE",
+     "decision_id": "idx1_b7d64da546f8fa68bef3",
+     "direction": "BULL",
+     "index_key": "NF",
+     "outcome": "SKIP_ENTRY_WINDOW_CLOSED",
+     "window": "09:30:00-14:30:00"
+    },
+    {
+     "at": "15:00:26",
+     "contract": "64500CE",
+     "decision_id": "idx1_00bd2e553de9d89d2565",
+     "direction": "BULL",
+     "index_key": "BNF",
+     "outcome": "SKIP_ENTRY_WINDOW_CLOSED",
+     "window": "09:30:00-14:30:00"
+    },
+    {
+     "at": "15:00:26",
+     "contract": "25750CE",
+     "decision_id": "idx1_943e6f4b6cef5e8c7f1d",
+     "direction": "BULL",
+     "index_key": "NF",
+     "outcome": "SKIP_ENTRY_WINDOW_CLOSED",
+     "window": "09:30:00-14:30:00"
+    },
+    {
+     "at": "15:05:26",
+     "contract": "25800CE",
+     "decision_id": "idx1_68eb8337c043740eefff",
+     "direction": "BULL",
+     "index_key": "NF",
+     "outcome": "SKIP_ENTRY_WINDOW_CLOSED",
+     "window": "09:30:00-14:30:00"
+    },
+    {
+     "at": "15:05:26",
+     "contract": "64600CE",
+     "decision_id": "idx1_f36bc2883c78842e09b1",
+     "direction": "BULL",
+     "index_key": "BNF",
+     "outcome": "SKIP_ENTRY_WINDOW_CLOSED",
+     "window": "09:30:00-14:30:00"
+    },
+    {
+     "at": "15:10:26",
+     "contract": "64600CE",
+     "decision_id": "idx1_3d385551850c5feb3988",
+     "direction": "BULL",
+     "index_key": "BNF",
+     "outcome": "SKIP_ENTRY_WINDOW_CLOSED",
+     "window": "09:30:00-14:30:00"
+    },
+    {
+     "at": "15:10:26",
+     "contract": "25800CE",
+     "decision_id": "idx1_3f44077ec6845ae7c282",
+     "direction": "BULL",
+     "index_key": "NF",
+     "outcome": "SKIP_ENTRY_WINDOW_CLOSED",
+     "window": "09:30:00-14:30:00"
+    },
+    {
+     "at": "15:15:25",
+     "contract": "64600CE",
+     "decision_id": "idx1_acdf41e51fc4032c5087",
+     "direction": "BULL",
+     "index_key": "BNF",
+     "outcome": "SKIP_ENTRY_WINDOW_CLOSED",
+     "window": "09:30:00-14:30:00"
+    },
+    {
+     "at": "15:15:25",
+     "contract": "25800CE",
+     "decision_id": "idx1_edcf3f915ff73916e0e9",
+     "direction": "BULL",
+     "index_key": "NF",
+     "outcome": "SKIP_ENTRY_WINDOW_CLOSED",
+     "window": "09:30:00-14:30:00"
+    },
+    {
+     "at": "15:20:25",
+     "contract": "25800CE",
+     "decision_id": "idx1_a81d953f3a33ac98df2b",
+     "direction": "BULL",
+     "index_key": "NF",
+     "outcome": "SKIP_ENTRY_WINDOW_CLOSED",
+     "window": "09:30:00-14:30:00"
+    },
+    {
+     "at": "15:20:25",
+     "contract": "64600CE",
+     "decision_id": "idx1_bf59ef359dac6fe7bded",
+     "direction": "BULL",
+     "index_key": "BNF",
+     "outcome": "SKIP_ENTRY_WINDOW_CLOSED",
+     "window": "09:30:00-14:30:00"
+    },
+    {
+     "at": "15:25:24",
+     "contract": "25800CE",
+     "decision_id": "idx1_076285d49e1683bdfdb9",
+     "direction": "BULL",
+     "index_key": "NF",
+     "outcome": "SKIP_ENTRY_WINDOW_CLOSED",
+     "window": "09:30:00-14:30:00"
+    },
+    {
+     "at": "15:25:24",
+     "contract": "64600CE",
+     "decision_id": "idx1_1f626b3ea10953684bce",
+     "direction": "BULL",
+     "index_key": "BNF",
+     "outcome": "SKIP_ENTRY_WINDOW_CLOSED",
+     "window": "09:30:00-14:30:00"
+    },
+    {
+     "at": "15:30:27",
+     "contract": "64500CE",
+     "decision_id": "idx1_33e2a8f9d1faaab49586",
+     "direction": "BULL",
+     "index_key": "BNF",
+     "outcome": "SKIP_ENTRY_WINDOW_CLOSED",
+     "window": "09:30:00-14:30:00"
+    },
+    {
+     "at": "15:30:27",
+     "contract": "25750CE",
+     "decision_id": "idx1_3e6d3900322dcaaaa2dc",
+     "direction": "BULL",
+     "index_key": "NF",
+     "outcome": "SKIP_ENTRY_WINDOW_CLOSED",
+     "window": "09:30:00-14:30:00"
+    },
+    {
+     "at": "15:35:26",
+     "contract": "64500CE",
+     "decision_id": "idx1_19f50c7354e3ebe9bd07",
+     "direction": "BULL",
+     "index_key": "BNF",
+     "outcome": "SKIP_ENTRY_WINDOW_CLOSED",
+     "window": "09:30:00-14:30:00"
+    },
+    {
+     "at": "15:35:26",
+     "contract": "25750CE",
+     "decision_id": "idx1_681e7f163dc67d736d2d",
+     "direction": "BULL",
+     "index_key": "NF",
+     "outcome": "SKIP_ENTRY_WINDOW_CLOSED",
+     "window": "09:30:00-14:30:00"
+    },
+    {
+     "at": "15:40:26",
+     "contract": "64400CE",
+     "decision_id": "idx1_5d70db540604e142ec4f",
+     "direction": "BULL",
+     "index_key": "BNF",
+     "outcome": "SKIP_ENTRY_WINDOW_CLOSED",
+     "window": "09:30:00-14:30:00"
+    },
+    {
+     "at": "15:40:26",
+     "contract": "25750CE",
+     "decision_id": "idx1_ecc936e20de9accd3dd8",
+     "direction": "BULL",
+     "index_key": "NF",
+     "outcome": "SKIP_ENTRY_WINDOW_CLOSED",
+     "window": "09:30:00-14:30:00"
+    }
+   ],
+   "net_inr": 5664.569021854998,
+   "net_points": 87.14721572084613,
+   "open_at_session_end": [
+    "62800CE"
+   ],
+   "positions": [
+    {
+     "contract": "25550CE",
+     "decision_id": "idx1_a2e22137fec2350dae0f",
+     "direction": "BULL",
+     "entry_ask": 150.5,
+     "entry_fill": 150.55,
+     "entry_poll": "12:00:08",
+     "exit_bid": 239.0,
+     "exit_poll": "14:05:07",
+     "exit_reason": "EXIT_FIXED_HOLD",
+     "fees_inr": 81.430978145,
+     "gross_points": 88.39999999999998,
+     "held_minutes": 124.98,
+     "index_key": "NF",
+     "lot": 65,
+     "net_inr": 5664.569021854998,
+     "net_points": 87.14721572084613,
+     "rel_spread": 0.00133,
+     "reserved": 9785.75,
+     "session_date": "2026-11-20",
+     "side": "CE",
+     "state": "CLOSED"
+    }
+   ],
+   "realised_close_drawdown_inr": 0.0,
+   "realised_pnl_to_date_inr": -402.16,
+   "reserved_end_inr": 12450.0,
+   "skips": {
+    "SKIP_ENTRY_WINDOW_CLOSED": 24,
+    "SKIP_MANAGED_POLICY_CAP_ONE_PER_INDEX": 63,
+    "SKIP_REENTRY_GAP_LT_30M": 5
+   },
+   "unresolved_opened_here": 0,
+   "win_rate": 1.0
+  }
+ },
+ "starting_capital_inr": 250000.0,
+ "supersession_note": "checked against EVERY authority decision for the index, including newer NEUTRAL and UNAVAILABLE ones",
+ "tick_inr": 0.05,
+ "tolerance_min": 10,
+ "units": "one lot (the frozen production default)"
+}
