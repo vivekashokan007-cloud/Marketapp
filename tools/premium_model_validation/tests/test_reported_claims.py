@@ -32,7 +32,8 @@ MEMO = os.path.join(REPO, 'CLAUDE_CODE_REPLY_PREMIUM_SPAN_EXTENDED_20261122.md')
 # every memo still presented as live. A module's hash need only appear in one of them.
 LIVE_MEMOS = (os.path.join(REPO, 'CLAUDE_CODE_REPLY_DIRECTION_BASELINE_20261122.md'),
               os.path.join(REPO, 'RESEARCH_MAP_MARKET_RADAR_EDGE_20261122.md'),
-              os.path.join(REPO, 'CLAUDE_CODE_REPLY_RANKED_EXPERIMENTS_20261122.md'))
+              os.path.join(REPO, 'CLAUDE_CODE_REPLY_RANKED_EXPERIMENTS_20261122.md'),
+              os.path.join(REPO, 'CLAUDE_CODE_REPLY_CODEX_EDGE_RESEARCH_20261122.md'))
 SUPERSEDED_MEMO = os.path.join(
     REPO, 'CLAUDE_CODE_RESULTS_PREMIUM_MODEL_VALIDATION_20261121.md')
 README = os.path.join(ROOT, 'README.md')
