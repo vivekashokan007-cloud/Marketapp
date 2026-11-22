@@ -1244,6 +1244,21 @@ class MarketWatchService : Service() {
                         " indices=${status.optJSONArray("indices")}")
             }
 
+            // Close-to-next-session research capture (close_open_capture_v1), DEFAULT OFF behind its
+            // own control. A separate path from the premium pilot above: it reuses the same two
+            // already-fetched chains, makes no request, schedules nothing, never touches the
+            // pilot's window, store or counters, and hands its work to its own bounded worker.
+            closeOpenCaptureSafely {
+                val coStatus = CloseOpenCapture.onPoll(filesDir, today,
+                    PremiumCapturePollAdapter.declaredSlotFromSlotKey(slotKey),
+                    listOf(
+                        CloseOpenCapture.Acquisition("BNF", bnfChainJson, m0BnfFetchStartMs, capBnfCompletedAtMs),
+                        CloseOpenCapture.Acquisition("NF", nfChainJson, m0NfFetchStartMs, capNfCompletedAtMs)))
+                val coS = coStatus.optString("status")
+                if (coS != "DISABLED" && coS != "OUTSIDE_WINDOWS")
+                    LogBuffer.add('I', TAG, "CLOSE_OPEN_CAPTURE: $coS kind=${coStatus.optString("kind")}")
+            }
+
             if (quotesJson == null) {
                 Log.e(TAG, "POLL_FAIL: Quotes fetch returned null — network or auth error")
                 return
@@ -1421,6 +1436,13 @@ class MarketWatchService : Service() {
         val cal = Calendar.getInstance(TimeZone.getTimeZone("Asia/Kolkata"))
             .apply { timeInMillis = ms }
         return "%02d:%02d".format(cal.get(Calendar.HOUR_OF_DAY), cal.get(Calendar.MINUTE))
+    }
+
+    /** Close-open research capture can never fail a poll; kept apart from premiumCaptureSafely. */
+    private inline fun closeOpenCaptureSafely(block: () -> Unit) {
+        try { block() } catch (t: Throwable) {
+            LogBuffer.add('W', TAG, "CLOSE_OPEN_CAPTURE_FAIL: ${t.javaClass.simpleName}")
+        }
     }
 
     private inline fun <T> m0Safely(where: String, fallback: T, block: () -> T): T = try { block() } catch (t: Throwable) {

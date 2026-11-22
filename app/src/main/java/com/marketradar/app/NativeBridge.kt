@@ -1710,6 +1710,26 @@ class NativeBridge(private val context: Context) {
             .put("error", t.javaClass.simpleName).toString()
     }
 
+    /** close_open_capture_v1 control: its own flag, default OFF; the premium flag never implies it. */
+    @JavascriptInterface
+    fun setCloseOpenCapture(enabled: Boolean): String = try {
+        val ok = CloseOpenCapture.setEnabled(context.filesDir, enabled)
+        LogBuffer.add('I', "NativeBridge", "CLOSE_OPEN_CAPTURE_CONTROL: requested=$enabled ok=$ok")
+        JSONObject().put("ok", ok).put("state", CloseOpenCapture.controlState(context.filesDir))
+            .put("is_trading_mode", false).put("changes_paper_authority", false)
+            .put("takes_effect", "NEXT_POLL").toString()
+    } catch (t: Throwable) {
+        JSONObject().put("ok", false).put("status", "CONTROL_ERROR").put("error", t.javaClass.simpleName).toString()
+    }
+
+    @JavascriptInterface
+    fun getCloseOpenCaptureState(): String = try {
+        JSONObject().put("state", CloseOpenCapture.controlState(context.filesDir))
+            .put("version", CloseOpenCapture.VERSION).toString()
+    } catch (t: Throwable) {
+        JSONObject().put("state", "ERROR").put("error", t.javaClass.simpleName).toString()
+    }
+
     @JavascriptInterface
     fun exportSessionEvidence(sessionDate: String, pwaVersion: String): String {
         return try {
@@ -1767,7 +1787,11 @@ class NativeBridge(private val context: Context) {
             // the FINAL payload actually saved. Named `bytes` deliberately: the pre-existing
             // G0/PM1 guards pin the save call text, and that contract is about WHICH bytes are
             // written for the exact session, so the final payload keeps the name.
-            val bytes = fit.bytes
+            // close_open_capture_v1: a SEPARATE additive key, spliced only when the final payload
+            // stays under the same combined cap; otherwise left out and reported, never truncated.
+            val co = CloseOpenCapture.spliceWithinCap(fit.bytes, context.filesDir, used,
+                PremiumExportSection.COMBINED_CAP_BYTES)
+            val bytes = if (fit.overCap) fit.bytes else co.bytes
             val stage = fit.stage
             if (fit.overCap) {
                 return JSONObject().put("ok", false).put("status", "OVER_CAP")
@@ -1793,6 +1817,8 @@ class NativeBridge(private val context: Context) {
                         premium.optBoolean("concurrent_capture_write_detected", false))
                     .put("bundle_bytes", bundleBytes.size)
                     .put("combined_bytes", bytes.size))
+                .put("close_open", JSONObject().put("included", co.included && !fit.overCap)
+                    .put("outcome", co.reason).put("key", CloseOpenCapture.SECTION_KEY))
                 .put("fileName", saved.optString("fileName")).toString()
         } catch (t: Throwable) {
             // Throwable, not Exception. This method allocates multi-megabyte byte arrays — in
