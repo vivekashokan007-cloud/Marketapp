@@ -390,3 +390,40 @@ select k, count(*) n from (
   from position_ticks pt, lateral jsonb_array_elements(pt.legs_json) l
   where pt.trade_id in ('318','319','320','321')
 ) s group by 1 order by 1;
+
+-- =====================================================================================
+-- TEST 6 part 2 — the exit policy's own signals against what the operator booked.
+-- All four Paper positions were closed manually, and the tick service recorded at every
+-- tick what the policy would have said, so this is a direct comparison on real fills.
+-- =====================================================================================
+
+-- Q24. Which signals fired per position, and the threshold basis.  Observed: thresholds are
+-- constant_only / constant_safety_floor on ALL 822 ticks, so the live percentile-authority
+-- publication path has never been exercised in Paper (E14).
+select trade_id, count(*) ticks,
+ string_agg(distinct policy_action, ',' order by policy_action) action_set,
+ max((policy_trace_json->>'tp_threshold')::numeric) tp_threshold,
+ min((policy_trace_json->>'sl_threshold')::numeric) sl_threshold,
+ string_agg(distinct policy_trace_json->>'target_threshold_basis', ',') tp_basis,
+ string_agg(distinct policy_trace_json->>'stop_threshold_basis', ',') sl_basis
+from position_ticks where trade_id in ('318','319','320','321') group by 1 order by 1;
+
+-- Q25. First firing of each non-HOLD action, with the P&L at that tick against the booked
+-- outcome.  Results:
+--   318 EOD 11-20 15:15:38 +1368.00   TP 11-23 09:15:01 +3775.50   booked +2079.00
+--   319 EOD 11-20 15:15:38  +841.75   TP 11-23 09:16:05 +4036.50   booked +3094.00
+--   320 none (HOLD on all 175 ticks)                               booked +1361.75
+--   321 SL  11-23 11:14:51 -3147.00                                booked +1560.00
+-- Every signal that fired was early; overriding 321's stop was worth +4707.00, and 2639.00
+-- was lost between the target alert and the manual close one to two minutes later.
+with f as (
+ select distinct on (trade_id, policy_action) trade_id, policy_action,
+   to_char(tick_ts at time zone 'Asia/Kolkata','MM-DD HH24:MI:SS') t,
+   current_pnl::numeric pnl, executable_mark::numeric mark, policy_reason,
+   (policy_trace_json->>'trusted_mfe')::numeric trusted_mfe_then,
+   policy_trace_json->'mark_trust'->>'state' mark_trust_state
+ from position_ticks
+ where trade_id in ('318','319','320','321') and policy_action <> 'HOLD'
+ order by trade_id, policy_action, tick_ts)
+select f.*, tv.actual_pnl::numeric booked_gross, tv.net_pnl::numeric booked_net
+from f join trades_v2 tv on tv.id::text = f.trade_id order by f.trade_id, f.t;
