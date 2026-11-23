@@ -1776,7 +1776,8 @@ class PositionTickService : Service() {
         private const val POSITION_EXIT_THRESHOLD_MAX_AGE_MS = 20 * 60 * 1000L
 
         private const val PREF_SHADOW_DELIVERY_LEDGER = "shadow_delivery_ledger_v1"
-        private const val PREF_TRUSTED_EXTREMA_STATE = "position_tick_trusted_extrema_v1"
+        // One spelling, shared with validatedExtremaFor() so the reader and the writer cannot drift.
+        private const val PREF_TRUSTED_EXTREMA_STATE = PREF_TRUSTED_EXTREMA_BLOB
         // B3 item 3: Paper persistent mark-failure episodes (one bounded blob).
         private const val PREF_MARK_FAILURE_EPISODES = "position_mark_failure_episodes_v1"
         private const val SHADOW_LAST_ACTION_PREFIX = "shadow_last_action_"
@@ -2647,6 +2648,70 @@ internal fun violatesStructuralBounds(
 
 /** B3: raw observed extrema are separate; only TRUSTED marks update these. */
 internal const val TRUSTED_EXTREMA_CONTRACT = "a1_trusted_extrema_v1_trusted_marks_only_raw_extrema_unchanged"
+
+/**
+ * The prefs blob holding the trusted extrema, readable outside this service.
+ *
+ * Shape: { "<tradeId>": { "trusted_mae": Double?, "trusted_mfe": Double?, "updated_at": iso } }
+ *
+ * It was private, which meant the validated extrema existed only inside this service and inside
+ * `position_ticks.policy_trace_json`. The PWA writes `trades_v2.peak_pnl` / `trough_pnl` from its
+ * own close payload (see ClosedTradeLedger: "Kotlin does not itself write trades_v2 close
+ * patches"), and had no way to read these. Exposing the key is what lets the summary, daily review
+ * and export consume one validated series instead of each deriving its own.
+ */
+internal const val PREF_TRUSTED_EXTREMA_BLOB = "position_tick_trusted_extrema_v1"
+
+/** Status for a validated-extrema lookup. Absence is reported, never coerced to zero. */
+internal const val VALIDATED_EXTREMA_STATUS_OK = "VALIDATED"
+internal const val VALIDATED_EXTREMA_STATUS_UNKNOWN = "UNKNOWN_NO_VALIDATED_EVIDENCE"
+
+/** Basis of the numbers returned: gross, i.e. before entry and exit charges. */
+internal const val VALIDATED_EXTREMA_BASIS = "GROSS_BEFORE_CHARGES"
+
+/**
+ * One trade's validated extrema, or an explicit unknown.
+ *
+ * `trusted_mae` / `trusted_mfe` are **gross** (mark minus entry premium, times quantity) and cover
+ * every TRUSTED mark observed up to the moment of the lookup. They deliberately do NOT include the
+ * accepted close unless a tick happened to observe it, so a peak sampled before exit can be below
+ * a booked close -- that is correct under this contract, not a discrepancy. Callers comparing
+ * against a booked outcome must account for it.
+ */
+internal fun validatedExtremaFromBlob(blob: String?, tradeId: String): JSONObject {
+    val out = JSONObject().apply {
+        put("trade_id", tradeId)
+        put("contract", TRUSTED_EXTREMA_CONTRACT)
+        put("basis", VALIDATED_EXTREMA_BASIS)
+        put("includes_accepted_close", false)
+    }
+    if (tradeId.isBlank()) {
+        return out.put("status", VALIDATED_EXTREMA_STATUS_UNKNOWN)
+    }
+    val row = try {
+        JSONObject(blob ?: "{}").optJSONObject(tradeId)
+    } catch (_: Exception) {
+        // A corrupt blob is unknown evidence, not zero evidence of an excursion.
+        null
+    }
+    val mae = row?.optNullableDouble("trusted_mae")
+    val mfe = row?.optNullableDouble("trusted_mfe")
+    if (row == null || (mae == null && mfe == null)) {
+        // No validated evidence: app data cleared, a position closed before this contract
+        // shipped, or one that never produced a single TRUSTED mark. Report it as unknown.
+        return out.put("status", VALIDATED_EXTREMA_STATUS_UNKNOWN)
+    }
+    return out.apply {
+        put("status", VALIDATED_EXTREMA_STATUS_OK)
+        putOptNumber("trusted_mae", mae)
+        putOptNumber("trusted_mfe", mfe)
+        put("updated_at", row.optString("updated_at", ""))
+    }
+}
+
+/** Prefs-backed wrapper. The logic lives in validatedExtremaFromBlob so it is directly testable. */
+internal fun validatedExtremaFor(prefs: SharedPreferences, tradeId: String): JSONObject =
+    validatedExtremaFromBlob(prefs.getString(PREF_TRUSTED_EXTREMA_BLOB, "{}"), tradeId)
 
 internal fun updateTrustedExtrema(prevMae: Double?, prevMfe: Double?, trustedPnl: Double?): Pair<Double?, Double?> {
     if (trustedPnl == null || !trustedPnl.isFinite()) return prevMae to prevMfe

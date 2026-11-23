@@ -753,6 +753,7 @@ class MainActivity : AppCompatActivity() {
                     getSignalAccuracyStats: function() { return AndroidBridge.getSignalAccuracyStats(); },
                     getOpenTrades: function() { return AndroidBridge.getOpenTrades(); },
                     getPositionMarkStates: function() { return AndroidBridge.getPositionMarkStates(); },
+                    getValidatedPositionExtrema: function(tradeIds) { return AndroidBridge.getValidatedPositionExtrema(JSON.stringify(tradeIds || [])); },
                     requestPaperCloseQuote: function(tradeId) { return AndroidBridge.requestPaperCloseQuote(String(tradeId || '')); },
                     getPaperCloseQuote: function(requestId) { return AndroidBridge.getPaperCloseQuote(String(requestId || '')); },
                     getClosedTrades: function(limit) { return AndroidBridge.getClosedTrades(limit || 200); },
