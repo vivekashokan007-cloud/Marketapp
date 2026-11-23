@@ -79,3 +79,98 @@ select session_date::text, index_key, expiry, count(*) as rows,
 from ml_option_chain_snapshots
 where session_date in ('2026-11-20','2026-11-23')
 group by 1,2,3 order by 1,2,3;
+
+-- =====================================================================================
+-- QUOTE-QUALITY VERIFICATION (added 23 Nov after Codex's two objections:
+--   (a) use executable SIDES, not bid-vs-bid, to claim arbitrage;
+--   (b) 31.5 s of pairing lag cannot by itself rule out timing.)
+-- These four queries are the diagnostic, in the order they must be read.
+-- =====================================================================================
+
+-- Q7. TIMING CONTROL. How far do these contracts move on their own over ~60 s, measured
+-- within ONE source (the trusted tick legs)? Any chain-vs-tick difference smaller than this
+-- is not evidence of a bad quote.
+with t as (
+  select tick_ts, (l->>'strike')::numeric as strike, (l->>'option_type') as ot,
+         (l->>'bid')::numeric as bid
+  from position_ticks, lateral jsonb_array_elements(legs_json) l
+  where session_date='2026-11-23' and trade_id in ('320','321') and (l->>'quote_status')='OK'
+), d as (
+  select strike, ot, tick_ts, bid, lag(bid) over w as prev_bid,
+         extract(epoch from (tick_ts - lag(tick_ts) over w)) as gap_s
+  from t window w as (partition by strike, ot order by tick_ts)
+)
+select strike::int as strike, count(*) as n,
+       (percentile_cont(0.5) within group (order by abs(100.0*(bid-prev_bid)/nullif(prev_bid,0))))::numeric(10,2) as median_move_pct,
+       (percentile_cont(0.9) within group (order by abs(100.0*(bid-prev_bid)/nullif(prev_bid,0))))::numeric(10,2) as p90_move_pct
+from d where prev_bid is not null and gap_s between 50 and 75
+group by strike order by strike;
+
+-- Q8. EXECUTABLE ARBITRAGE, correct sides. For calls K1 < K2 a locked profit needs
+-- bid(K1) - ask(K2) > (K2 - K1). Bid-vs-bid monotonicity is an INDICATIVE inconsistency and
+-- is not this test.
+with c as (
+  select session_date, index_key, poll_ts, strike, bid, ask,
+         lead(strike) over w as k2, lead(ask) over w as ask2
+  from ml_option_chain_snapshots
+  where session_date between '2026-11-18' and '2026-11-23'
+    and option_type='CE' and bid is not null and ask is not null
+  window w as (partition by session_date, index_key, poll_ts order by strike)
+)
+select to_char(poll_ts at time zone 'Asia/Kolkata','HH24:MI') as hm,
+       count(*) as adjacent_pairs,
+       count(*) filter (where bid - ask2 > (k2 - strike) + 0.05) as executable_arb
+from c where k2 is not null
+group by 1 order by 1;
+
+-- Q9. LEVEL CHECK against a VERIFIED spot (from the export's authority history, not from any
+-- trade's own exit_snapshot), restricted to the TRADEABLE near-money band. Deep wings are
+-- illiquid by nature and must not be included - that inclusion is what made an earlier run of
+-- this look like an all-day problem.
+with s(index_key, hm, spot) as (values
+ ('BNF','09:15',64934.4),('BNF','09:35',63290.35),('BNF','09:50',63502.3),('BNF','10:10',63440.3),
+ ('BNF','11:00',63356.65),('BNF','12:00',63211.65),('BNF','12:40',63272.05),
+ ('NF','09:15',25915.4),('NF','09:35',25576.8),('NF','09:50',25664.6),('NF','10:10',25623.1),
+ ('NF','11:00',25555.2),('NF','12:00',25509.6),('NF','12:40',25509.15)
+), c as (
+  select ch.index_key, to_char(ch.poll_ts at time zone 'Asia/Kolkata','HH24:MI') as hm,
+         ch.strike, ch.bid, (s.spot - ch.strike) as intrinsic
+  from ml_option_chain_snapshots ch
+  join s on s.index_key=ch.index_key
+        and s.hm = to_char(ch.poll_ts at time zone 'Asia/Kolkata','HH24:MI')
+  where ch.session_date='2026-11-23' and ch.option_type='CE' and ch.bid is not null
+    and ch.strike < s.spot - 100
+    and ch.strike > s.spot - (case ch.index_key when 'BNF' then 1200 else 450 end)
+)
+select index_key, hm, count(*) as near_itm_calls,
+       count(*) filter (where bid < intrinsic - 1) as below_intrinsic,
+       max(intrinsic - bid)::numeric(10,1) as worst_shortfall,
+       (percentile_cont(0.5) within group (order by (intrinsic - bid)))::numeric(10,1) as median_shortfall
+from c group by index_key, hm order by index_key, hm;
+
+-- Q10. MATCHED ROWS for the chain-vs-tick comparison, with identity, side and both clocks
+-- exposed so duplicate or mis-keyed joins are visible. One tick per chain poll, nearest in
+-- time, within 45 s.
+with ticks as (
+  select tick_ts, trade_id, (l->>'instrument_key') as ik,
+         (l->>'strike')::numeric as strike, (l->>'option_type') as ot,
+         (l->>'bid')::numeric as t_bid, (l->>'ask')::numeric as t_ask,
+         (l->>'source_ts') as t_source_ts, (l->>'quote_status') as t_status
+  from position_ticks, lateral jsonb_array_elements(legs_json) l
+  where session_date='2026-11-23' and trade_id in ('320','321')
+)
+select c.index_key, c.expiry, c.strike, c.option_type,
+       to_char(c.poll_ts at time zone 'Asia/Kolkata','HH24:MI:SS') as chain_ist,
+       c.bid as chain_bid, c.ask as chain_ask,
+       t.ik, t.t_bid, t.t_ask, t.t_source_ts, t.t_status, t.trade_id,
+       extract(epoch from (t.tick_ts - c.poll_ts))::numeric(10,1) as pair_lag_s
+from ml_option_chain_snapshots c
+join lateral (
+  select * from ticks tk
+  where tk.strike=c.strike and tk.ot=c.option_type
+    and abs(extract(epoch from (tk.tick_ts - c.poll_ts))) < 45
+  order by abs(extract(epoch from (tk.tick_ts - c.poll_ts))) limit 1
+) t on true
+where c.session_date='2026-11-23' and c.expiry='2026-11-23' and c.option_type='PE'
+  and ((c.index_key='NF' and c.strike in (25600,25450)) or (c.index_key='BNF' and c.strike in (63200,62800)))
+order by c.index_key, c.strike, c.poll_ts;
