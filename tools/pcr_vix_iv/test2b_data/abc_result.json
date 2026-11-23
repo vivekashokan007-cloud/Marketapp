@@ -1,0 +1,899 @@
+{
+ "horizons": {
+  "120": {
+   "a": {
+    "label": "A one lot each",
+    "outright": {
+     "best_observed": 24866.69,
+     "mean": 2871.79,
+     "median": 1794.19,
+     "n": 245,
+     "positive": 165,
+     "positive_pct": 67.3,
+     "total": 703587.85,
+     "worst_observed": -7789.41
+    },
+    "paired_diff_spread_minus_outright": {
+     "best_observed": 4962.93,
+     "mean": -1966.41,
+     "median": -591.83,
+     "n": 245,
+     "positive": 90,
+     "positive_pct": 36.7,
+     "total": -481769.59,
+     "worst_observed": -20428.64
+    },
+    "risk_used": {
+     "best_observed": 24999.34,
+     "mean": 10569.71,
+     "median": 11155.61,
+     "n": 245,
+     "positive": 245,
+     "positive_pct": 100.0,
+     "total": 2589577.88,
+     "worst_observed": 2966.17
+    },
+    "spread": {
+     "best_observed": 6938.92,
+     "mean": 905.38,
+     "median": 665.1,
+     "n": 245,
+     "positive": 171,
+     "positive_pct": 69.8,
+     "total": 221818.29,
+     "worst_observed": -2826.48
+    }
+   },
+   "b": {
+    "label": "B max lots in budget, each arm",
+    "outright": {
+     "best_observed": 49407.12,
+     "mean": 6100.23,
+     "median": 3581.44,
+     "n": 245,
+     "positive": 165,
+     "positive_pct": 67.3,
+     "total": 1494555.93,
+     "worst_observed": -16097.31
+    },
+    "outright_risk_used": {
+     "best_observed": 24999.34,
+     "mean": 19994.54,
+     "median": 21155.7,
+     "n": 245,
+     "positive": 245,
+     "positive_pct": 100.0,
+     "total": 4898662.26,
+     "worst_observed": 12509.22
+    },
+    "outright_unused_budget": {
+     "best_observed": 12490.78,
+     "mean": 5005.46,
+     "median": 3844.3,
+     "n": 245,
+     "positive": 245,
+     "positive_pct": 100.0,
+     "total": 1226337.74,
+     "worst_observed": 0.66
+    },
+    "paired_diff_spread_minus_outright": {
+     "best_observed": 9997.63,
+     "mean": -1418.42,
+     "median": -279.53,
+     "n": 245,
+     "positive": 101,
+     "positive_pct": 41.2,
+     "total": -347512.79,
+     "worst_observed": -29381.77
+    },
+    "spread": {
+     "best_observed": 41633.55,
+     "mean": 4681.81,
+     "median": 3435.12,
+     "n": 245,
+     "positive": 171,
+     "positive_pct": 69.8,
+     "total": 1147043.09,
+     "worst_observed": -17733.06
+    },
+    "spread_risk_used": {
+     "best_observed": 24993.39,
+     "mean": 22425.16,
+     "median": 22016.06,
+     "n": 245,
+     "positive": 245,
+     "positive_pct": 100.0,
+     "total": 5494165.3,
+     "worst_observed": 20078.56
+    },
+    "spread_unused_budget": {
+     "best_observed": 4921.44,
+     "mean": 2574.84,
+     "median": 2983.94,
+     "n": 245,
+     "positive": 245,
+     "positive_pct": 100.0,
+     "total": 630834.7,
+     "worst_observed": 6.61
+    }
+   },
+   "by_trading_date": {
+    "2026-11-11": {
+     "arm_b_paired_diff_total": -16882.77,
+     "arm_c_paired_diff_total": 448.13,
+     "indices": [
+      "BNF",
+      "NF"
+     ],
+     "observations": 9
+    },
+    "2026-11-13": {
+     "arm_b_paired_diff_total": 1173.02,
+     "arm_c_paired_diff_total": 6624.79,
+     "indices": [
+      "NF"
+     ],
+     "observations": 1
+    },
+    "2026-11-16": {
+     "arm_b_paired_diff_total": -422.95,
+     "arm_c_paired_diff_total": 2008.01,
+     "indices": [
+      "BNF"
+     ],
+     "observations": 1
+    },
+    "2026-11-17": {
+     "arm_b_paired_diff_total": -17967.4,
+     "arm_c_paired_diff_total": 27997.27,
+     "indices": [
+      "BNF",
+      "NF"
+     ],
+     "observations": 36
+    },
+    "2026-11-18": {
+     "arm_b_paired_diff_total": -4894.59,
+     "arm_c_paired_diff_total": 45138.77,
+     "indices": [
+      "BNF",
+      "NF"
+     ],
+     "observations": 27
+    },
+    "2026-11-19": {
+     "arm_b_paired_diff_total": -122028.76,
+     "arm_c_paired_diff_total": -249236.69,
+     "indices": [
+      "BNF",
+      "NF"
+     ],
+     "observations": 49
+    },
+    "2026-11-20": {
+     "arm_b_paired_diff_total": -402115.5,
+     "arm_c_paired_diff_total": -690429.33,
+     "indices": [
+      "BNF",
+      "NF"
+     ],
+     "observations": 53
+    },
+    "2026-11-23": {
+     "arm_b_paired_diff_total": 215626.16,
+     "arm_c_paired_diff_total": -30515.73,
+     "indices": [
+      "BNF",
+      "NF"
+     ],
+     "observations": 69
+    }
+   },
+   "c": {
+    "label": "C spread at the outright's lot count",
+    "outright": {
+     "best_observed": 49407.12,
+     "mean": 6100.23,
+     "median": 3581.44,
+     "n": 245,
+     "positive": 165,
+     "positive_pct": 67.3,
+     "total": 1494555.93,
+     "worst_observed": -16097.31
+    },
+    "paired_diff_spread_minus_outright": {
+     "best_observed": 9925.86,
+     "mean": -3624.35,
+     "median": -1559.53,
+     "n": 245,
+     "positive": 90,
+     "positive_pct": 36.7,
+     "total": -887964.78,
+     "worst_observed": -40772.12
+    },
+    "spread": {
+     "best_observed": 27755.7,
+     "mean": 2475.88,
+     "median": 1180.97,
+     "n": 245,
+     "positive": 171,
+     "positive_pct": 69.8,
+     "total": 606591.26,
+     "worst_observed": -13792.38
+    },
+    "spread_risk_used": {
+     "best_observed": 21454.23,
+     "mean": 9977.91,
+     "median": 9009.69,
+     "n": 245,
+     "positive": 245,
+     "positive_pct": 100.0,
+     "total": 2444587.38,
+     "worst_observed": 4736.98
+    },
+    "spread_unused_budget": {
+     "best_observed": 20263.02,
+     "mean": 15022.09,
+     "median": 15990.31,
+     "n": 245,
+     "positive": 245,
+     "positive_pct": 100.0,
+     "total": 3680412.62,
+     "worst_observed": 3545.77
+    }
+   },
+   "distinct_session_index_units": 14,
+   "exclusions": {
+    "BUDGET_EXCEEDED_AT_ONE_LOT_OUTRIGHT": 12,
+    "DEBIT_SPREAD_NOT_PUBLISHED": 35,
+    "LONG_QUOTE_MISSING": 3,
+    "NO_USABLE_EXIT_QUOTE": 136
+   },
+   "horizon_min": 120,
+   "lot_counts": {
+    "outright_B": {
+     "1": 73,
+     "2": 96,
+     "3": 32,
+     "4": 16,
+     "5": 7,
+     "6": 11,
+     "7": 6,
+     "8": 4
+    },
+    "spread_B": {
+     "4": 96,
+     "5": 68,
+     "6": 53,
+     "7": 11,
+     "8": 11,
+     "9": 6
+    },
+    "spread_C": {
+     "1": 73,
+     "2": 96,
+     "3": 32,
+     "4": 16,
+     "5": 7,
+     "6": 11,
+     "7": 6,
+     "8": 4
+    }
+   },
+   "scored_observations": 245
+  },
+  "30": {
+   "a": {
+    "label": "A one lot each",
+    "outright": {
+     "best_observed": 11226.75,
+     "mean": 427.74,
+     "median": 101.62,
+     "n": 373,
+     "positive": 195,
+     "positive_pct": 52.3,
+     "total": 159546.7,
+     "worst_observed": -4329.57
+    },
+    "paired_diff_spread_minus_outright": {
+     "best_observed": 2719.42,
+     "mean": -401.5,
+     "median": -75.36,
+     "n": 373,
+     "positive": 163,
+     "positive_pct": 43.7,
+     "total": -149757.92,
+     "worst_observed": -8747.47
+    },
+    "risk_used": {
+     "best_observed": 24999.34,
+     "mean": 10172.25,
+     "median": 10652.63,
+     "n": 373,
+     "positive": 373,
+     "positive_pct": 100.0,
+     "total": 3794250.49,
+     "worst_observed": 1493.26
+    },
+    "spread": {
+     "best_observed": 5191.94,
+     "mean": 26.24,
+     "median": -63.35,
+     "n": 373,
+     "positive": 169,
+     "positive_pct": 45.3,
+     "total": 9788.87,
+     "worst_observed": -2350.87
+    }
+   },
+   "b": {
+    "label": "B max lots in budget, each arm",
+    "outright": {
+     "best_observed": 43319.81,
+     "mean": 1004.25,
+     "median": 241.0,
+     "n": 373,
+     "positive": 195,
+     "positive_pct": 52.3,
+     "total": 374586.0,
+     "worst_observed": -15252.14
+    },
+    "outright_risk_used": {
+     "best_observed": 24999.34,
+     "mean": 20056.0,
+     "median": 21342.87,
+     "n": 373,
+     "positive": 373,
+     "positive_pct": 100.0,
+     "total": 7480889.69,
+     "worst_observed": 12506.22
+    },
+    "outright_unused_budget": {
+     "best_observed": 12493.78,
+     "mean": 4944.0,
+     "median": 3657.13,
+     "n": 373,
+     "positive": 373,
+     "positive_pct": 100.0,
+     "total": 1844110.31,
+     "worst_observed": 0.66
+    },
+    "paired_diff_spread_minus_outright": {
+     "best_observed": 2778.82,
+     "mean": -810.65,
+     "median": -607.59,
+     "n": 373,
+     "positive": 88,
+     "positive_pct": 23.6,
+     "total": -302373.27,
+     "worst_observed": -12536.38
+    },
+    "spread": {
+     "best_observed": 36343.57,
+     "mean": 193.6,
+     "median": -316.8,
+     "n": 373,
+     "positive": 169,
+     "positive_pct": 45.3,
+     "total": 72212.72,
+     "worst_observed": -14831.15
+    },
+    "spread_risk_used": {
+     "best_observed": 24996.05,
+     "mean": 22501.93,
+     "median": 22197.87,
+     "n": 373,
+     "positive": 373,
+     "positive_pct": 100.0,
+     "total": 8393218.55,
+     "worst_observed": 20078.56
+    },
+    "spread_unused_budget": {
+     "best_observed": 4921.44,
+     "mean": 2498.07,
+     "median": 2802.13,
+     "n": 373,
+     "positive": 373,
+     "positive_pct": 100.0,
+     "total": 931781.45,
+     "worst_observed": 3.95
+    }
+   },
+   "by_trading_date": {
+    "2026-11-11": {
+     "arm_b_paired_diff_total": -33207.32,
+     "arm_c_paired_diff_total": -24544.63,
+     "indices": [
+      "BNF",
+      "NF"
+     ],
+     "observations": 21
+    },
+    "2026-11-13": {
+     "arm_b_paired_diff_total": 349.11,
+     "arm_c_paired_diff_total": 3340.81,
+     "indices": [
+      "NF"
+     ],
+     "observations": 1
+    },
+    "2026-11-16": {
+     "arm_b_paired_diff_total": -705.82,
+     "arm_c_paired_diff_total": 1227.65,
+     "indices": [
+      "BNF"
+     ],
+     "observations": 1
+    },
+    "2026-11-17": {
+     "arm_b_paired_diff_total": -38522.78,
+     "arm_c_paired_diff_total": -3787.76,
+     "indices": [
+      "BNF",
+      "NF"
+     ],
+     "observations": 51
+    },
+    "2026-11-18": {
+     "arm_b_paired_diff_total": -26064.05,
+     "arm_c_paired_diff_total": 21368.4,
+     "indices": [
+      "BNF",
+      "NF"
+     ],
+     "observations": 39
+    },
+    "2026-11-19": {
+     "arm_b_paired_diff_total": -86834.41,
+     "arm_c_paired_diff_total": -96255.65,
+     "indices": [
+      "BNF",
+      "NF"
+     ],
+     "observations": 79
+    },
+    "2026-11-20": {
+     "arm_b_paired_diff_total": -147313.05,
+     "arm_c_paired_diff_total": -190325.61,
+     "indices": [
+      "BNF",
+      "NF"
+     ],
+     "observations": 81
+    },
+    "2026-11-23": {
+     "arm_b_paired_diff_total": 29925.05,
+     "arm_c_paired_diff_total": -1615.12,
+     "indices": [
+      "BNF",
+      "NF"
+     ],
+     "observations": 100
+    }
+   },
+   "c": {
+    "label": "C spread at the outright's lot count",
+    "outright": {
+     "best_observed": 43319.81,
+     "mean": 1004.25,
+     "median": 241.0,
+     "n": 373,
+     "positive": 195,
+     "positive_pct": 52.3,
+     "total": 374586.0,
+     "worst_observed": -15252.14
+    },
+    "paired_diff_spread_minus_outright": {
+     "best_observed": 5775.57,
+     "mean": -779.07,
+     "median": -265.82,
+     "n": 373,
+     "positive": 163,
+     "positive_pct": 43.7,
+     "total": -290591.91,
+     "worst_observed": -17494.93
+    },
+    "spread": {
+     "best_observed": 31151.63,
+     "mean": 225.19,
+     "median": -100.48,
+     "n": 373,
+     "positive": 169,
+     "positive_pct": 45.3,
+     "total": 83994.07,
+     "worst_observed": -14831.15
+    },
+    "spread_risk_used": {
+     "best_observed": 23268.46,
+     "mean": 10428.38,
+     "median": 9711.08,
+     "n": 373,
+     "positive": 373,
+     "positive_pct": 100.0,
+     "total": 3889784.77,
+     "worst_observed": 4424.64
+    },
+    "spread_unused_budget": {
+     "best_observed": 20575.36,
+     "mean": 14571.62,
+     "median": 15288.92,
+     "n": 373,
+     "positive": 373,
+     "positive_pct": 100.0,
+     "total": 5435215.23,
+     "worst_observed": 1731.54
+    }
+   },
+   "distinct_session_index_units": 14,
+   "exclusions": {
+    "BUDGET_EXCEEDED_AT_ONE_LOT_OUTRIGHT": 12,
+    "DEBIT_SPREAD_NOT_PUBLISHED": 35,
+    "LONG_QUOTE_MISSING": 3,
+    "NO_USABLE_EXIT_QUOTE": 8
+   },
+   "horizon_min": 30,
+   "lot_counts": {
+    "outright_B": {
+     "1": 111,
+     "2": 130,
+     "3": 52,
+     "4": 22,
+     "5": 15,
+     "6": 13,
+     "7": 12,
+     "8": 8,
+     "9": 5,
+     "10": 4,
+     "16": 1
+    },
+    "spread_B": {
+     "4": 132,
+     "5": 100,
+     "6": 86,
+     "7": 18,
+     "8": 17,
+     "9": 10,
+     "10": 6,
+     "11": 3,
+     "17": 1
+    },
+    "spread_C": {
+     "1": 111,
+     "2": 130,
+     "3": 52,
+     "4": 22,
+     "5": 15,
+     "6": 13,
+     "7": 12,
+     "8": 8,
+     "9": 5,
+     "10": 4,
+     "16": 1
+    }
+   },
+   "scored_observations": 373
+  },
+  "60": {
+   "a": {
+    "label": "A one lot each",
+    "outright": {
+     "best_observed": 19707.4,
+     "mean": 1031.69,
+     "median": 592.82,
+     "n": 333,
+     "positive": 219,
+     "positive_pct": 65.8,
+     "total": 343554.34,
+     "worst_observed": -5453.15
+    },
+    "paired_diff_spread_minus_outright": {
+     "best_observed": 3292.68,
+     "mean": -815.42,
+     "median": -279.76,
+     "n": 333,
+     "positive": 122,
+     "positive_pct": 36.6,
+     "total": -271535.02,
+     "worst_observed": -16252.44
+    },
+    "risk_used": {
+     "best_observed": 24999.34,
+     "mean": 10308.69,
+     "median": 10859.98,
+     "n": 333,
+     "positive": 333,
+     "positive_pct": 100.0,
+     "total": 3432794.98,
+     "worst_observed": 1493.26
+    },
+    "spread": {
+     "best_observed": 3766.78,
+     "mean": 216.27,
+     "median": 155.22,
+     "n": 333,
+     "positive": 197,
+     "positive_pct": 59.2,
+     "total": 72019.37,
+     "worst_observed": -2535.19
+    }
+   },
+   "b": {
+    "label": "B max lots in budget, each arm",
+    "outright": {
+     "best_observed": 39414.8,
+     "mean": 1929.45,
+     "median": 1162.72,
+     "n": 333,
+     "positive": 219,
+     "positive_pct": 65.8,
+     "total": 642507.98,
+     "worst_observed": -21907.57
+    },
+    "outright_risk_used": {
+     "best_observed": 24999.34,
+     "mean": 20032.78,
+     "median": 21155.7,
+     "n": 333,
+     "positive": 333,
+     "positive_pct": 100.0,
+     "total": 6670916.55,
+     "worst_observed": 12506.22
+    },
+    "outright_unused_budget": {
+     "best_observed": 12493.78,
+     "mean": 4967.22,
+     "median": 3844.3,
+     "n": 333,
+     "positive": 333,
+     "positive_pct": 100.0,
+     "total": 1654083.45,
+     "worst_observed": 0.66
+    },
+    "paired_diff_spread_minus_outright": {
+     "best_observed": 5055.66,
+     "mean": -951.16,
+     "median": -615.14,
+     "n": 333,
+     "positive": 104,
+     "positive_pct": 31.2,
+     "total": -316737.08,
+     "worst_observed": -25837.38
+    },
+    "spread": {
+     "best_observed": 18169.66,
+     "mean": 978.29,
+     "median": 725.97,
+     "n": 333,
+     "positive": 197,
+     "positive_pct": 59.2,
+     "total": 325770.95,
+     "worst_observed": -23613.86
+    },
+    "spread_risk_used": {
+     "best_observed": 24993.39,
+     "mean": 22488.37,
+     "median": 22140.31,
+     "n": 333,
+     "positive": 333,
+     "positive_pct": 100.0,
+     "total": 7488626.53,
+     "worst_observed": 20078.56
+    },
+    "spread_unused_budget": {
+     "best_observed": 4921.44,
+     "mean": 2511.63,
+     "median": 2859.69,
+     "n": 333,
+     "positive": 333,
+     "positive_pct": 100.0,
+     "total": 836373.47,
+     "worst_observed": 6.61
+    }
+   },
+   "by_trading_date": {
+    "2026-11-11": {
+     "arm_b_paired_diff_total": -31561.09,
+     "arm_c_paired_diff_total": -25810.09,
+     "indices": [
+      "BNF",
+      "NF"
+     ],
+     "observations": 15
+    },
+    "2026-11-13": {
+     "arm_b_paired_diff_total": 1008.85,
+     "arm_c_paired_diff_total": 4647.9,
+     "indices": [
+      "NF"
+     ],
+     "observations": 1
+    },
+    "2026-11-16": {
+     "arm_b_paired_diff_total": -598.85,
+     "arm_c_paired_diff_total": 2404.18,
+     "indices": [
+      "BNF"
+     ],
+     "observations": 1
+    },
+    "2026-11-17": {
+     "arm_b_paired_diff_total": -42712.61,
+     "arm_c_paired_diff_total": 18781.37,
+     "indices": [
+      "BNF",
+      "NF"
+     ],
+     "observations": 50
+    },
+    "2026-11-18": {
+     "arm_b_paired_diff_total": -21270.06,
+     "arm_c_paired_diff_total": 33172.77,
+     "indices": [
+      "BNF",
+      "NF"
+     ],
+     "observations": 30
+    },
+    "2026-11-19": {
+     "arm_b_paired_diff_total": -99455.03,
+     "arm_c_paired_diff_total": -158362.39,
+     "indices": [
+      "BNF",
+      "NF"
+     ],
+     "observations": 73
+    },
+    "2026-11-20": {
+     "arm_b_paired_diff_total": -251976.35,
+     "arm_c_paired_diff_total": -403161.89,
+     "indices": [
+      "BNF",
+      "NF"
+     ],
+     "observations": 74
+    },
+    "2026-11-23": {
+     "arm_b_paired_diff_total": 129828.06,
+     "arm_c_paired_diff_total": 40466.36,
+     "indices": [
+      "BNF",
+      "NF"
+     ],
+     "observations": 89
+    }
+   },
+   "c": {
+    "label": "C spread at the outright's lot count",
+    "outright": {
+     "best_observed": 39414.8,
+     "mean": 1929.45,
+     "median": 1162.72,
+     "n": 333,
+     "positive": 219,
+     "positive_pct": 65.8,
+     "total": 642507.98,
+     "worst_observed": -21907.57
+    },
+    "paired_diff_spread_minus_outright": {
+     "best_observed": 6585.36,
+     "mean": -1465.05,
+     "median": -540.44,
+     "n": 333,
+     "positive": 122,
+     "positive_pct": 36.6,
+     "total": -487861.79,
+     "worst_observed": -32504.88
+    },
+    "spread": {
+     "best_observed": 12978.33,
+     "mean": 464.4,
+     "median": 227.9,
+     "n": 333,
+     "positive": 197,
+     "positive_pct": 59.2,
+     "total": 154646.2,
+     "worst_observed": -21252.48
+    },
+    "spread_risk_used": {
+     "best_observed": 23268.46,
+     "mean": 10291.57,
+     "median": 9561.9,
+     "n": 333,
+     "positive": 333,
+     "positive_pct": 100.0,
+     "total": 3427092.7,
+     "worst_observed": 4499.46
+    },
+    "spread_unused_budget": {
+     "best_observed": 20500.54,
+     "mean": 14708.43,
+     "median": 15438.1,
+     "n": 333,
+     "positive": 333,
+     "positive_pct": 100.0,
+     "total": 4897907.3,
+     "worst_observed": 1731.54
+    }
+   },
+   "distinct_session_index_units": 14,
+   "exclusions": {
+    "BUDGET_EXCEEDED_AT_ONE_LOT_OUTRIGHT": 12,
+    "DEBIT_SPREAD_NOT_PUBLISHED": 35,
+    "LONG_QUOTE_MISSING": 3,
+    "NO_USABLE_EXIT_QUOTE": 48
+   },
+   "horizon_min": 60,
+   "lot_counts": {
+    "outright_B": {
+     "1": 100,
+     "2": 119,
+     "3": 46,
+     "4": 22,
+     "5": 11,
+     "6": 11,
+     "7": 11,
+     "8": 8,
+     "9": 3,
+     "10": 1,
+     "16": 1
+    },
+    "spread_B": {
+     "4": 125,
+     "5": 88,
+     "6": 74,
+     "7": 15,
+     "8": 16,
+     "9": 9,
+     "10": 5,
+     "17": 1
+    },
+    "spread_C": {
+     "1": 100,
+     "2": 119,
+     "3": 46,
+     "4": 22,
+     "5": 11,
+     "6": 11,
+     "7": 11,
+     "8": 8,
+     "9": 3,
+     "10": 1,
+     "16": 1
+    }
+   },
+   "scored_observations": 333
+  }
+ },
+ "input_manifest": {
+  "chain_contract_series": 116,
+  "chain_file": "chain.json",
+  "chain_sha256": "b755b9620528015b064f36c5d33a6aee9a843184809843e4561e4292ecade50a",
+  "directional_observations": 431,
+  "opening_poll_included": false,
+  "signals_file": "signals.json",
+  "signals_rows": 431,
+  "signals_sha256": "1c93c3149243632a00588cb12dcf81fc8820f70b0b6d32f7f7c71e1c251620c3"
+ },
+ "ledger_file": "ledger_60min.csv",
+ "ledger_rows": 431,
+ "ledger_sha256": "e2c5061c4e56cc8fe6ca10d52a8a25de5d6e9c87387d09fa40d3a060f79e6ee0",
+ "rules": {
+  "aggregation": "per-decision ledger is primary. Session/index means over overlapping polls are DIAGNOSTIC SUMMARIES, not executable policy returns and not evidence of independent episodes.",
+  "budget_basis": "capital 250000 x max_risk_pct 10.0% == index_single_leg_v1.entry_economics affordability cap",
+  "budget_includes_entry_fees": true,
+  "budget_reserves_closing_costs": false,
+  "budget_rupees": 25000.0,
+  "closing_allowance_variant_reported": true,
+  "fees": "index_single_leg_v1.entry_fee / exit_fee, dated, per leg at EXECUTED quantity",
+  "fill": "BUY at ask + tick, SELL at bid - tick (index_single_leg_v1.entry_economics)",
+  "identity_join": "index_key + expiry + strike + option_type; instrument_key UNAVAILABLE on chain rows",
+  "lot_authority": "contract_lot_table.current_declared_lots() {'BNF': 30, 'NF': 65}, table contract_lot_table_v3_20260914",
+  "one_lot_forced": false,
+  "opening_poll_excluded": "09:15",
+  "opening_poll_status": "SUSPECT_NOT_PROVEN_CORRUPT -- declared conservative exclusion; the sign-change argument previously offered is WITHDRAWN (0-DTE OTM options are vol-dominated, so an opening IV crush explains the move without corrupt data). Impact reported separately via --include-0915.",
+  "outright_max_loss_basis": "LONG_PREMIUM_PLUS_FEE (production)",
+  "quote_clocks": "ml_option_chain_snapshots carries poll_ts only. There is NO exchange or source timestamp on a chain row, so entry_source_time and entry_receipt_time are UNAVAILABLE and quote_age_status is POLL_TS_ONLY_NOT_EXCHANGE_FRESHNESS.",
+  "spread_max_loss_basis": "ACTUAL_DEBIT_PLUS_ENTRY_FEES (not width)",
+  "test": "test2b_abc_v1_declared_budget_semantics"
+ }
+}
