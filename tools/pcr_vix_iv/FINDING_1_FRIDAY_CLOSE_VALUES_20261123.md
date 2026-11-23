@@ -65,6 +65,27 @@ else:
 So within one record the friction model priced the close at the executable quotes while the P&L
 priced it at something ~45–70 points better.
 
+## SUPERSEDED BY TEST 0 — read `TEST0_CHECKPOINT_20261123.md` instead
+
+Everything below this line is kept for the record and is **wrong in its conclusion**. Two
+successive estimates here (−₹77, then about +₹2,200) were both built on
+`ml_option_chain_snapshots` rows that fail a no-arbitrage check: the 09:15:02 and 09:20:06 call
+bids sit *below intrinsic* against the bundle's own `exit_spot`, so neither is a usable mark.
+
+The `position_ticks` row at **09:17:10.312**, seconds before both closes, carries per-leg
+executable quotes with instrument keys and `mark_trust.state = "TRUSTED"`. It gives 250.65 (BNF)
+and 111.35 (NF) against saved closes of 242.50 and 109.75 — so **the booked P&L is slightly
+conservative and substantially correct**, and the booked +₹4,933.13 stands.
+
+What is genuinely defective is the **fee** path: `close_leg_quotes` is the stale 09:15:02 chain
+bundle, and `close_turnover` is computed from it, understating close turnover by about 41% (BNF)
+and 88% (NF). The P&L/fee split, not the P&L, is the defect.
+
+The analysis of the entry legs, the turnover reconciliation method and the peak/`poll_count`
+inconsistency below remain valid. The conclusions about the close value do not.
+
+---
+
 ## Where the closing bundle came from — and a correction to my first reading
 
 **CORRECTION.** My first version of this section treated the executable pair (173.00 / 64.75) as
