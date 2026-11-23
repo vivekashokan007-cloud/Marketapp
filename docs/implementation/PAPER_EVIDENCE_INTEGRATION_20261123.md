@@ -20,6 +20,7 @@ No migration, backfill, release, version bump or signed build. Real remains disa
 ## Validation
 
 - PWA complete Node suite: 348 passed, 2 skipped, 0 failed (350 total).
+- Complete Python suite: 2,135 passed in 840.370 seconds.
 - Focused Python integration/policy/store/export/PCR suite: 48 passed. The additional real session-export assertion passes with the three new evidence tests.
 - Candidate packaging guards: 22 passed; six pinned runtime files staged and hashes verified.
 - Python syntax checks pass for modified modules.
@@ -27,4 +28,4 @@ No migration, backfill, release, version bump or signed build. Real remains disa
 
 ## Completion status
 
-Push attempted through git and the connected GitHub integration. Git has no authenticated writer; the integration returns HTTP 403 `Resource not accessible by integration` for a Git object write. No remote branch update, merge, release or device update has occurred. Both local branches use `codex/b535-paper-evidence-20261123`.
+Push attempted through git and the connected GitHub integration. GitHub rejected the previously supplied replacement PAT with `Invalid username or token`; the integration also returns HTTP 403 `Resource not accessible by integration` for a Git object write. The PAT was used transiently and not saved to either repository. No remote branch update, merge, release or device update has occurred. Both local branches use `codex/b535-paper-evidence-20261123`.
