@@ -2703,8 +2703,8 @@ internal fun validatedExtremaFromBlob(blob: String?, tradeId: String): JSONObjec
     }
     return out.apply {
         put("status", VALIDATED_EXTREMA_STATUS_OK)
-        putOptNumber("trusted_mae", mae)
-        putOptNumber("trusted_mfe", mfe)
+        if (mae != null) putOptNumber("trusted_mae", mae)
+        if (mfe != null) putOptNumber("trusted_mfe", mfe)
         put("updated_at", row.optString("updated_at", ""))
     }
 }
