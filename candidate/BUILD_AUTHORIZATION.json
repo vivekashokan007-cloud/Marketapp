@@ -1,0 +1,12 @@
+{
+  "approval_reference": "23 November 2026 IST, current ChatGPT conversation: owner requested an installable update: \"I have to recieve as update then only tomorrow Dara collections will be as per our expectations\". Prepared b536 as the next candidate after the installed b535.",
+  "approved_by": "Vivek Ashokan P (Market Radar owner)",
+  "artifact_only": true,
+  "cert_sha256": "fb6042a2eb61045368e8d7b95db6f6d49b04d4b8da2e51b865ca77803a44b478",
+  "codex_final_check_reference": "Paired runtime changes on review branch: complete Python suite 2135 passed, focused integration/policy/store/export/PCR suite 48 passed, PWA suite 348 passed and 2 skipped, b536 packaging guards 22 passed. Candidate workflow must compile and pass debug/candidate JVM suites before signed assembly. Manual Paper retained; Real and single-leg selling remain disabled; no new entry/exit/forecast policy.",
+  "native_sha": "86d548913e2a8553e7aafb592b0fad2c34b8cd1a",
+  "pwa_sha": "e2e67eb3b91c4d2f4da4cac95a85100fb43a9555",
+  "schema": "marketradar.candidate_build_authorization.v1",
+  "version_code": "536",
+  "version_name": "2.6.105"
+}
