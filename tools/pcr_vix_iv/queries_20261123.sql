@@ -343,3 +343,50 @@ select id, abs(sell_strike::numeric - buy_strike::numeric) width,
        peak_pnl::numeric saved_peak, journey_stats->>'trough_pnl' saved_trough,
        actual_pnl::numeric booked_gross, net_pnl::numeric booked_net
 from trades_v2 where id in (318,319,320,321) order by id;
+
+-- Q21. CORRECTION to the first version of Q19's write-up: the structural bound is NOT a
+-- proposal, it already exists and already fires.  Three extrema are stored per position and
+-- only trusted_* is right.
+--   318: running 4476.00  trusted 4476.00  trades_v2 3776   anomalies 0
+--   319: running 8586.50  trusted 4036.50  trades_v2  267   anomalies 1  <-- diverges
+--   320: running 1673.75  trusted 1673.75  trades_v2 1645   anomalies 0
+--   321: running 2775.00  trusted 2775.00  trades_v2 2457   anomalies 0
+-- trusted_* matches an independent first-principles recomputation (Q19) to the rupee on all
+-- four.  Guard contract:
+--   a1_mark_trust_v2_quote_validity_plus_structural_bounds_plus_b3_1_book_width_gross_basis
+with last as (
+ select distinct on (trade_id) trade_id,
+   running_mfe::numeric r_mfe, running_mae::numeric r_mae,
+   (policy_trace_json->>'trusted_mfe')::numeric t_mfe,
+   (policy_trace_json->>'trusted_mae')::numeric t_mae
+ from position_ticks where trade_id in ('318','319','320','321')
+ order by trade_id, tick_ts desc
+), anom as (
+ select trade_id, count(*) total,
+   count(*) filter (where policy_trace_json->>'bound_anomaly' = 'true') bound_anomaly_ticks,
+   count(*) filter (where policy_trace_json->'mark_trust'->>'state' = 'UNTRUSTED') untrusted_ticks
+ from position_ticks where trade_id in ('318','319','320','321') group by 1)
+select l.trade_id, a.total ticks, a.bound_anomaly_ticks, a.untrusted_ticks,
+ l.r_mfe running_mfe, l.t_mfe trusted_mfe, l.r_mae running_mae, l.t_mae trusted_mae,
+ tv.peak_pnl::numeric saved_peak, tv.journey_stats->>'trough_pnl' saved_trough
+from last l join anom a using (trade_id) join trades_v2 tv on tv.id::text = l.trade_id
+order by l.trade_id;
+
+-- Q22. The guard firing, in full, on the one anomalous tick.
+select to_char(tick_ts at time zone 'Asia/Kolkata','MM-DD HH24:MI:SS') t,
+       executable_mark::numeric mark,
+       policy_trace_json->>'bound_anomaly' bound_anomaly,
+       policy_trace_json->'mark_trust'->>'state' mark_trust_state,
+       policy_trace_json->'mark_trust'->>'structure_width' structure_width,
+       policy_trace_json->'mark_trust'->>'price_gate_applied' price_gate_applied,
+       (policy_trace_json->>'trusted_mfe')::numeric trusted_mfe
+from position_ticks where trade_id='319' and session_date='2026-11-23' order by tick_ts;
+
+-- Q23. Test 4 feasibility: the tick legs carry NO Greeks.  16 keys, none of delta/gamma/
+-- theta/vega/iv -- they carry quotes and rich provenance (source_ts, source_age_ms,
+-- source_validity, last_trade_ts, key_match, price_basis) but no risk measures.
+select k, count(*) n from (
+  select jsonb_object_keys(l) k
+  from position_ticks pt, lateral jsonb_array_elements(pt.legs_json) l
+  where pt.trade_id in ('318','319','320','321')
+) s group by 1 order by 1;

@@ -1,15 +1,23 @@
-# Test 6, part 1 — tick extrema recomputed from first principles, and a structural bound that beats a time filter
+# Test 6, part 1 — tick extrema recomputed from first principles
 
 **Date:** 23 November 2026 · **Branch:** `review/pcr-vix-iv-greeks-20261123`
 **Pinned:** Marketapp `8f9aa234a278528a09d58cd83a6aaa85254e2218`, MarketVivi `cbb65bda…`, b535
 
+> **Correction, same day, after the first version of this memo.** The first version proposed a
+> structural `[0, width]` bound as a **new** guard for `PositionTickService` (registered as E10).
+> **That was wrong: the guard already exists, already fired on exactly the right tick, and already
+> produced the right answer.** See §5. What my recomputation actually did was independently
+> validate the app's existing `trusted_mfe` / `trusted_mae`, which it matches to the rupee on all
+> four trades. E10 is withdrawn and replaced by a narrower, better-evidenced finding: the correct
+> value exists in the data and the trade row ignores it.
+
 | | |
 | --- | --- |
-| Outstanding item closed | **tick extrema recomputed independently and reconciled with the saved journey fields** |
-| Method | P&L rebuilt from the raw per-leg `bid`/`ask` in `legs_json`, never from `current_pnl` or `running_mfe` |
+| Outstanding item closed | **tick extrema recomputed independently and reconciled against every stored variant** |
+| Method | P&L rebuilt from the raw per-leg `bid`/`ask` in `legs_json`, never from `current_pnl`, `running_mfe` or `trusted_mfe` |
 | Reconstruction fidelity | **808 of 808** eligible ticks reproduce `executable_mark` and `current_pnl` exactly (max gap 0.0000) |
-| Saved journey fields | **wrong on all four trades**; 319's saved peak is below its own booked outcome |
-| New filter | a long debit spread's mark must lie in **[0, width]** — definitional, not a time heuristic |
+| Independent result | matches the app's **`trusted_mfe` / `trusted_mae` exactly on all four trades** |
+| Three stored values, one right | `trusted_*` correct · `running_*` unfiltered · `trades_v2` wrong on all four |
 | Earlier conclusion | the booked **+₹4,933** on 318 + 319 is **confirmed**, by a stronger route |
 
 ---
@@ -62,6 +70,8 @@ that is impossible and keeps the rest.
 
 Only **one** of the 808 ticks violates it. 318, 320 and 321 have none.
 
+**And the app already knew.** §5 below — this bound is not a proposal.
+
 ---
 
 ## 3. The reconciliation
@@ -88,9 +98,9 @@ given 8,586.50.)
   than its peak. That is not an understatement, it is an impossible value, and it is in the
   production trade row today.
 
-**Rule, and it is now proven rather than asserted: every excursion statistic must be recomputed
-from `position_ticks` under the structural bound. `trades_v2.peak_pnl` and the `journey_stats`
-extrema must not be read at all.** Any hold-or-exit study that used them would understate both
+**Rule, and it is now proven rather than asserted: every excursion statistic must be read from
+`policy_trace_json.trusted_mfe` / `trusted_mae` — not from `trades_v2.peak_pnl`, not from the
+`journey_stats` extrema, and not from the unfiltered `running_mfe` / `running_mae` columns.** Any hold-or-exit study that used them would understate both
 maximum favourable and maximum adverse excursion, and on 319 would conclude the trade closed
 above its own best mark.
 
@@ -118,7 +128,67 @@ test is the one that cannot be argued with.
 
 ---
 
-## 5. Register
+## 5. The app already has the bound — E10 withdrawn
+
+I checked `policy_trace_json` before publishing the recommendation, and it refutes it. At 319's
+09:15:01 tick:
+
+| field | value |
+| --- | --- |
+| `bound_anomaly` | **`true`** |
+| `mark_trust.state` | **`UNTRUSTED`** |
+| `mark_trust.bound_anomaly_structural_refs` | `true` |
+| `mark_trust.bound_anomaly_stored_refs` | `true` |
+| `mark_trust.structure_width` | `150` |
+| `mark_trust.price_gate_applied` | `true` |
+| `mark_trust.contract` | `a1_mark_trust_v2_quote_validity_plus_structural_bounds_plus_b3_1_book_width_gross_basis` |
+| **`trusted_mfe` at that tick** | **1,153.75** — Friday's peak; the 8,586.50 was never admitted |
+
+At 09:16:05 the mark is revalidated (`detail: ["revalidated_after_untrusted"]`) and `trusted_mfe`
+becomes 4,036.50. Exactly one tick of 183 carries `bound_anomaly: true`, and it is the right one.
+
+**So the structural bound is already implemented, already fires, and already produces the correct
+extremum.** My proposal to add it was wrong, and I am withdrawing E10 rather than restating it
+with softer wording.
+
+What the recomputation actually achieved is worth more: it is an **independent, model-free
+validation of the app's own `trusted_mfe` / `trusted_mae`**, built from raw leg quotes without
+reading either field — and it agrees to the rupee on all four trades.
+
+### Three stored values, one of them right
+
+| trade | `running_mfe` (unfiltered) | **`trusted_mfe`** | my recomputation | `trades_v2.peak_pnl` | bound-anomaly ticks |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 318 | 4,476.00 | **4,476.00** | **4,476.00** | 3,776 | 0 |
+| 319 | **8,586.50** | **4,036.50** | **4,036.50** | **267** | **1** |
+| 320 | 1,673.75 | **1,673.75** | **1,673.75** | 1,645 | 0 |
+| 321 | 2,775.00 | **2,775.00** | **2,775.00** | 2,457 | 0 |
+
+`running_mfe` is the **unfiltered** running extremum: it equals `trusted_mfe` whenever no tick was
+rejected, and diverges on 319 precisely because one was. `trades_v2.peak_pnl` matches **neither**
+field on **any** of the four trades.
+
+**This also corrects my own method, not only the app's.** Earlier in this review I quoted
+`running_mfe 2,775.00` / `running_mae −3,595.50` for trade 321 and `running_mfe` figures for 320.
+Those numbers are right — 320 and 321 have no rejected ticks, so the two fields coincide — but the
+**field was the wrong one to read**, and on 319 the same method would have produced 8,586.50.
+Every excursion figure in this review should be read as `trusted_*`, and from here on is.
+
+## 6. Register
+
+> **E10 — WITHDRAWN (was: add a structural `[0, width]` bound).** The bound exists as
+> `a1_mark_trust_v2_quote_validity_plus_structural_bounds_plus_b3_1_book_width_gross_basis`, fired
+> on exactly the one impossible tick of 808, marked it `UNTRUSTED` with
+> `bound_anomaly_structural_refs: true`, and kept `trusted_mfe` correct throughout. Nothing to add.
+
+> **E11 (new, replaces E10).** Three different extrema are stored per position and only one is
+> right. `policy_trace_json.trusted_mfe` / `trusted_mae` apply the structural and quote-validity
+> gates and match an independent first-principles recomputation to the rupee on all four trades.
+> The top-level `position_ticks.running_mfe` / `running_mae` columns are **unfiltered** and diverge
+> whenever a tick is rejected (319: 8,586.50 against the correct 4,036.50). `trades_v2.peak_pnl`
+> and the `journey_stats` extrema match **neither** on **any** trade. The correct value is already
+> computed and persisted; the trade row and the top-level tick columns ignore it. **Read
+> `trusted_mfe` / `trusted_mae`; the fix is a read-path change, not a new guard.**
 
 > **E3 (upgraded, was "saved extrema understate the ticks").** The `trades_v2` journey extrema are
 > wrong on all four Paper trades and fail in two distinct modes: for **overnight** positions the
@@ -137,7 +207,7 @@ test is the one that cannot be argued with.
 
 ---
 
-## 6. Scope
+## 7. Scope
 
 This closes the extrema-validation item only. The rest of Test 6 — hold durations, early-exit
 counterfactuals and the exit-policy comparison against `BUY_STOP_FRAC 0.70` and
