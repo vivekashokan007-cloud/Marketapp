@@ -174,3 +174,52 @@ join lateral (
 where c.session_date='2026-11-23' and c.expiry='2026-11-23' and c.option_type='PE'
   and ((c.index_key='NF' and c.strike in (25600,25450)) or (c.index_key='BNF' and c.strike in (63200,62800)))
 order by c.index_key, c.strike, c.poll_ts;
+
+-- =====================================================================================
+-- TEST 2b inputs (matched outright buy vs protected debit spread).  Both read-only.
+-- =====================================================================================
+
+-- Q11. The signal set: production's own published direction and constructed legs per poll.
+-- candidate_ids carries what index_construction_v1.leg_plan built, so the spread's LONG leg
+-- is K0 and is exactly what index_single_leg_v1.select_strike returns for a BUY.
+with s as (
+  select (created_at at time zone 'Asia/Kolkata')::date sd,
+         context_json->'snapshot_index_authority_primary'->'by_index' as bi,
+         (context_json->>'bnfSpot')::numeric bnf_spot, (context_json->>'nfSpot')::numeric nf_spot
+  from ml_brain_snapshots where created_at >= '2026-11-10'
+), e as (
+  select sd, ix, v->>'direction' dir, v->>'action' act, (v->>'decision_poll_ts')::timestamptz dpt,
+         case when ix='BNF' then bnf_spot else nf_spot end spot,
+         (select string_agg(x,'|' order by x) from jsonb_array_elements_text(v->'candidate_ids') x) cids
+  from s, lateral jsonb_each(bi) as t(ix, v)
+)
+select jsonb_agg(jsonb_build_array(sd::text, ix, dir, act,
+         to_char(dpt at time zone 'Asia/Kolkata','HH24:MI'), spot, cids) order by sd, ix, dpt) j
+from e where dir in ('BEAR','BULL');
+
+-- Q11b. Direction census including WAIT, so the denominator is honest (955 WAIT of 1,386).
+with s as (
+  select (created_at at time zone 'Asia/Kolkata')::date sd,
+         context_json->'snapshot_index_authority_primary'->'by_index' as bi
+  from ml_brain_snapshots where created_at >= '2026-11-10')
+select sd::text, ix, v->>'direction' dir, count(*) n
+from s, lateral jsonb_each(bi) as t(ix, v) group by 1,2,3 order by 1,2,3;
+
+-- Q12. Quote series for the exact strikes the signals name.  The strike list is generated from
+-- Q11's candidate_ids, so no wider read is performed.  (Full WHERE clause in
+-- tools/pcr_vix_iv/test2b_data/, reproduced by the engine's own extract step.)
+-- select session_date||'|'||index_key||'|'||option_type||'|'||strike key,
+--        jsonb_agg(jsonb_build_array(to_char(poll_ts at time zone 'Asia/Kolkata','HH24:MI'), bid, ask)
+--                  order by poll_ts)
+-- from ml_option_chain_snapshots where <per (session,index,option_type) strike sets> group by 1;
+
+-- Q13. E2 sign test: the 09:15 chain against the 09:15/09:20 index level.  A whole call curve
+-- doubling on a +0.22% index move, or a whole put curve falling by two thirds while the index
+-- FALLS, is not a timing artefact.
+select (created_at at time zone 'Asia/Kolkata')::date::text sd,
+       to_char(created_at at time zone 'Asia/Kolkata','HH24:MI:SS') t,
+       (context_json->>'bnfSpot')::numeric bnf, (context_json->>'nfSpot')::numeric nf
+from ml_brain_snapshots
+where created_at >= '2026-11-10'
+  and to_char(created_at at time zone 'Asia/Kolkata','HH24:MI') in ('09:15','09:20','09:25')
+order by 1,2;

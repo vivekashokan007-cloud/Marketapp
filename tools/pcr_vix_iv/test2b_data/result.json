@@ -1,0 +1,1655 @@
+{
+ "coverage": {
+  "exclusion_totals": {
+   "DEBIT_SPREAD_NOT_PUBLISHED": 35,
+   "LONG_QUOTE_MISSING": 3
+  },
+  "per_session_index": [
+   {
+    "directional_signals": 19,
+    "excluded": {},
+    "index": "BNF",
+    "session": "2026-11-11",
+    "usable_at_60min": 19
+   },
+   {
+    "directional_signals": 17,
+    "excluded": {
+     "DEBIT_SPREAD_NOT_PUBLISHED": 3,
+     "NO_EXIT_QUOTE": 6
+    },
+    "index": "NF",
+    "session": "2026-11-11",
+    "usable_at_60min": 8
+   },
+   {
+    "directional_signals": 1,
+    "excluded": {},
+    "index": "NF",
+    "session": "2026-11-13",
+    "usable_at_60min": 1
+   },
+   {
+    "directional_signals": 1,
+    "excluded": {},
+    "index": "BNF",
+    "session": "2026-11-16",
+    "usable_at_60min": 1
+   },
+   {
+    "directional_signals": 39,
+    "excluded": {
+     "DEBIT_SPREAD_NOT_PUBLISHED": 2
+    },
+    "index": "BNF",
+    "session": "2026-11-17",
+    "usable_at_60min": 37
+   },
+   {
+    "directional_signals": 14,
+    "excluded": {
+     "NO_EXIT_QUOTE": 1
+    },
+    "index": "NF",
+    "session": "2026-11-17",
+    "usable_at_60min": 13
+   },
+   {
+    "directional_signals": 16,
+    "excluded": {
+     "DEBIT_SPREAD_NOT_PUBLISHED": 3,
+     "LONG_QUOTE_MISSING": 1,
+     "NO_EXIT_QUOTE": 3
+    },
+    "index": "BNF",
+    "session": "2026-11-18",
+    "usable_at_60min": 9
+   },
+   {
+    "directional_signals": 32,
+    "excluded": {
+     "DEBIT_SPREAD_NOT_PUBLISHED": 3,
+     "LONG_QUOTE_MISSING": 2,
+     "NO_EXIT_QUOTE": 6
+    },
+    "index": "NF",
+    "session": "2026-11-18",
+    "usable_at_60min": 21
+   },
+   {
+    "directional_signals": 45,
+    "excluded": {
+     "DEBIT_SPREAD_NOT_PUBLISHED": 6,
+     "NO_EXIT_QUOTE": 2
+    },
+    "index": "BNF",
+    "session": "2026-11-19",
+    "usable_at_60min": 37
+   },
+   {
+    "directional_signals": 46,
+    "excluded": {
+     "DEBIT_SPREAD_NOT_PUBLISHED": 6,
+     "NO_EXIT_QUOTE": 4
+    },
+    "index": "NF",
+    "session": "2026-11-19",
+    "usable_at_60min": 36
+   },
+   {
+    "directional_signals": 55,
+    "excluded": {
+     "DEBIT_SPREAD_NOT_PUBLISHED": 6,
+     "NO_EXIT_QUOTE": 3
+    },
+    "index": "BNF",
+    "session": "2026-11-20",
+    "usable_at_60min": 46
+   },
+   {
+    "directional_signals": 38,
+    "excluded": {
+     "DEBIT_SPREAD_NOT_PUBLISHED": 6,
+     "NO_EXIT_QUOTE": 4
+    },
+    "index": "NF",
+    "session": "2026-11-20",
+    "usable_at_60min": 28
+   },
+   {
+    "directional_signals": 52,
+    "excluded": {
+     "NO_EXIT_QUOTE": 10
+    },
+    "index": "BNF",
+    "session": "2026-11-23",
+    "usable_at_60min": 42
+   },
+   {
+    "directional_signals": 56,
+    "excluded": {
+     "NO_EXIT_QUOTE": 9
+    },
+    "index": "NF",
+    "session": "2026-11-23",
+    "usable_at_60min": 47
+   }
+  ],
+  "wait_polls": []
+ },
+ "inputs": {
+  "chain_contract_series": 116,
+  "chain_file": "chain.json",
+  "directional_rows": 431,
+  "signal_rows": 431,
+  "signals_file": "signals.json"
+ },
+ "primary": {
+  "by_index_per_poll": {
+   "BNF": {
+    "outright_1lot": {
+     "best": 19707.4,
+     "mean": 1355.66,
+     "median": 779.49,
+     "n": 191,
+     "total": 258930.47,
+     "win_rate_pct": 63.9,
+     "wins": 122,
+     "worst": -7798.91
+    },
+    "outright_affordable_1lot": 179,
+    "outright_matched": {
+     "best": 39414.8,
+     "mean": 2913.01,
+     "median": 627.11,
+     "n": 191,
+     "total": 556385.54,
+     "win_rate_pct": 62.3,
+     "wins": 119,
+     "worst": -10906.31
+    },
+    "polls": 191,
+    "spread_1lot": {
+     "best": 3766.78,
+     "mean": 255.27,
+     "median": 128.8,
+     "n": 191,
+     "total": 48756.44,
+     "win_rate_pct": 55.5,
+     "wins": 106,
+     "worst": -2424.59
+    },
+    "spread_affordable_1lot": 191,
+    "spread_matched": {
+     "best": 18169.66,
+     "mean": 1346.13,
+     "median": 588.41,
+     "n": 191,
+     "total": 257111.63,
+     "win_rate_pct": 55.5,
+     "wins": 106,
+     "worst": -12122.94
+    }
+   },
+   "NF": {
+    "outright_1lot": {
+     "best": 6303.55,
+     "mean": 371.63,
+     "median": 411.8,
+     "n": 154,
+     "total": 57230.28,
+     "win_rate_pct": 64.9,
+     "wins": 100,
+     "worst": -3536.97
+    },
+    "outright_affordable_1lot": 154,
+    "outright_matched": {
+     "best": 15377.97,
+     "mean": 559.24,
+     "median": 1174.18,
+     "n": 154,
+     "total": 86122.44,
+     "win_rate_pct": 64.9,
+     "wins": 100,
+     "worst": -21907.57
+    },
+    "polls": 154,
+    "spread_1lot": {
+     "best": 2033.75,
+     "mean": 82.02,
+     "median": 112.95,
+     "n": 154,
+     "total": 12631.73,
+     "win_rate_pct": 59.7,
+     "wins": 92,
+     "worst": -2535.19
+    },
+    "spread_affordable_1lot": 154,
+    "spread_matched": {
+     "best": 14236.22,
+     "mean": 169.7,
+     "median": 677.7,
+     "n": 154,
+     "total": 26134.52,
+     "win_rate_pct": 59.7,
+     "wins": 92,
+     "worst": -23613.86
+    }
+   }
+  },
+  "episode_means": {
+   "detail": [
+    {
+     "index": "BNF",
+     "outright_mean_1lot": 45.41,
+     "polls": 19,
+     "session": "2026-11-11",
+     "spread_mean_1lot": -533.9
+    },
+    {
+     "index": "NF",
+     "outright_mean_1lot": -470.29,
+     "polls": 8,
+     "session": "2026-11-11",
+     "spread_mean_1lot": -225.38
+    },
+    {
+     "index": "NF",
+     "outright_mean_1lot": -3536.97,
+     "polls": 1,
+     "session": "2026-11-13",
+     "spread_mean_1lot": -1213.02
+    },
+    {
+     "index": "BNF",
+     "outright_mean_1lot": -3405.2,
+     "polls": 1,
+     "session": "2026-11-16",
+     "spread_mean_1lot": -1001.01
+    },
+    {
+     "index": "BNF",
+     "outright_mean_1lot": -440.28,
+     "polls": 37,
+     "session": "2026-11-17",
+     "spread_mean_1lot": -327.06
+    },
+    {
+     "index": "NF",
+     "outright_mean_1lot": -1791.13,
+     "polls": 13,
+     "session": "2026-11-17",
+     "spread_mean_1lot": -1645.51
+    },
+    {
+     "index": "BNF",
+     "outright_mean_1lot": -2822.61,
+     "polls": 9,
+     "session": "2026-11-18",
+     "spread_mean_1lot": -975.61
+    },
+    {
+     "index": "NF",
+     "outright_mean_1lot": -799.62,
+     "polls": 21,
+     "session": "2026-11-18",
+     "spread_mean_1lot": -405.58
+    },
+    {
+     "index": "BNF",
+     "outright_mean_1lot": 1690.89,
+     "polls": 37,
+     "session": "2026-11-19",
+     "spread_mean_1lot": 316.68
+    },
+    {
+     "index": "NF",
+     "outright_mean_1lot": 1215.31,
+     "polls": 36,
+     "session": "2026-11-19",
+     "spread_mean_1lot": 274.31
+    },
+    {
+     "index": "BNF",
+     "outright_mean_1lot": 5292.72,
+     "polls": 46,
+     "session": "2026-11-20",
+     "spread_mean_1lot": 1072.23
+    },
+    {
+     "index": "NF",
+     "outright_mean_1lot": 1145.87,
+     "polls": 28,
+     "session": "2026-11-20",
+     "spread_mean_1lot": 300.15
+    },
+    {
+     "index": "BNF",
+     "outright_mean_1lot": -68.14,
+     "polls": 42,
+     "session": "2026-11-23",
+     "spread_mean_1lot": 470.09
+    },
+    {
+     "index": "NF",
+     "outright_mean_1lot": 612.15,
+     "polls": 47,
+     "session": "2026-11-23",
+     "spread_mean_1lot": 580.37
+    }
+   ],
+   "n": 14,
+   "outright_1lot": {
+    "best": 5292.72,
+    "mean": -237.99,
+    "median": -254.21,
+    "n": 14,
+    "total": -3331.89,
+    "win_rate_pct": 42.9,
+    "wins": 6,
+    "worst": -3536.97
+   },
+   "outright_matched": {
+    "best": 9217.35,
+    "mean": -528.32,
+    "median": 287.99,
+    "n": 14,
+    "total": -7396.53,
+    "win_rate_pct": 50.0,
+    "wins": 7,
+    "worst": -14974.78
+   },
+   "polls_per_episode": {
+    "2026-11-11|BNF": 19,
+    "2026-11-11|NF": 8,
+    "2026-11-13|NF": 1,
+    "2026-11-16|BNF": 1,
+    "2026-11-17|BNF": 37,
+    "2026-11-17|NF": 13,
+    "2026-11-18|BNF": 9,
+    "2026-11-18|NF": 21,
+    "2026-11-19|BNF": 37,
+    "2026-11-19|NF": 36,
+    "2026-11-20|BNF": 46,
+    "2026-11-20|NF": 28,
+    "2026-11-23|BNF": 42,
+    "2026-11-23|NF": 47
+   },
+   "spread_1lot": {
+    "best": 1072.23,
+    "mean": -236.66,
+    "median": -276.22,
+    "n": 14,
+    "total": -3313.25,
+    "win_rate_pct": 42.9,
+    "wins": 6,
+    "worst": -1645.51
+   },
+   "spread_matched": {
+    "best": 4602.42,
+    "mean": -1453.75,
+    "median": -1217.58,
+    "n": 14,
+    "total": -20352.55,
+    "win_rate_pct": 42.9,
+    "wins": 6,
+    "worst": -15789.97
+   }
+  },
+  "episodes": {
+   "detail": [
+    {
+     "direction": "BULL",
+     "hm": "10:35",
+     "index": "BNF",
+     "k0": 60900,
+     "outright_lots_matched": 1,
+     "outright_net_1lot": 8282.42,
+     "outright_net_matched": 8282.42,
+     "session": "2026-11-11",
+     "spread_lots_matched": 4,
+     "spread_net_1lot": 687.53,
+     "spread_net_matched": 2750.12,
+     "width": 400
+    },
+    {
+     "direction": "BEAR",
+     "hm": "13:35",
+     "index": "NF",
+     "k0": 25250,
+     "outright_lots_matched": 1,
+     "outright_net_1lot": -2047.9,
+     "outright_net_matched": -2047.9,
+     "session": "2026-11-11",
+     "spread_lots_matched": 5,
+     "spread_net_1lot": -486.8,
+     "spread_net_matched": -2433.98,
+     "width": 150
+    },
+    {
+     "direction": "BULL",
+     "hm": "10:50",
+     "index": "NF",
+     "k0": 25250,
+     "outright_lots_matched": 2,
+     "outright_net_1lot": -3536.97,
+     "outright_net_matched": -7073.93,
+     "session": "2026-11-13",
+     "spread_lots_matched": 5,
+     "spread_net_1lot": -1213.02,
+     "spread_net_matched": -6065.08,
+     "width": 150
+    },
+    {
+     "direction": "BULL",
+     "hm": "10:00",
+     "index": "BNF",
+     "k0": 61600,
+     "outright_lots_matched": 1,
+     "outright_net_1lot": -3405.2,
+     "outright_net_matched": -3405.2,
+     "session": "2026-11-16",
+     "spread_lots_matched": 4,
+     "spread_net_1lot": -1001.01,
+     "spread_net_matched": -4004.05,
+     "width": 400
+    },
+    {
+     "direction": "BULL",
+     "hm": "10:10",
+     "index": "BNF",
+     "k0": 62100,
+     "outright_lots_matched": 1,
+     "outright_net_1lot": 3054.43,
+     "outright_net_matched": 3054.43,
+     "session": "2026-11-17",
+     "spread_lots_matched": 4,
+     "spread_net_1lot": 388.95,
+     "spread_net_matched": 1555.79,
+     "width": 400
+    },
+    {
+     "direction": "BULL",
+     "hm": "11:50",
+     "index": "NF",
+     "k0": 25450,
+     "outright_lots_matched": 7,
+     "outright_net_1lot": 103.98,
+     "outright_net_matched": 727.85,
+     "session": "2026-11-17",
+     "spread_lots_matched": 8,
+     "spread_net_1lot": 59.0,
+     "spread_net_matched": 471.98,
+     "width": 150
+    },
+    {
+     "direction": "BEAR",
+     "hm": "09:45",
+     "index": "BNF",
+     "k0": 61800,
+     "outright_lots_matched": 1,
+     "outright_net_1lot": -1976.95,
+     "outright_net_matched": -1976.95,
+     "session": "2026-11-18",
+     "spread_lots_matched": 4,
+     "spread_net_1lot": -704.74,
+     "spread_net_matched": -2818.94,
+     "width": 400
+    },
+    {
+     "direction": "BEAR",
+     "hm": "09:45",
+     "index": "NF",
+     "k0": 25250,
+     "outright_lots_matched": 2,
+     "outright_net_1lot": -11.23,
+     "outright_net_matched": -22.46,
+     "session": "2026-11-18",
+     "spread_lots_matched": 5,
+     "spread_net_1lot": -28.17,
+     "spread_net_matched": -140.86,
+     "width": 150
+    },
+    {
+     "direction": "BULL",
+     "hm": "10:15",
+     "index": "BNF",
+     "k0": 62400,
+     "outright_lots_matched": 1,
+     "outright_net_1lot": -993.36,
+     "outright_net_matched": -993.36,
+     "session": "2026-11-19",
+     "spread_lots_matched": 4,
+     "spread_net_1lot": -410.82,
+     "spread_net_matched": -1643.28,
+     "width": 400
+    },
+    {
+     "direction": "BULL",
+     "hm": "10:55",
+     "index": "NF",
+     "k0": 25350,
+     "outright_lots_matched": 2,
+     "outright_net_1lot": 1002.24,
+     "outright_net_matched": 2004.48,
+     "session": "2026-11-19",
+     "spread_lots_matched": 6,
+     "spread_net_1lot": 231.55,
+     "spread_net_matched": 1389.31,
+     "width": 150
+    },
+    {
+     "direction": "BULL",
+     "hm": "09:50",
+     "index": "BNF",
+     "k0": 63100,
+     "outright_lots_matched": 2,
+     "outright_net_1lot": 3154.6,
+     "outright_net_matched": 6309.21,
+     "session": "2026-11-20",
+     "spread_lots_matched": 4,
+     "spread_net_1lot": 924.72,
+     "spread_net_matched": 3698.87,
+     "width": 400
+    },
+    {
+     "direction": "BULL",
+     "hm": "11:55",
+     "index": "NF",
+     "k0": 25550,
+     "outright_lots_matched": 2,
+     "outright_net_1lot": 6303.55,
+     "outright_net_matched": 12607.1,
+     "session": "2026-11-20",
+     "spread_lots_matched": 5,
+     "spread_net_1lot": 1626.01,
+     "spread_net_matched": 8130.03,
+     "width": 150
+    },
+    {
+     "direction": "BEAR",
+     "hm": "09:30",
+     "index": "BNF",
+     "k0": 63700,
+     "outright_lots_matched": 2,
+     "outright_net_1lot": 3161.63,
+     "outright_net_matched": 6323.26,
+     "session": "2026-11-23",
+     "spread_lots_matched": 4,
+     "spread_net_1lot": 1546.43,
+     "spread_net_matched": 6185.71,
+     "width": 400
+    },
+    {
+     "direction": "BEAR",
+     "hm": "09:30",
+     "index": "NF",
+     "k0": 25650,
+     "outright_lots_matched": 3,
+     "outright_net_1lot": 472.47,
+     "outright_net_matched": 1417.4,
+     "session": "2026-11-23",
+     "spread_lots_matched": 6,
+     "spread_net_1lot": 613.74,
+     "spread_net_matched": 3682.41,
+     "width": 150
+    }
+   ],
+   "n": 14,
+   "outright_1lot": {
+    "best": 8282.42,
+    "mean": 968.84,
+    "median": 288.23,
+    "n": 14,
+    "total": 13563.71,
+    "win_rate_pct": 57.1,
+    "wins": 8,
+    "worst": -3536.97
+   },
+   "outright_matched": {
+    "best": 12607.1,
+    "mean": 1800.45,
+    "median": 1072.62,
+    "n": 14,
+    "total": 25206.35,
+    "win_rate_pct": 57.1,
+    "wins": 8,
+    "worst": -7073.93
+   },
+   "spread_1lot": {
+    "best": 1626.01,
+    "mean": 159.53,
+    "median": 145.28,
+    "n": 14,
+    "total": 2233.37,
+    "win_rate_pct": 57.1,
+    "wins": 8,
+    "worst": -1213.02
+   },
+   "spread_matched": {
+    "best": 8130.03,
+    "mean": 768.43,
+    "median": 930.64,
+    "n": 14,
+    "total": 10758.03,
+    "win_rate_pct": 57.1,
+    "wins": 8,
+    "worst": -6065.08
+   }
+  },
+  "horizon_min": 60
+ },
+ "rules": {
+  "aggregation": "reported per poll AND per session-index episode (overlapping polls are not independent observations)",
+  "exit_fill": "reverse sides: long sold at bid - tick, short bought at ask + tick",
+  "fees": "index_single_leg_v1.entry_fee / exit_fee, dated, per leg on that leg own price",
+  "fill": "BUY at ask + tick, SELL at bid - tick (index_single_leg_v1.entry_economics)",
+  "horizons_min": [
+   30,
+   60,
+   120
+  ],
+  "leg_timing": "both legs from the SAME poll; asynchronous legs are refused, not interpolated",
+  "lot": "contract_lot_table.current_declared_lots() = {'BNF': 30, 'NF': 65}, table contract_lot_table_v3_20260914",
+  "primary_horizon_min": 60,
+  "quote_source": "ml_option_chain_snapshots (bid/ask), 09:15 poll excluded (E2)",
+  "signal_source": "ml_brain_snapshots.context_json.snapshot_index_authority_primary.by_index",
+  "sizing_default": "ONE LOT each arm \u2014 production frozen default",
+  "sizing_matched": "whole lots up to the SAME risk budget of 25000 (capital 250000 x 10.0%)",
+  "spread_source": "candidate_ids built by index_construction_v1.leg_plan",
+  "test": "test2b_outright_vs_protected_debit_spread_v1",
+  "wait_included": "NEUTRAL / UNAVAILABLE polls are counted as WAIT, not dropped"
+ },
+ "secondary": {
+  "120": {
+   "by_index_per_poll": {
+    "BNF": {
+     "outright_1lot": {
+      "best": 24866.69,
+      "mean": 3350.6,
+      "median": 1580.21,
+      "n": 147,
+      "total": 492537.81,
+      "win_rate_pct": 58.5,
+      "wins": 86,
+      "worst": -10388.1
+     },
+     "outright_affordable_1lot": 135,
+     "outright_matched": {
+      "best": 49407.12,
+      "mean": 7199.56,
+      "median": 2305.86,
+      "n": 147,
+      "total": 1058335.18,
+      "win_rate_pct": 58.5,
+      "wins": 86,
+      "worst": -15578.83
+     },
+     "polls": 147,
+     "spread_1lot": {
+      "best": 6938.92,
+      "mean": 863.62,
+      "median": 601.22,
+      "n": 147,
+      "total": 126952.07,
+      "win_rate_pct": 61.9,
+      "wins": 91,
+      "worst": -2826.48
+     },
+     "spread_affordable_1lot": 147,
+     "spread_matched": {
+      "best": 41633.55,
+      "mean": 4164.73,
+      "median": 2762.26,
+      "n": 147,
+      "total": 612214.77,
+      "win_rate_pct": 61.9,
+      "wins": 91,
+      "worst": -11305.94
+     }
+    },
+    "NF": {
+     "outright_1lot": {
+      "best": 7344.8,
+      "mean": 1266.35,
+      "median": 1642.09,
+      "n": 110,
+      "total": 139298.3,
+      "win_rate_pct": 71.8,
+      "wins": 79,
+      "worst": -5129.65
+     },
+     "outright_affordable_1lot": 110,
+     "outright_matched": {
+      "best": 29650.51,
+      "mean": 3965.64,
+      "median": 3785.72,
+      "n": 110,
+      "total": 436220.75,
+      "win_rate_pct": 71.8,
+      "wins": 79,
+      "worst": -16097.31
+     },
+     "polls": 110,
+     "spread_1lot": {
+      "best": 3854.29,
+      "mean": 698.67,
+      "median": 596.55,
+      "n": 110,
+      "total": 76853.5,
+      "win_rate_pct": 72.7,
+      "wins": 80,
+      "worst": -1970.34
+     },
+     "spread_affordable_1lot": 110,
+     "spread_matched": {
+      "best": 26980.02,
+      "mean": 4207.07,
+      "median": 3451.88,
+      "n": 110,
+      "total": 462777.43,
+      "win_rate_pct": 72.7,
+      "wins": 80,
+      "worst": -17733.06
+     }
+    }
+   },
+   "episode_means": {
+    "detail": [
+     {
+      "index": "BNF",
+      "outright_mean_1lot": -4050.78,
+      "polls": 19,
+      "session": "2026-11-11",
+      "spread_mean_1lot": -1239.6
+     },
+     {
+      "index": "NF",
+      "outright_mean_1lot": -476.33,
+      "polls": 2,
+      "session": "2026-11-11",
+      "spread_mean_1lot": -88.98
+     },
+     {
+      "index": "NF",
+      "outright_mean_1lot": -5129.65,
+      "polls": 1,
+      "session": "2026-11-13",
+      "spread_mean_1lot": -1817.26
+     },
+     {
+      "index": "BNF",
+      "outright_mean_1lot": -2818.33,
+      "polls": 1,
+      "session": "2026-11-16",
+      "spread_mean_1lot": -810.32
+     },
+     {
+      "index": "BNF",
+      "outright_mean_1lot": -718.21,
+      "polls": 27,
+      "session": "2026-11-17",
+      "spread_mean_1lot": -346.81
+     },
+     {
+      "index": "NF",
+      "outright_mean_1lot": -1875.81,
+      "polls": 9,
+      "session": "2026-11-17",
+      "spread_mean_1lot": -1606.42
+     },
+     {
+      "index": "BNF",
+      "outright_mean_1lot": -2547.47,
+      "polls": 7,
+      "session": "2026-11-18",
+      "spread_mean_1lot": -806.37
+     },
+     {
+      "index": "NF",
+      "outright_mean_1lot": -1350.31,
+      "polls": 20,
+      "session": "2026-11-18",
+      "spread_mean_1lot": -526.53
+     },
+     {
+      "index": "BNF",
+      "outright_mean_1lot": 4985.07,
+      "polls": 25,
+      "session": "2026-11-19",
+      "spread_mean_1lot": 1161.49
+     },
+     {
+      "index": "NF",
+      "outright_mean_1lot": 2493.17,
+      "polls": 24,
+      "session": "2026-11-19",
+      "spread_mean_1lot": 719.22
+     },
+     {
+      "index": "BNF",
+      "outright_mean_1lot": 12693.42,
+      "polls": 36,
+      "session": "2026-11-20",
+      "spread_mean_1lot": 2498.38
+     },
+     {
+      "index": "NF",
+      "outright_mean_1lot": 2656.28,
+      "polls": 17,
+      "session": "2026-11-20",
+      "spread_mean_1lot": 965.93
+     },
+     {
+      "index": "BNF",
+      "outright_mean_1lot": 873.6,
+      "polls": 32,
+      "session": "2026-11-23",
+      "spread_mean_1lot": 1479.51
+     },
+     {
+      "index": "NF",
+      "outright_mean_1lot": 2277.73,
+      "polls": 37,
+      "session": "2026-11-23",
+      "spread_mean_1lot": 1896.09
+     }
+    ],
+    "n": 14,
+    "outright_1lot": {
+     "best": 12693.42,
+     "mean": 500.88,
+     "median": -597.27,
+     "n": 14,
+     "total": 7012.38,
+     "win_rate_pct": 42.9,
+     "wins": 6,
+     "worst": -5129.65
+    },
+    "outright_matched": {
+     "best": 21175.21,
+     "mean": 1602.87,
+     "median": -375.35,
+     "n": 14,
+     "total": 22440.14,
+     "win_rate_pct": 42.9,
+     "wins": 6,
+     "worst": -13985.55
+    },
+    "polls_per_episode": {
+     "2026-11-11|BNF": 19,
+     "2026-11-11|NF": 2,
+     "2026-11-13|NF": 1,
+     "2026-11-16|BNF": 1,
+     "2026-11-17|BNF": 27,
+     "2026-11-17|NF": 9,
+     "2026-11-18|BNF": 7,
+     "2026-11-18|NF": 20,
+     "2026-11-19|BNF": 25,
+     "2026-11-19|NF": 24,
+     "2026-11-20|BNF": 36,
+     "2026-11-20|NF": 17,
+     "2026-11-23|BNF": 32,
+     "2026-11-23|NF": 37
+    },
+    "spread_1lot": {
+     "best": 2498.38,
+     "mean": 105.59,
+     "median": -217.9,
+     "n": 14,
+     "total": 1478.32,
+     "win_rate_pct": 42.9,
+     "wins": 6,
+     "worst": -1817.26
+    },
+    "spread_matched": {
+     "best": 12540.95,
+     "mean": 481.7,
+     "median": -916.07,
+     "n": 14,
+     "total": 6743.77,
+     "win_rate_pct": 42.9,
+     "wins": 6,
+     "worst": -13974.85
+    }
+   },
+   "episodes": {
+    "detail": [
+     {
+      "direction": "BULL",
+      "hm": "10:35",
+      "index": "BNF",
+      "k0": 60900,
+      "outright_lots_matched": 1,
+      "outright_net_1lot": 1912.18,
+      "outright_net_matched": 1912.18,
+      "session": "2026-11-11",
+      "spread_lots_matched": 4,
+      "spread_net_1lot": -430.35,
+      "spread_net_matched": -1721.4,
+      "width": 400
+     },
+     {
+      "direction": "BEAR",
+      "hm": "13:35",
+      "index": "NF",
+      "k0": 25250,
+      "outright_lots_matched": 1,
+      "outright_net_1lot": -688.77,
+      "outright_net_matched": -688.77,
+      "session": "2026-11-11",
+      "spread_lots_matched": 5,
+      "spread_net_1lot": -90.09,
+      "spread_net_matched": -450.47,
+      "width": 150
+     },
+     {
+      "direction": "BULL",
+      "hm": "10:50",
+      "index": "NF",
+      "k0": 25250,
+      "outright_lots_matched": 2,
+      "outright_net_1lot": -5129.65,
+      "outright_net_matched": -10259.3,
+      "session": "2026-11-13",
+      "spread_lots_matched": 5,
+      "spread_net_1lot": -1817.26,
+      "spread_net_matched": -9086.28,
+      "width": 150
+     },
+     {
+      "direction": "BULL",
+      "hm": "10:00",
+      "index": "BNF",
+      "k0": 61600,
+      "outright_lots_matched": 1,
+      "outright_net_1lot": -2818.33,
+      "outright_net_matched": -2818.33,
+      "session": "2026-11-16",
+      "spread_lots_matched": 4,
+      "spread_net_1lot": -810.32,
+      "spread_net_matched": -3241.28,
+      "width": 400
+     },
+     {
+      "direction": "BULL",
+      "hm": "10:10",
+      "index": "BNF",
+      "k0": 62100,
+      "outright_lots_matched": 1,
+      "outright_net_1lot": 3319.42,
+      "outright_net_matched": 3319.42,
+      "session": "2026-11-17",
+      "spread_lots_matched": 4,
+      "spread_net_1lot": 490.37,
+      "spread_net_matched": 1961.46,
+      "width": 400
+     },
+     {
+      "direction": "BULL",
+      "hm": "11:50",
+      "index": "NF",
+      "k0": 25450,
+      "outright_lots_matched": 7,
+      "outright_net_1lot": -1764.43,
+      "outright_net_matched": -12350.99,
+      "session": "2026-11-17",
+      "spread_lots_matched": 8,
+      "spread_net_1lot": -1520.03,
+      "spread_net_matched": -12160.22,
+      "width": 150
+     },
+     {
+      "direction": "BEAR",
+      "hm": "09:45",
+      "index": "BNF",
+      "k0": 61800,
+      "outright_lots_matched": 1,
+      "outright_net_1lot": -4435.22,
+      "outright_net_matched": -4435.22,
+      "session": "2026-11-18",
+      "spread_lots_matched": 4,
+      "spread_net_1lot": -1471.75,
+      "spread_net_matched": -5886.98,
+      "width": 400
+     },
+     {
+      "direction": "BEAR",
+      "hm": "09:45",
+      "index": "NF",
+      "k0": 25250,
+      "outright_lots_matched": 2,
+      "outright_net_1lot": -1694.74,
+      "outright_net_matched": -3389.48,
+      "session": "2026-11-18",
+      "spread_lots_matched": 5,
+      "spread_net_1lot": -485.88,
+      "spread_net_matched": -2429.41,
+      "width": 150
+     },
+     {
+      "direction": "BULL",
+      "hm": "10:15",
+      "index": "BNF",
+      "k0": 62400,
+      "outright_lots_matched": 1,
+      "outright_net_1lot": 437.89,
+      "outright_net_matched": 437.89,
+      "session": "2026-11-19",
+      "spread_lots_matched": 4,
+      "spread_net_1lot": 52.49,
+      "spread_net_matched": 209.96,
+      "width": 400
+     },
+     {
+      "direction": "BULL",
+      "hm": "10:55",
+      "index": "NF",
+      "k0": 25350,
+      "outright_lots_matched": 2,
+      "outright_net_1lot": 1796.96,
+      "outright_net_matched": 3593.92,
+      "session": "2026-11-19",
+      "spread_lots_matched": 6,
+      "spread_net_1lot": 512.54,
+      "spread_net_matched": 3075.24,
+      "width": 150
+     },
+     {
+      "direction": "BULL",
+      "hm": "09:50",
+      "index": "BNF",
+      "k0": 63100,
+      "outright_lots_matched": 2,
+      "outright_net_1lot": 4689.15,
+      "outright_net_matched": 9378.3,
+      "session": "2026-11-20",
+      "spread_lots_matched": 4,
+      "spread_net_1lot": 1425.3,
+      "spread_net_matched": 5701.2,
+      "width": 400
+     },
+     {
+      "direction": "BULL",
+      "hm": "11:55",
+      "index": "NF",
+      "k0": 25550,
+      "outright_lots_matched": 2,
+      "outright_net_1lot": 7344.8,
+      "outright_net_matched": 14689.59,
+      "session": "2026-11-20",
+      "spread_lots_matched": 5,
+      "spread_net_1lot": 2176.28,
+      "spread_net_matched": 10881.41,
+      "width": 150
+     },
+     {
+      "direction": "BEAR",
+      "hm": "09:30",
+      "index": "BNF",
+      "k0": 63700,
+      "outright_lots_matched": 2,
+      "outright_net_1lot": -1801.32,
+      "outright_net_matched": -3602.65,
+      "session": "2026-11-23",
+      "spread_lots_matched": 4,
+      "spread_net_1lot": 411.7,
+      "spread_net_matched": 1646.79,
+      "width": 400
+     },
+     {
+      "direction": "BEAR",
+      "hm": "09:30",
+      "index": "NF",
+      "k0": 25650,
+      "outright_lots_matched": 3,
+      "outright_net_1lot": -490.93,
+      "outright_net_matched": -1472.79,
+      "session": "2026-11-23",
+      "spread_lots_matched": 6,
+      "spread_net_1lot": 404.68,
+      "spread_net_matched": 2428.07,
+      "width": 150
+     }
+    ],
+    "n": 14,
+    "outright_1lot": {
+     "best": 7344.8,
+     "mean": 48.36,
+     "median": -589.85,
+     "n": 14,
+     "total": 677.01,
+     "win_rate_pct": 42.9,
+     "wins": 6,
+     "worst": -5129.65
+    },
+    "outright_matched": {
+     "best": 14689.59,
+     "mean": -406.16,
+     "median": -1080.78,
+     "n": 14,
+     "total": -5686.23,
+     "win_rate_pct": 42.9,
+     "wins": 6,
+     "worst": -12350.99
+    },
+    "spread_1lot": {
+     "best": 2176.28,
+     "mean": -82.31,
+     "median": -18.8,
+     "n": 14,
+     "total": -1152.32,
+     "win_rate_pct": 50.0,
+     "wins": 7,
+     "worst": -1817.26
+    },
+    "spread_matched": {
+     "best": 10881.41,
+     "mean": -647.99,
+     "median": -120.26,
+     "n": 14,
+     "total": -9071.91,
+     "win_rate_pct": 50.0,
+     "wins": 7,
+     "worst": -12160.22
+    }
+   },
+   "horizon_min": 120
+  },
+  "30": {
+   "by_index_per_poll": {
+    "BNF": {
+     "outright_1lot": {
+      "best": 11226.75,
+      "mean": 497.9,
+      "median": -25.12,
+      "n": 205,
+      "total": 102070.52,
+      "win_rate_pct": 48.8,
+      "wins": 100,
+      "worst": -6622.63
+     },
+     "outright_affordable_1lot": 193,
+     "outright_matched": {
+      "best": 43319.81,
+      "mean": 1280.27,
+      "median": 0.0,
+      "n": 205,
+      "total": 262455.15,
+      "win_rate_pct": 46.3,
+      "wins": 95,
+      "worst": -12139.02
+     },
+     "polls": 205,
+     "spread_1lot": {
+      "best": 5191.94,
+      "mean": 3.54,
+      "median": -133.9,
+      "n": 205,
+      "total": 726.17,
+      "win_rate_pct": 39.0,
+      "wins": 80,
+      "worst": -2350.87
+     },
+     "spread_affordable_1lot": 205,
+     "spread_matched": {
+      "best": 36343.57,
+      "mean": 167.01,
+      "median": -536.87,
+      "n": 205,
+      "total": 34236.76,
+      "win_rate_pct": 39.0,
+      "wins": 80,
+      "worst": -14105.24
+     }
+    },
+    "NF": {
+     "outright_1lot": {
+      "best": 5187.7,
+      "mean": 212.92,
+      "median": 180.03,
+      "n": 180,
+      "total": 38325.74,
+      "win_rate_pct": 55.6,
+      "wins": 100,
+      "worst": -3422.7
+     },
+     "outright_affordable_1lot": 180,
+     "outright_matched": {
+      "best": 31035.08,
+      "mean": 622.95,
+      "median": 494.63,
+      "n": 180,
+      "total": 112130.85,
+      "win_rate_pct": 55.6,
+      "wins": 100,
+      "worst": -15252.14
+     },
+     "polls": 180,
+     "spread_1lot": {
+      "best": 2854.24,
+      "mean": 7.09,
+      "median": 2.5,
+      "n": 180,
+      "total": 1276.71,
+      "win_rate_pct": 50.6,
+      "wins": 91,
+      "worst": -1902.23
+     },
+     "spread_affordable_1lot": 180,
+     "spread_matched": {
+      "best": 31396.63,
+      "mean": 37.96,
+      "median": 15.0,
+      "n": 180,
+      "total": 6831.99,
+      "win_rate_pct": 50.6,
+      "wins": 91,
+      "worst": -14831.15
+     }
+    }
+   },
+   "episode_means": {
+    "detail": [
+     {
+      "index": "BNF",
+      "outright_mean_1lot": 370.61,
+      "polls": 19,
+      "session": "2026-11-11",
+      "spread_mean_1lot": -377.26
+     },
+     {
+      "index": "NF",
+      "outright_mean_1lot": -261.32,
+      "polls": 14,
+      "session": "2026-11-11",
+      "spread_mean_1lot": -187.8
+     },
+     {
+      "index": "NF",
+      "outright_mean_1lot": -2667.64,
+      "polls": 1,
+      "session": "2026-11-13",
+      "spread_mean_1lot": -997.23
+     },
+     {
+      "index": "BNF",
+      "outright_mean_1lot": -1872.15,
+      "polls": 1,
+      "session": "2026-11-16",
+      "spread_mean_1lot": -644.49
+     },
+     {
+      "index": "BNF",
+      "outright_mean_1lot": -163.71,
+      "polls": 37,
+      "session": "2026-11-17",
+      "spread_mean_1lot": -245.39
+     },
+     {
+      "index": "NF",
+      "outright_mean_1lot": -504.35,
+      "polls": 14,
+      "session": "2026-11-17",
+      "spread_mean_1lot": -512.1
+     },
+     {
+      "index": "BNF",
+      "outright_mean_1lot": -1856.56,
+      "polls": 12,
+      "session": "2026-11-18",
+      "spread_mean_1lot": -667.53
+     },
+     {
+      "index": "NF",
+      "outright_mean_1lot": -396.87,
+      "polls": 27,
+      "session": "2026-11-18",
+      "spread_mean_1lot": -265.39
+     },
+     {
+      "index": "BNF",
+      "outright_mean_1lot": 622.95,
+      "polls": 39,
+      "session": "2026-11-19",
+      "spread_mean_1lot": 11.64
+     },
+     {
+      "index": "NF",
+      "outright_mean_1lot": 656.37,
+      "polls": 40,
+      "session": "2026-11-19",
+      "spread_mean_1lot": 84.54
+     },
+     {
+      "index": "BNF",
+      "outright_mean_1lot": 2000.09,
+      "polls": 49,
+      "session": "2026-11-20",
+      "spread_mean_1lot": 300.71
+     },
+     {
+      "index": "NF",
+      "outright_mean_1lot": 657.8,
+      "polls": 32,
+      "session": "2026-11-20",
+      "spread_mean_1lot": 94.1
+     },
+     {
+      "index": "BNF",
+      "outright_mean_1lot": 61.2,
+      "polls": 48,
+      "session": "2026-11-23",
+      "spread_mean_1lot": 217.49
+     },
+     {
+      "index": "NF",
+      "outright_mean_1lot": 290.84,
+      "polls": 52,
+      "session": "2026-11-23",
+      "spread_mean_1lot": 247.02
+     }
+    ],
+    "n": 14,
+    "outright_1lot": {
+     "best": 2000.09,
+     "mean": -218.77,
+     "median": -51.26,
+     "n": 14,
+     "total": -3062.74,
+     "win_rate_pct": 50.0,
+     "wins": 7,
+     "worst": -2667.64
+    },
+    "outright_matched": {
+     "best": 3403.9,
+     "mean": -194.35,
+     "median": 442.85,
+     "n": 14,
+     "total": -2720.86,
+     "win_rate_pct": 50.0,
+     "wins": 7,
+     "worst": -5335.28
+    },
+    "polls_per_episode": {
+     "2026-11-11|BNF": 19,
+     "2026-11-11|NF": 14,
+     "2026-11-13|NF": 1,
+     "2026-11-16|BNF": 1,
+     "2026-11-17|BNF": 37,
+     "2026-11-17|NF": 14,
+     "2026-11-18|BNF": 12,
+     "2026-11-18|NF": 27,
+     "2026-11-19|BNF": 39,
+     "2026-11-19|NF": 40,
+     "2026-11-20|BNF": 49,
+     "2026-11-20|NF": 32,
+     "2026-11-23|BNF": 48,
+     "2026-11-23|NF": 52
+    },
+    "spread_1lot": {
+     "best": 300.71,
+     "mean": -210.12,
+     "median": -216.59,
+     "n": 14,
+     "total": -2941.68,
+     "win_rate_pct": 42.9,
+     "wins": 6,
+     "worst": -997.23
+    },
+    "spread_matched": {
+     "best": 1912.62,
+     "mean": -1037.43,
+     "median": -960.27,
+     "n": 14,
+     "total": -14524.0,
+     "win_rate_pct": 42.9,
+     "wins": 6,
+     "worst": -5128.33
+    }
+   },
+   "episodes": {
+    "detail": [
+     {
+      "direction": "BULL",
+      "hm": "10:35",
+      "index": "BNF",
+      "k0": 60900,
+      "outright_lots_matched": 1,
+      "outright_net_1lot": 4409.37,
+      "outright_net_matched": 4409.37,
+      "session": "2026-11-11",
+      "spread_lots_matched": 4,
+      "spread_net_1lot": 179.0,
+      "spread_net_matched": 715.99,
+      "width": 400
+     },
+     {
+      "direction": "BEAR",
+      "hm": "13:35",
+      "index": "NF",
+      "k0": 25250,
+      "outright_lots_matched": 1,
+      "outright_net_1lot": -2067.36,
+      "outright_net_matched": -2067.36,
+      "session": "2026-11-11",
+      "spread_lots_matched": 5,
+      "spread_net_1lot": -512.76,
+      "spread_net_matched": -2563.81,
+      "width": 150
+     },
+     {
+      "direction": "BULL",
+      "hm": "10:50",
+      "index": "NF",
+      "k0": 25250,
+      "outright_lots_matched": 2,
+      "outright_net_1lot": -2667.64,
+      "outright_net_matched": -5335.28,
+      "session": "2026-11-13",
+      "spread_lots_matched": 5,
+      "spread_net_1lot": -997.23,
+      "spread_net_matched": -4986.16,
+      "width": 150
+     },
+     {
+      "direction": "BULL",
+      "hm": "10:00",
+      "index": "BNF",
+      "k0": 61600,
+      "outright_lots_matched": 1,
+      "outright_net_1lot": -1872.15,
+      "outright_net_matched": -1872.15,
+      "session": "2026-11-16",
+      "spread_lots_matched": 4,
+      "spread_net_1lot": -644.49,
+      "spread_net_matched": -2577.96,
+      "width": 400
+     },
+     {
+      "direction": "BULL",
+      "hm": "10:10",
+      "index": "BNF",
+      "k0": 62100,
+      "outright_lots_matched": 1,
+      "outright_net_1lot": 1861.23,
+      "outright_net_matched": 1861.23,
+      "session": "2026-11-17",
+      "spread_lots_matched": 4,
+      "spread_net_1lot": 130.67,
+      "spread_net_matched": 522.66,
+      "width": 400
+     },
+     {
+      "direction": "BULL",
+      "hm": "11:50",
+      "index": "NF",
+      "k0": 25450,
+      "outright_lots_matched": 7,
+      "outright_net_1lot": 1738.83,
+      "outright_net_matched": 12171.83,
+      "session": "2026-11-17",
+      "spread_lots_matched": 8,
+      "spread_net_1lot": 1251.65,
+      "spread_net_matched": 10013.22,
+      "width": 150
+     },
+     {
+      "direction": "BEAR",
+      "hm": "09:45",
+      "index": "BNF",
+      "k0": 61800,
+      "outright_lots_matched": 1,
+      "outright_net_1lot": -3483.05,
+      "outright_net_matched": -3483.05,
+      "session": "2026-11-18",
+      "spread_lots_matched": 4,
+      "spread_net_1lot": -1197.88,
+      "spread_net_matched": -4791.53,
+      "width": 400
+     },
+     {
+      "direction": "BEAR",
+      "hm": "09:45",
+      "index": "NF",
+      "k0": 25250,
+      "outright_lots_matched": 2,
+      "outright_net_1lot": -1697.99,
+      "outright_net_matched": -3395.97,
+      "session": "2026-11-18",
+      "spread_lots_matched": 5,
+      "spread_net_1lot": -586.67,
+      "spread_net_matched": -2933.34,
+      "width": 150
+     },
+     {
+      "direction": "BULL",
+      "hm": "10:15",
+      "index": "BNF",
+      "k0": 62400,
+      "outright_lots_matched": 1,
+      "outright_net_1lot": -783.76,
+      "outright_net_matched": -783.76,
+      "session": "2026-11-19",
+      "spread_lots_matched": 4,
+      "spread_net_1lot": -399.31,
+      "spread_net_matched": -1597.25,
+      "width": 400
+     },
+     {
+      "direction": "BULL",
+      "hm": "10:55",
+      "index": "NF",
+      "k0": 25350,
+      "outright_lots_matched": 2,
+      "outright_net_1lot": -120.1,
+      "outright_net_matched": -240.2,
+      "session": "2026-11-19",
+      "spread_lots_matched": 6,
+      "spread_net_1lot": -198.23,
+      "spread_net_matched": -1189.37,
+      "width": 150
+     },
+     {
+      "direction": "BULL",
+      "hm": "09:50",
+      "index": "BNF",
+      "k0": 63100,
+      "outright_lots_matched": 2,
+      "outright_net_1lot": -1282.86,
+      "outright_net_matched": -2565.72,
+      "session": "2026-11-20",
+      "spread_lots_matched": 4,
+      "spread_net_1lot": -478.38,
+      "spread_net_matched": -1913.52,
+      "width": 400
+     },
+     {
+      "direction": "BULL",
+      "hm": "11:55",
+      "index": "NF",
+      "k0": 25550,
+      "outright_lots_matched": 2,
+      "outright_net_1lot": 5187.7,
+      "outright_net_matched": 10375.4,
+      "session": "2026-11-20",
+      "spread_lots_matched": 5,
+      "spread_net_1lot": 1316.52,
+      "spread_net_matched": 6582.58,
+      "width": 150
+     },
+     {
+      "direction": "BEAR",
+      "hm": "09:30",
+      "index": "BNF",
+      "k0": 63700,
+      "outright_lots_matched": 2,
+      "outright_net_1lot": 1712.42,
+      "outright_net_matched": 3424.83,
+      "session": "2026-11-23",
+      "spread_lots_matched": 4,
+      "spread_net_1lot": 533.91,
+      "spread_net_matched": 2135.64,
+      "width": 400
+     },
+     {
+      "direction": "BEAR",
+      "hm": "09:30",
+      "index": "NF",
+      "k0": 25650,
+      "outright_lots_matched": 3,
+      "outright_net_1lot": 232.43,
+      "outright_net_matched": 697.28,
+      "session": "2026-11-23",
+      "spread_lots_matched": 6,
+      "spread_net_1lot": 233.88,
+      "spread_net_matched": 1403.31,
+      "width": 150
+     }
+    ],
+    "n": 14,
+    "outright_1lot": {
+     "best": 5187.7,
+     "mean": 83.36,
+     "median": -451.93,
+     "n": 14,
+     "total": 1167.07,
+     "win_rate_pct": 42.9,
+     "wins": 6,
+     "worst": -3483.05
+    },
+    "outright_matched": {
+     "best": 12171.83,
+     "mean": 942.6,
+     "median": -511.98,
+     "n": 14,
+     "total": 13196.45,
+     "win_rate_pct": 42.9,
+     "wins": 6,
+     "worst": -5335.28
+    },
+    "spread_1lot": {
+     "best": 1316.52,
+     "mean": -97.81,
+     "median": -298.77,
+     "n": 14,
+     "total": -1369.32,
+     "win_rate_pct": 42.9,
+     "wins": 6,
+     "worst": -1197.88
+    },
+    "spread_matched": {
+     "best": 10013.22,
+     "mean": -84.25,
+     "median": -1393.31,
+     "n": 14,
+     "total": -1179.54,
+     "win_rate_pct": 42.9,
+     "wins": 6,
+     "worst": -4986.16
+    }
+   },
+   "horizon_min": 30
+  }
+ }
+}
