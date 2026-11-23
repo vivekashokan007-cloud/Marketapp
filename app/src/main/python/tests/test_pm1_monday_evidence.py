@@ -662,12 +662,22 @@ class PM1_Unchanged(unittest.TestCase):
         self.assertEqual(x1.PROTOCOL_ID, 'X1_gap_continuation_v2_causal_paper_20261017')
         self.assertEqual(x1.DIGEST, X1_DIGEST_A763DC4)
 
-    def test_behaviour_identical_to_a763dc4(self):
+    def test_legacy_behaviour_identical_to_a763dc4(self):
         import pm1_behaviour_fixture as B
-        self.assertEqual(B.digest(), BEHAVIOUR_DIGEST_A763DC4)
+
+        # Keep the original baseline for the legacy planner. STRONG pilot admission
+        # and exit behavior have their own regression tests.
+        plan_entry = isl.plan_entry
+
+        def legacy_plan(*args, **kwargs):
+            kwargs['strong_pilot'] = False
+            return plan_entry(*args, **kwargs)
+
+        with mock.patch.object(isl, 'plan_entry', side_effect=legacy_plan):
+            self.assertEqual(B.digest(), BEHAVIOUR_DIGEST_A763DC4)
 
     def test_version_identity(self):
-        self.assertEqual(brain.BRAIN_VERSION, '2.6.103')
+        self.assertEqual(brain.BRAIN_VERSION, '2.6.104')
         g = open(os.path.join(os.path.dirname(__file__), '..', '..', '..', '..', 'build.gradle.kts')).read()
         self.assertIn('versionCode = 535', g)
         self.assertIn('versionName = "2.6.104"', g)
