@@ -25,9 +25,11 @@ two-thirds *while spot fell*, and that no timing lag can produce a wrong sign.
 **That argument is wrong, and the reason is in the data I already had.** 23 November was
 **0 DTE** for NF, and every strike I cited (25,200–25,700 against spot 25,915) was **out of the
 money**. An OTM option's price is dominated by implied volatility, not by a −0.24% move in the
-underlying. An opening-auction IV crush on 0-DTE OTM puts is a complete, benign explanation for a
-two-thirds fall, and I never tested it. Same for 11 November BNF (12 DTE, OTM calls, +0.22% spot,
-curve up 81%): thin auction quotes and an opening IV move explain it without corruption.
+underlying. An opening-auction IV move on 0-DTE OTM puts is **consistent with** a two-thirds fall and
+removes the basis for my corruption claim. It is a possible explanation, not a demonstrated
+cause, and I never tested it either way. Same consideration for 11 November BNF (12 DTE, OTM calls,
++0.22% spot, curve up 81%): thin auction quotes and an opening IV move are a possible
+explanation, equally undemonstrated.
 
 I did check one thing before conceding, and it did not rescue the argument: the **09:15 spot is
 sound**. Its 09:15→09:20 moves are ordinary on every session (BNF −470 to +341, NF −62 to +97) and
@@ -36,8 +38,9 @@ dismiss the spot leg either; the sign test simply never had the power I claimed 
 
 > **E2 (corrected, third revision).** The **09:15 poll** of `ml_option_chain_snapshots` is
 > **SUSPECT, NOT PROVEN CORRUPT**. Its bids diverge sharply from 09:20 on 64 of 116 audited series,
-> but opening IV dynamics on thin auction quotes explain that without any data fault, and the
-> measurements available cannot separate the two. **Excluding it is a declared conservative
+> but opening IV dynamics on thin auction quotes are a possible explanation carrying no data
+> fault, and the measurements available cannot separate that from corruption. **Neither is
+> established.** **Excluding it is a declared conservative
 > research assumption, not a finding.**
 
 ### 1.2 Impact of that exclusion — exactly zero, and now measured

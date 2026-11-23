@@ -38,9 +38,9 @@ two-thirds while spot fell, and that no timing lag can produce a wrong sign.
 **The refutation was in data I already had and had not looked at.** 23 November was **0 DTE** for
 NF, and every strike I cited (25,200–25,700 against spot 25,915.40) was **out of the money**. An
 OTM option's price is dominated by implied volatility, not by a −0.24% move in the underlying. An
-opening-auction IV crush on 0-DTE OTM puts explains a two-thirds fall completely, with no data
-fault at all. The same applies to the 11 November BNF case I cited (12 DTE, OTM calls, +0.22% spot,
-curve up 81%): thin auction quotes plus an opening IV move explain it.
+opening-auction IV crush on 0-DTE OTM puts is **consistent with** a two-thirds fall and removes
+the basis for my corruption claim. It is a possible explanation, not a demonstrated cause. The same consideration applies to the 11 November BNF case I cited (12 DTE, OTM calls, +0.22%
+spot, curve up 81%): thin auction quotes plus an opening IV move are a possible explanation.
 
 I did test one thing before conceding, and it did not rescue the argument. The **09:15 spot is
 sound**: its 09:15→09:20 moves are ordinary on every session (BNF −470 to +341, NF −62 to +97), and

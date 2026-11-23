@@ -427,3 +427,73 @@ with f as (
  order by trade_id, policy_action, tick_ts)
 select f.*, tv.actual_pnl::numeric booked_gross, tv.net_pnl::numeric booked_net
 from f join trades_v2 tv on tv.id::text = f.trade_id order by f.trade_id, f.t;
+
+-- =====================================================================================
+-- Q10 FINAL — the committed matched-row CSV: tools/pcr_vix_iv/test2b_data/q10_matched_rows.csv
+-- 330 rows, full contract identity, both clocks, source age, quote status, source validity,
+-- price basis, key match, trade id, pairing lag and the duplicate-candidate count.
+-- Audit: key_match EXACT on all 330; 0 contracts with >1 instrument_key; 0 contracts matching
+-- >1 trade; candidates within 45 s are 1 (156 polls) or 2 (174), max 2; absolute pairing lag
+-- min 0.1 s, median 15.4 s, max 31.5 s. source_age_ms spans -168..+825 ms, median -47, and is
+-- NEGATIVE on 204 of 330 rows, so the source clock reads ahead of the device clock and
+-- source_age_ms is not a usable staleness measure as it stands.
+-- The 8 source_outside_regular_session rows are all POST-CLOSE (15:35 and 15:40 on 20 Nov);
+-- the 09:15 rows are flagged OK, so the app's own validity check does NOT support treating
+-- 09:15 as suspect.
+-- =====================================================================================
+with ticks as (
+  select pt.tick_ts, pt.trade_id, pt.session_date, tv.index_key, tv.expiry::text expiry,
+         (l->>'instrument_key') ik, (l->>'strike')::numeric strike, (l->>'option_type') ot,
+         (l->>'side') side, (l->>'bid')::numeric t_bid, (l->>'ask')::numeric t_ask,
+         (l->>'source_ts') t_src, (l->>'source_age_ms') t_age, (l->>'quote_status') t_st,
+         (l->>'source_validity') t_val, (l->>'price_basis') t_basis, (l->>'key_match') t_key
+  from position_ticks pt join trades_v2 tv on tv.id::text = pt.trade_id,
+       lateral jsonb_array_elements(pt.legs_json) l
+  where pt.trade_id in ('318','319','320','321')
+)
+select c.session_date, c.index_key, c.expiry, c.strike, c.option_type,
+       to_char(c.poll_ts at time zone 'Asia/Kolkata','HH24:MI:SS') chain_poll_ist, c.bid, c.ask,
+       t.ik, t.side, t.t_bid, t.t_ask, t.t_src, t.t_age, t.t_st, t.t_val, t.t_basis, t.t_key,
+       t.trade_id, to_char(t.tick_ts at time zone 'Asia/Kolkata','HH24:MI:SS') tick_ist,
+       round(extract(epoch from (t.tick_ts - c.poll_ts))::numeric,1) pair_lag_s, t.cands
+from ml_option_chain_snapshots c
+join lateral (
+  select tk.*, (select count(*) from ticks t2 where t2.session_date=c.session_date
+                  and t2.index_key=c.index_key and t2.expiry=c.expiry and t2.strike=c.strike
+                  and t2.ot=c.option_type
+                  and abs(extract(epoch from (t2.tick_ts - c.poll_ts))) < 45) cands
+  from ticks tk
+  where tk.session_date=c.session_date and tk.index_key=c.index_key and tk.expiry=c.expiry
+    and tk.strike=c.strike and tk.ot=c.option_type
+    and abs(extract(epoch from (tk.tick_ts - c.poll_ts))) < 45
+  order by abs(extract(epoch from (tk.tick_ts - c.poll_ts))) limit 1) t on true
+where c.session_date in ('2026-11-20','2026-11-23')
+  and exists (select 1 from ticks t3 where t3.session_date=c.session_date
+                and t3.index_key=c.index_key and t3.expiry=c.expiry
+                and t3.strike=c.strike and t3.ot=c.option_type)
+order by 1,2,4,5,6;
+
+-- Q26. The triggers and the first eligible trusted quote behind the exit comparison.
+-- Declared tolerance: first tick at or after the triggering publication minute, within 10 min,
+-- mark_trust TRUSTED and bound_anomaly false. All eight resolved in 0.05-0.80 min.
+with trig(pos, sd, label, hm) as (values
+  ('318','2026-11-20','C1_first_NEUTRAL','13:30'), ('318','2026-11-20','C2_two_consecutive','13:35'),
+  ('319','2026-11-20','C1_first_NEUTRAL','13:20'), ('319','2026-11-20','C2_two_consecutive','13:35'),
+  ('320','2026-11-23','C1_first_PULLBACK','10:05'), ('320','2026-11-23','C2_two_consecutive','11:30'),
+  ('321','2026-11-23','C1_first_PULLBACK','10:05'), ('321','2026-11-23','C2_two_consecutive','11:20'))
+select t.pos, t.label, t.hm trigger_hm,
+       to_char(k.tick_ts at time zone 'Asia/Kolkata','HH24:MI:SS') quote_ts,
+       round(extract(epoch from (k.tick_ts - (t.sd||' '||t.hm||':00')::timestamp at time zone 'Asia/Kolkata'))/60.0, 2) delay_min,
+       k.executable_mark::numeric mark, k.current_pnl::numeric gross_pnl,
+       k.policy_trace_json->'mark_trust'->>'state' trust,
+       k.policy_trace_json->>'bound_anomaly' anomaly
+from trig t
+left join lateral (
+  select * from position_ticks p
+  where p.trade_id = t.pos and p.session_date = t.sd::date
+    and p.tick_ts >= (t.sd||' '||t.hm||':00')::timestamp at time zone 'Asia/Kolkata'
+    and p.tick_ts <  (t.sd||' '||t.hm||':00')::timestamp at time zone 'Asia/Kolkata' + interval '10 min'
+    and p.policy_trace_json->'mark_trust'->>'state' = 'TRUSTED'
+    and coalesce(p.policy_trace_json->>'bound_anomaly','false') = 'false'
+  order by p.tick_ts limit 1) k on true
+order by t.pos, t.label;
