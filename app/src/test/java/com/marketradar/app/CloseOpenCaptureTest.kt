@@ -442,11 +442,17 @@ class CloseOpenCaptureTest {
         val f = File("src/main/java/com/marketradar/app/MarketWatchService.kt")
         if (!f.isFile) return           // plain-JVM runner from another cwd
         val src = f.readText()
-        val block = src.substringAfter("closeOpenCaptureSafely {").substringBefore("if (quotesJson == null)")
+        val hookAt = src.indexOf("CloseOpenCapture.onPoll(")
+        val saveAt = src.indexOf("persistFetchedChainEvidenceBeforeBrain(bnfChainJson, nfChainJson)")
+        val nullQuotesAt = src.indexOf("if (quotesJson == null)")
+        val invalidQuotesAt = src.indexOf("if (data == null || missingShared.isNotEmpty())")
+        assertTrue("capture must run before persistence and both shared-quote returns",
+            hookAt in 1 until saveAt && saveAt in 1 until nullQuotesAt && nullQuotesAt in 1 until invalidQuotesAt)
+        val block = src.substringAfter("closeOpenCaptureSafely {")
+            .substringBefore("persistFetchedChainEvidenceBeforeBrain(bnfChainJson, nfChainJson)")
         assertTrue(block.contains("CloseOpenCapture.onPoll("))
         for (banned in listOf("fetchSync(", "async(", "SupabaseClient", "AlarmManager", "WorkManager", "startService", "Thread("))
             assertFalse(banned, block.contains(banned))
-        assertTrue(src.indexOf("CloseOpenCapture.onPoll(") < src.indexOf("POLL_FAIL: Quotes fetch returned null"))
         val guard = src.substringAfter("private inline fun closeOpenCaptureSafely(").substringBefore("\n    }\n")
         assertTrue(guard.contains("catch (t: Throwable)"))
     }

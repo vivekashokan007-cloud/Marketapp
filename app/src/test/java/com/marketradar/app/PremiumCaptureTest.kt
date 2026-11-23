@@ -4119,30 +4119,27 @@ class PremiumCaptureTest {
             .substringBefore("private fun istHhmmOrNull")
         assertTrue("the guard must catch Throwable, not Exception, got: $guard",
             guard.contains("catch (t: Throwable)"))
-        // the premium block itself must contain no request and no scheduling. Sliced to the
-        // quotes abort CONDITION rather than its log message, so the abort's own code is not
-        // inside the slice being judged.
+        // Each research capture consumes already-fetched chains without initiating a request.
         val block = src.substringAfter("premiumCaptureSafely {")
-            .substringBefore("if (quotesJson == null)")
+            .substringBefore("closeOpenCaptureSafely {")
+        assertTrue("the guarded block must contain the premium capture call",
+            block.contains("PremiumCaptureCoordinator.onChainsAcquired("))
         for (banned in listOf("fetchSync(", "async(", "SupabaseClient", "AlarmManager",
             "WorkManager", "startService", "Thread(")) {
             assertFalse("the premium capture block must not contain $banned", block.contains(banned))
         }
-        // It must be placed before EVERY early return that can discard a good chain. The hook
-        // used to sit below the quotes abort, so a failure of the separate index-quotes request
-        // threw away both successful chains -- the same mistake as the stocks abort, one abort
-        // earlier, and moving it above only the stocks abort did not fix it.
+
+        // All successful chain captures must survive shared quote failures. A missing
+        // per-index chain or breadth result is handled downstream by the per-index policy.
         val hookAt = src.indexOf("PremiumCaptureCoordinator.onChainsAcquired(")
-        val quotesAbortAt = src.indexOf("POLL_FAIL: Quotes fetch returned null")
-        val stocksAbortAt = src.indexOf("POLL_FAIL: Chain or stocks fetch returned null")
+        val saveAt = src.indexOf("persistFetchedChainEvidenceBeforeBrain(bnfChainJson, nfChainJson)")
         val m0At = src.indexOf("m0RecordCaptures(mapOf(")
-        assertTrue("the quotes abort must be found for this assertion to mean anything",
-            quotesAbortAt > 0 && stocksAbortAt > 0 && m0At > 0)
-        assertTrue("premium capture must run before the QUOTES abort, not just the stocks one",
-            hookAt in 1 until quotesAbortAt)
-        assertTrue("and before the stocks abort", hookAt < stocksAbortAt)
-        assertTrue("while the existing m0 hook is after both, which is the difference",
-            stocksAbortAt < m0At)
+        val nullQuotesAt = src.indexOf("if (quotesJson == null)")
+        val invalidQuotesAt = src.indexOf("if (data == null || missingShared.isNotEmpty())")
+        assertTrue("premium capture must run before chain persistence", hookAt in 1 until saveAt)
+        assertTrue("chain evidence must be persisted before M0 capture", saveAt in 1 until m0At)
+        assertTrue("M0 must capture before either shared-quote return",
+            m0At in 1 until nullQuotesAt && nullQuotesAt in 1 until invalidQuotesAt)
 
         // The capture-owned completion clocks must be assigned UNCONDITIONALLY, or a failed chain
         // reaches capture with no clock and no slot and its six missing-contract outcomes can
