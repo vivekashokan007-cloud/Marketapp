@@ -38,8 +38,14 @@ def new_observation(pos, research_vix):
     day = entry.date()
     deadline = ia.parse_ts(pos['holding_plan']['exit_deadline'])
     close = cal.ist_dt(day, 15, 30)
-    marks = {'same_60': _checkpoint(deadline, min(deadline + timedelta(minutes=10), close)),
-             'near_close': _checkpoint(max(entry, cal.ist_dt(day, 15, 25)), close)}
+    marks = {name: _checkpoint(entry + timedelta(minutes=minutes),
+                              min(entry + timedelta(minutes=minutes+10), close))
+             for name, minutes in (('same_30', 30), ('same_120', 120))}
+    marks.update({'same_60': _checkpoint(deadline, min(deadline + timedelta(minutes=10), close)),
+             'near_close': _checkpoint(max(entry, cal.ist_dt(day, 15, 25)), close)})
+    for mark in marks.values():
+        if ia.parse_ts(mark['start']) >= ia.parse_ts(mark['stop_exclusive']):
+            mark['status'] = 'OUTSIDE_SESSION'
     next_day = None
     try:
         next_day = cal.DEFAULT_CALENDAR.next_session(day)
@@ -99,7 +105,9 @@ def advance(rows, snapshots, now):
             else:
                 gross = (fill-row['entry_fill']) * row['units']
                 mark.update(status='SCORED', quote_ts=q['ts'], quote_basis=q['basis'], receipt_ms=q['receipt_ms'],
-                            bid=q['bid'], ask=q['ask'], exit_fill=fill, exit_fee=round(exit_fee, 2),
+                            bid=q['bid'], ask=q['ask'], snapshot=dict(snapshots[key]),
+                            iv_provenance={'status': 'UNAVAILABLE_IN_V3_QUOTE', 'value': None},
+                            observed_at=now.isoformat(), gross_pnl=round(gross, 2), exit_fill=fill, exit_fee=round(exit_fee, 2),
                             net_pnl=round(gross-row['entry_fee']-exit_fee, 2))
             changed = True
     return changed

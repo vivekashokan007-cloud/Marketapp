@@ -25,8 +25,8 @@ class B515CandidatePwaTest {
      * CI were ever noticed. This class compiles into testDebugUnitTest AND testCandidateUnitTest, so these literals
      * are enforced on every push and in the candidate variant, and the duplicates are no longer needed.
      */
-    private val acceptedMarketViviSha = "cbb65bda0642a421865261a36dc62aca06e2e1d4"
-    private val acceptedAppJsSha256 = "2d513a8f883ac60f8535516841877f252d4342c3871561ffc11db1db22a4fc64"
+    private val acceptedMarketViviSha = "82edaafc9590b63c71a9922e4012dc0430d89781"
+    private val acceptedAppJsSha256 = "23a3783e1b62d8fd74407f67d8918a489d5215a3b223bb1d235decf6af4de54f"
     private val acceptedVersionName = "2.6.104"
     private val acceptedVersionCode = 535
 

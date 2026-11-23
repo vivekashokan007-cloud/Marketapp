@@ -155,6 +155,17 @@ def complete(directory, request_json, current_json, quote_json=None, start_ms=No
                 receipt_ms=receipt_ms, receipt_mono_ms=mono_ms)
         except (TypeError, ValueError, AttributeError):
             failure = 'MALFORMED_QUOTE_RESPONSE'
+    # Persist candidate identity and original clocks from this existing preflight.
+    # This ledger has no admission/exit authority and its failure changes no outcome.
+    try:
+        import proposal_evidence_v1 as pe
+        context = {}
+        for ix, target in (request.get('targets') or {}).items():
+            context.setdefault(target['instrument_key'], []).append(dict(target, index=ix, role='CANDIDATE_PREFLIGHT'))
+        evidence_status = pe.record_quote_samples(os.path.dirname(directory), request.get('keys') or [], snapshots,
+                                start_ms, receipt_ms, mono_ms, context=context, failure=failure or rejected or None)
+    except Exception as exc:
+        evidence_status = {'status': 'ERROR', 'reason': type(exc).__name__}
     clock = datetime.fromtimestamp(now_ms / 1000, ia.IST)
     with _lock(directory):
         document = _read(directory)
@@ -181,7 +192,8 @@ def complete(directory, request_json, current_json, quote_json=None, start_ms=No
                 request_start_ms=start_ms, receipt_ms=receipt_ms, receipt_mono_ms=mono_ms,
                 http_status=http_status, runtime_ms=max(0, now_ms - start_ms) if start_ms else None)
         _write(directory, document)
-    return json.dumps({'status': 'RECORDED', 'by_index': view(directory, now_ms)['by_index']})
+    return json.dumps({'status': 'RECORDED', 'by_index': view(directory, now_ms)['by_index'],
+                       'research_evidence': evidence_status})
 
 
 def view(directory, now_ms=None):

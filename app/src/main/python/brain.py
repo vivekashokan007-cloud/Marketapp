@@ -28490,7 +28490,23 @@ def single_leg_put_quotes(sl_dir, requested_json, quote_json, request_start_ms, 
     try:
         snaps, rej = _sl_snapshot_from(requested_json, quote_json, request_start_ms, receipt_ms, receipt_mono_ms)
         n = _sls.put_snapshots(sl_dir, snaps) if snaps else 0
-        return json.dumps({'status': 'OK', 'stored': n, 'rejected': rej})
+        # Copy the very same monitoring read into bounded research evidence. Failure
+        # here must not stop exit monitoring or change its snapshots.
+        try:
+            import proposal_evidence_v1 as pe
+            doc = _sls.read(sl_dir) or {}
+            context = {}
+            for row in (doc.get('positions') or []) + (doc.get('hold_observations') or []):
+                key = row.get('instrument_key')
+                if key:
+                    context.setdefault(key, []).append({k: row.get(k) for k in
+                        ('position_id', 'entry_decision_id', 'decision_id', 'index', 'expiry', 'strike', 'action', 'status')})
+            evidence_status = pe.record_quote_samples(os.path.dirname(sl_dir), json.loads(requested_json or '[]'), snaps,
+                                    request_start_ms, receipt_ms, receipt_mono_ms, context=context,
+                                    failure=rej or None)
+        except Exception as exc:
+            evidence_status = {'status': 'ERROR', 'reason': type(exc).__name__}
+        return json.dumps({'status': 'OK', 'stored': n, 'rejected': rej, 'research_evidence': evidence_status})
     except Exception as exc:
         return json.dumps({'status': 'ERROR', 'reason': type(exc).__name__})
 

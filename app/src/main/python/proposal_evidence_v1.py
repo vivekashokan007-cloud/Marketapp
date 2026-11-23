@@ -114,3 +114,65 @@ def record(files_dir, result_json, chains_json, clocks_json):
             os.unlink(os.path.join(directory, name))
     return json.dumps({'status': 'RECORDED', 'bytes': len(raw), 'coverage': doc['coverage'],
                        'dropped': doc['dropped'], 'truncated': doc['truncated']})
+
+
+def record_quote_samples(files_dir, requested, snapshots, request_start_ms, receipt_ms,
+                         receipt_mono_ms=None, context=None, failure=None):
+    """Research-only copy of existing exact-key broker reads; never initiates a GET.
+
+    Prices/clocks retain their broker-snapshot meaning. V3 has no contract IV/Greeks:
+    absence is recorded explicitly, never replaced by VIX or another contract.
+    Uses the same bounded session ledger/export as raw chain observations.
+    """
+    from datetime import datetime
+    import index_authority_v1 as ia
+    if not isinstance(receipt_ms, (int, float)) or isinstance(receipt_ms, bool):
+        return {'status': 'RECEIPT_UNAVAILABLE'}
+    session = datetime.fromtimestamp(receipt_ms / 1000, ia.IST).date().isoformat()
+    keys = sorted(set(k for k in requested if isinstance(k, str) and k))[:4]
+    if not keys:
+        return {'status': 'NO_TARGETS'}
+    directory = os.path.join(files_dir, 'proposal_evidence_v1')
+    os.makedirs(directory, exist_ok=True)
+    path = os.path.join(directory, session + '.json')
+    with FileLock(os.path.join(directory, '.lock'), timeout_s=1):
+        try:
+            with open(path, 'rb') as src:
+                raw = src.read(MAX_BYTES + 1)
+            doc = json.loads(raw)
+            if len(raw) > MAX_BYTES:
+                return {'status': 'EXISTING_OVER_CAP'}
+        except FileNotFoundError:
+            doc = {'schema': VERSION, 'session_date': session, 'tracked': {}, 'records': [],
+                   'coverage': {}, 'dropped': 0, 'truncated': False}
+        except (ValueError, OSError):
+            return {'status': 'EXISTING_UNREADABLE'}
+        rows = doc.setdefault('exact_quote_samples', [])
+        context = context or {}
+        for key in keys:
+            if any(r['instrument_key'] == key and r['receipt_ms'] == receipt_ms for r in rows[-8:]):
+                continue
+            row = {'instrument_key': key, 'source': 'DEDICATED_V3_BROKER_SNAPSHOT_RESEARCH_NOT_FILL',
+                   'request_start_ms': request_start_ms, 'receipt_ms': receipt_ms,
+                   'receipt_mono_ms': receipt_mono_ms,
+                   'context': context.get(key), 'snapshot': snapshots.get(key),
+                   'status': 'OBSERVED' if key in snapshots else 'MISSING_QUOTE', 'failure': failure,
+                   'exchange_quote_ts': None, 'exchange_quote_ts_status': 'NOT_SUPPLIED',
+                   'option_greeks': _fields({}, GREEKS)}
+            rows.append(row)
+            if len(json.dumps(doc, allow_nan=False).encode()) > MAX_BYTES - 8192:
+                rows.pop()
+                doc['dropped'] += 1
+                doc['truncated'] = True
+        raw = json.dumps(doc, allow_nan=False).encode()
+        if len(raw) > MAX_BYTES:
+            return {'status': 'OVER_CAP'}
+        with open(path + '.tmp', 'wb') as dst:
+            dst.write(raw)
+            dst.flush()
+            os.fsync(dst.fileno())
+        os.replace(path + '.tmp', path)
+        sessions = sorted(n for n in os.listdir(directory) if re.fullmatch(r'\d{4}-\d{2}-\d{2}\.json', n))
+        for name in sessions[:-KEEP_SESSIONS]:
+            os.unlink(os.path.join(directory, name))
+    return {'status': 'RECORDED', 'dropped': doc['dropped'], 'truncated': doc['truncated']}

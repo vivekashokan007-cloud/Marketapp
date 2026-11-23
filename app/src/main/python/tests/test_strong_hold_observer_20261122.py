@@ -57,5 +57,6 @@ class HoldObserver(unittest.TestCase):
         row = observer.new_observation(pos, None)
         self.assertEqual(row['next_session_refusal'], 'NO_PRE_EXPIRY_NEXT_SESSION')
         self.assertNotIn('next_open', row['marks'])
-        self.assertFalse(observer.advance([row], {}, D+timedelta(hours=1, seconds=1)))
+        self.assertTrue(observer.advance([row], {}, D+timedelta(hours=1, seconds=1)))
+        self.assertEqual(row['marks']['same_30']['status'], 'MISSING_QUOTE')
         self.assertEqual(row['marks']['same_60']['status'], 'PENDING')

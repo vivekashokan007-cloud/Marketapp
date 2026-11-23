@@ -147,9 +147,17 @@ object IndexAuthorityIo {
                     val research = tgt.optJSONArray("research")
                     val researchKeys = (0 until (research?.length() ?: 0)).mapNotNull { research?.optString(it) }
                     val clocks = ManagedReadAdapters.Clocks({ System.currentTimeMillis() }, { android.os.SystemClock.elapsedRealtime() })
-                    ManagedReadAdapters.fetchQuotes(keys + researchKeys, transport, clocks)?.let { q ->
-                        brain.callAttr("single_leg_put_quotes", sl.absolutePath, q.requestedJson, q.body,
-                            q.requestStartMs, q.receiptMs, q.receiptMonoMs)
+                    val exactKeys = (keys + researchKeys).filter { it.isNotBlank() }.distinct()
+                        .take(ManagedReadAdapters.MAX_QUOTE_KEYS)
+                    if (exactKeys.isNotEmpty()) {
+                        val outcome = ManagedReadAdapters.fetchQuotesOutcome(exactKeys, transport, clocks)
+                        val quote = outcome.fetch
+                        val recorded = JSONObject(brain.callAttr("single_leg_put_quotes", sl.absolutePath,
+                            quote?.requestedJson ?: org.json.JSONArray(exactKeys).toString(), quote?.body ?: "{}",
+                            outcome.requestStartMs, outcome.receiptMs, outcome.receiptMonoMs).toString())
+                        val evidence = recorded.optJSONObject("research_evidence")
+                        if (evidence?.optString("status") != "RECORDED")
+                            LogBuffer.add('W', TAG, "SINGLE_LEG_QUOTE_EVIDENCE: ${evidence?.toString()?.take(160) ?: recorded.optString("status")}")
                     }
                 }
                 val session = IndexAuthorityContext.istSession(System.currentTimeMillis())   // at execution

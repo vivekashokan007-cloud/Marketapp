@@ -7,8 +7,8 @@
       "sha256": "6d5a4318a21d2cd2d185fc962768616c19e70dcb0733b5286797ed645594ca4e"
     },
     "app.js": {
-      "bytes": 705629,
-      "sha256": "2d513a8f883ac60f8535516841877f252d4342c3871561ffc11db1db22a4fc64"
+      "bytes": 708257,
+      "sha256": "23a3783e1b62d8fd74407f67d8918a489d5215a3b223bb1d235decf6af4de54f"
     },
     "index.html": {
       "bytes": 14726,
@@ -27,7 +27,7 @@
       "sha256": "7474c884fb22282782a08fd743133af1230685f0751c6d3a96f1c90e19ace4fc"
     }
   },
-  "marketvivi_sha": "cbb65bda0642a421865261a36dc62aca06e2e1d4",
+  "marketvivi_sha": "82edaafc9590b63c71a9922e4012dc0430d89781",
   "pwa_identity": {
     "app_js_v": 1399,
     "build": 535,
