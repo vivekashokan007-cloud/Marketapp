@@ -65,16 +65,52 @@ else:
 So within one record the friction model priced the close at the executable quotes while the P&L
 priced it at something ~45–70 points better.
 
-## What the result becomes on the saved executable quotes
+## Where the closing bundle came from — and a correction to my first reading
 
-| id | index | entry | executable close | gross | friction | **net** | booked net |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| 318 | BNF | 173.20 | 173.00 | −₹6.00 | ₹127.17 | **−₹133.17** | +₹1,951.83 |
-| 319 | NF | 62.15 | 64.75 | +₹169.00 | ₹112.70 | **+₹56.30** | +₹2,981.30 |
-| | | | | | | **−₹76.87** | **+₹4,933.13** |
+**CORRECTION.** My first version of this section treated the executable pair (173.00 / 64.75) as
+the correct close and concluded the two trades were worth about −₹77 together. That was wrong, and
+I withdraw it. Matching the bundle against `ml_option_chain_snapshots` shows where those quotes
+come from, and they are not a sound close mark either.
 
-The two Friday spreads together are approximately **flat-to-slightly-negative after costs**, not
-+₹4,933. The gap is about ₹5,010.
+The bundle reproduces the **09:15:02 poll exactly**, on all four legs, to the paisa:
+
+| leg | stored in close_leg_quotes | 23 Nov 09:15:02 chain poll |
+| --- | --- | --- |
+| BNF 64200 CE | 501.00 / 517.10 / ltp 501.70 | 501.00 / 517.10 / 501.70 |
+| BNF 64600 CE | 306.35 / 328.00 / ltp 305.70 | 306.35 / 328.00 / 305.70 |
+| NF 25700 CE | 130.50 / 131.70 / ltp 131.55 | 130.50 / 131.70 / 131.55 |
+| NF 25850 CE | 64.85 / 65.75 / ltp 65.30 | 64.85 / 65.75 / 65.30 |
+
+09:15:02 is the **opening-auction print**, and the closes executed at 09:17:11 and 09:17:16 — so
+the bundle was already about two minutes stale, and it is the least reliable poll of the session.
+The very next poll proves it: NF 25700 CE moves 130.50 → **193.65** bid between 09:15 and 09:20,
+and the wide 09:15 spreads (BNF 64600 CE quoted 306.35/328.00, a 21.65 spread against 1.10 five
+minutes later) are auction artefacts. This is the same degradation already flagged on the NF
+opening mark.
+
+**No poll exists at 09:17**, so the true close is unknown. It is bracketed by the polls either
+side:
+
+| id | 09:15:02 (degraded, used by the fee engine) | 09:20:06 (first clean poll, after the close) | saved exit_premium |
+| --- | --- | --- | --- |
+| 318 BNF | 501.00 − 328.00 = 173.00 | 506.90 − 317.35 = **189.55** | 242.50 |
+| 319 NF | 130.50 − 65.75 = 64.75 | 193.65 − 101.55 = **92.10** | 109.75 |
+
+**The saved exit_premium sits above the top of both brackets on both trades.** That is the
+defensible statement: the booked close is not merely unreconciled, it is higher than any retained
+quote for that contract pair on either side of the close.
+
+Net result across the bracket, against the booked figures:
+
+| id | at 09:15 (degraded) | at 09:20 (clean, later) | **booked** |
+| --- | --- | --- | --- |
+| 318 BNF | −₹133.17 | +₹363.33 | +₹1,951.83 |
+| 319 NF | +₹56.30 | +₹1,834.05 | +₹2,981.30 |
+| total | −₹76.87 | **+₹2,197.38** | **+₹4,933.13** |
+
+So the two Friday spreads were probably **genuinely profitable, by roughly ₹2,200**, not the
+₹4,933 booked and not the −₹77 my first reading implied. The overstatement is on the order of
+₹2,700, and the direction of the trades was right.
 
 ## A second, independent inconsistency
 
