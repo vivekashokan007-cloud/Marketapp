@@ -1436,6 +1436,44 @@ class NativeBridge(private val context: Context) {
         return prefs.edit().putString(PREF_STAGE2A_MODE, normalized).commit()
     }
 
+    /**
+     * Validated (TRUSTED-mark-only) gross extrema for the given trade ids.
+     *
+     * `tradeIds` is a JSON array of strings; anything unparseable yields an empty reply rather
+     * than a guess. The reply is a JSON object keyed by trade id, each value carrying `status`,
+     * `contract`, `basis`, `includes_accepted_close` and, when validated, `trusted_mae` /
+     * `trusted_mfe` / `updated_at`.
+     *
+     * Why this exists. `trades_v2.peak_pnl` / `trough_pnl` are written from the PWA close payload
+     * -- Kotlin writes no trades_v2 close patch -- while the validated extrema lived only inside
+     * PositionTickService and `position_ticks.policy_trace_json`. The summary, daily review and
+     * export therefore each derived their own figure. This is the one read path they can share.
+     *
+     * Read the contract before comparing against a booked close: these are GROSS and exclude the
+     * accepted close unless a tick observed it, so a peak below a booked close is correct here.
+     * `UNKNOWN_NO_VALIDATED_EVIDENCE` means exactly that -- never zero, never a guess.
+     */
+    @JavascriptInterface
+    fun getValidatedPositionExtrema(tradeIds: String): String {
+        return try {
+            val out = JSONObject()
+            val ids = try {
+                JSONArray(tradeIds)
+            } catch (_: Exception) {
+                JSONArray()
+            }
+            for (i in 0 until ids.length()) {
+                val id = ids.optString(i, "").trim()
+                if (id.isEmpty()) continue
+                out.put(id, validatedExtremaFor(prefs, id))
+            }
+            out.toString()
+        } catch (e: Exception) {
+            Log.e(TAG, "getValidatedPositionExtrema failed: ${e.message}")
+            "{}"
+        }
+    }
+
     @JavascriptInterface
     fun getServiceStatus(): String {
         return try {
