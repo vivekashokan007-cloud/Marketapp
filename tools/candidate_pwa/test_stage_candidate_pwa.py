@@ -140,9 +140,9 @@ class CommittedPinTests(unittest.TestCase):
     review-validation run, which is why a green review never caught it.
     """
 
-    ACCEPTED_MARKETVIVI_SHA = "216a7cefd52af86bf0eec355ef683f0161a87ac9"
+    ACCEPTED_MARKETVIVI_SHA = "cbb65bda0642a421865261a36dc62aca06e2e1d4"
     ACCEPTED_APP_JS_SHA256 = \
-        "239cd79bf737bc664c1d4e20de7b323f69f9671afc78eed33def62c3cd2421d3"
+        "2d513a8f883ac60f8535516841877f252d4342c3871561ffc11db1db22a4fc64"
 
     def test_committed_pin_names_the_accepted_marketvivi_commit(self):
         m = json.loads(PIN.read_text())
@@ -191,7 +191,8 @@ class CommittedPinTests(unittest.TestCase):
         # And no stale copy of a superseded identity may survive anywhere in the tracked tree.
         superseded = ("877b02fd6d703ca43148a0f119b60216d9b509ce",
                       "7005a751b166666c1f4e22f5d3e4607390b904e4",
-                      "3f3f46ad01cee8dd5fcdb04817472d15968b53bc")
+                      "3f3f46ad01cee8dd5fcdb04817472d15968b53bc",
+                      "216a7cefd52af86bf0eec355ef683f0161a87ac9")
         tracked = subprocess.run(["git", "-C", str(ROOT), "ls-files", "-z"],
                                  capture_output=True, text=True, check=True).stdout.split("\0")
         offenders = {}
