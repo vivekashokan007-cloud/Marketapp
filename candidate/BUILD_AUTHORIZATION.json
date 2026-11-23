@@ -1,0 +1,12 @@
+{
+  "approval_reference": "Vivek approved the b535 signed Paper candidate in project chat on 22 November 2026 IST and approved the original GitHub deployment. This retry updates only candidate packaging test expectations.",
+  "approved_by": "Vivek Ashokan P (Market Radar owner)",
+  "artifact_only": true,
+  "cert_sha256": "fb6042a2eb61045368e8d7b95db6f6d49b04d4b8da2e51b865ca77803a44b478",
+  "codex_final_check_reference": "Fixed stale PWA SHA and JS hash in the Python packaging tests. All 22 packaging tests pass and staging verified the same six pinned PWA assets. App code and PWA source unchanged from the initially approved candidate.",
+  "native_sha": "fcd2b16aecb39c4bd7b55cfdd0607d50d77f200c",
+  "pwa_sha": "cbb65bda0642a421865261a36dc62aca06e2e1d4",
+  "schema": "marketradar.candidate_build_authorization.v1",
+  "version_code": "535",
+  "version_name": "2.6.104"
+}
