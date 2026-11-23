@@ -223,3 +223,64 @@ from ml_brain_snapshots
 where created_at >= '2026-11-10'
   and to_char(created_at at time zone 'Asia/Kolkata','HH24:MI') in ('09:15','09:20','09:25')
 order by 1,2;
+
+-- =====================================================================================
+-- TEST 5 — PCR / OI provenance.  Read-only.  Definitions are in
+-- OptionChainBrainFormatter.kt:160-161 (pcr = totalPutOI/totalCallOI over ONE expiry;
+-- nearAtmPCR over abs(strike-atm) <= max(spot*0.015, 1.0)).
+-- =====================================================================================
+
+-- Q14. Does the reported PCR reconcile with the OI totals stored in the SAME frame?
+-- NF: 695/695 exact.  BNF: 0/695.  bnf_near_atm_pcr is null at every poll.
+with v as (
+ select (created_at at time zone 'Asia/Kolkata')::date sd,
+   (context_json->'c3_finalization_frame'->'values'->>'bnf_pcr')::numeric bp,
+   (context_json->'c3_finalization_frame'->'values'->>'bnf_total_put_oi')::numeric bpo,
+   (context_json->'c3_finalization_frame'->'values'->>'bnf_total_call_oi')::numeric bco,
+   (context_json->'c3_finalization_frame'->'values'->>'bnf_near_atm_pcr')::numeric bnap,
+   (context_json->'c3_finalization_frame'->'values'->>'nf_pcr')::numeric np,
+   (context_json->'c3_finalization_frame'->'values'->>'nf_total_put_oi')::numeric npo,
+   (context_json->'c3_finalization_frame'->'values'->>'nf_total_call_oi')::numeric nco
+ from ml_brain_snapshots where created_at >= '2026-11-10')
+select sd::text, count(*) n,
+ count(*) filter (where abs(np - npo/nullif(nco,0))<0.0005) nf_ok,
+ count(*) filter (where abs(bp - bpo/nullif(bco,0))<0.0005) bnf_ok,
+ count(bnap) bnf_nearatm_present,
+ round(avg(abs(bp - bpo/nullif(bco,0))),4) bnf_mean_resid,
+ round(min(bco)/1e6,2) bnf_call_oi_min_m, round(max(bco)/1e6,2) bnf_call_oi_max_m,
+ round(min(nco)/1e6,2) nf_call_oi_min_m,  round(max(nco)/1e6,2) nf_call_oi_max_m
+from v group by 1 order by 1;
+
+-- Q15. Rule out staleness and an index mix-up as the explanation for the BNF residual.
+-- 0 matches at either one-poll lag, and 0 against NF's ratio.
+with v as (
+ select created_at,
+   (context_json->'c3_finalization_frame'->'values'->>'bnf_pcr')::numeric pcr,
+   (context_json->'c3_finalization_frame'->'values'->>'bnf_total_put_oi')::numeric po,
+   (context_json->'c3_finalization_frame'->'values'->>'bnf_total_call_oi')::numeric co
+ from ml_brain_snapshots where created_at >= '2026-11-23' and created_at < '2026-11-24'
+), d as (
+ select pcr, round(po/nullif(co,0),6) r0,
+   round(lag(po) over w/nullif(lag(co) over w,0),6) r_m1,
+   round(lead(po) over w/nullif(lead(co) over w,0),6) r_p1
+ from v window w as (order by created_at))
+select count(*) n,
+  count(*) filter (where abs(pcr-r0)  < 0.0005) match_same,
+  count(*) filter (where abs(pcr-r_m1)< 0.0005) match_prev,
+  count(*) filter (where abs(pcr-r_p1)< 0.0005) match_next
+from d where pcr is not null and r0 is not null;
+
+-- Q16. Rule out a moving strike universe: 226 BNF / 158 NF strikes, one expiry, EVERY poll.
+with p as (
+ select index_key, poll_ts, count(distinct strike) ks, count(distinct expiry) exps
+ from ml_option_chain_snapshots where session_date='2026-11-23' group by 1,2)
+select index_key, count(*) polls, min(ks) min_strikes, max(ks) max_strikes,
+       count(distinct ks) distinct_strike_counts, max(exps) max_expiries_per_poll
+from p group by 1;
+
+-- Q17. OI freshness: the only table that ever carried OI totals, walls and max pain stopped on
+-- 2026-06-29 (the same date the premium_history writer was removed).  ml_option_chain_snapshots
+-- has no oi column at all, so no OI figure anywhere carries an exchange clock.
+select max(date)::text newest, count(*) rows,
+       count(*) filter (where date >= '2026-11-01') rows_since_november
+from chain_snapshots;
