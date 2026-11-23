@@ -435,6 +435,22 @@ class PositionTickService : Service() {
                 put("close_quote_refresh_attempted", closeQuality.refreshAttempted)
                 put("close_quote_refresh_keys", JSONArray(closeQuality.refreshKeys))
                 put("close_quote_first_validity_reasons", JSONArray(firstValidity.reasons.take(12)))
+                // ONE accepted bundle for gross P&L, fees and saved evidence. Without these the
+                // caller has a net price but no legs, and the fee path falls back to the last
+                // periodic card mark (see TickValuation.closeLegQuotesJson).
+                put("close_bundle_contract", PAPER_CLOSE_BUNDLE_CONTRACT)
+                put("legs", annotateLegsWithSourceValidity(valuation.legsJson(), closeA1.validity))
+                val closeLegQuotes = valuation.closeLegQuotesJson()
+                put("close_leg_quotes", closeLegQuotes ?: JSONObject.NULL)
+                put("close_bundle_complete", closeLegQuotes != null && valuation.closeBundleComplete())
+                put(
+                    "close_bundle_unavailable_reason",
+                    when {
+                        closeLegQuotes == null -> "LEGS_NOT_MAPPABLE_TO_BUY_SELL"
+                        !valuation.closeBundleComplete() -> "LEG_EXECUTABLE_PRICE_MISSING"
+                        else -> JSONObject.NULL
+                    }
+                )
             }
             PaperCloseQuoteStore.completeReady(prefs, requestId, payload)
             sendBroadcast(
@@ -1688,6 +1704,14 @@ class PositionTickService : Service() {
         const val EXTRA_PAPER_CLOSE_TRADE_ID = "paper_close_trade_id"
         const val PAPER_CLOSE_SOURCE = "P1_REST_60S_MANUAL_CLOSE"
         const val PAPER_CLOSE_QUOTE_TTL_MS = 30_000L
+
+        /**
+         * The accepted close quote now publishes its own legs, so gross P&L, fees and the saved
+         * evidence can all be priced from ONE bundle instead of the caller supplying a second
+         * (stale) one. See TickValuation.closeLegQuotesJson for the defect this closes.
+         */
+        const val PAPER_CLOSE_BUNDLE_CONTRACT =
+            "paper_close_bundle_v1_one_accepted_quote_for_pnl_fees_and_evidence"
         const val PAPER_CLOSE_TRADE_NOT_FOUND = "TRADE_NOT_FOUND"
         const val PAPER_CLOSE_PAPER_ONLY = "PAPER_ONLY"
         const val PAPER_CLOSE_MARKET_SESSION_INACTIVE = "MARKET_SESSION_INACTIVE"
@@ -2350,6 +2374,52 @@ internal data class TickValuation(
         }
         return out
     }
+
+    /**
+     * The SAME legs that produced [executableMark], in the `{buy, sell}` shape the Python
+     * friction path already consumes as `close_leg_quotes`.
+     *
+     * Why this exists: the close-quote payload used to publish only `executable_close_premium`,
+     * so a caller closing a Paper position had a net price but no legs, and whatever persisted
+     * the outcome had to supply its own leg bundle - in practice the last periodic card mark.
+     * Gross P&L was then priced from the fresh close quote while fees were priced from a stale
+     * one. Trade 320 is the worked example: booked exit 87.50 from a 12:31:46.921 close request,
+     * fee bundle 91.85 reproducing the 12:29:44.749 tick exactly, 2m05s older.
+     *
+     * Emitting the legs here lets one accepted bundle drive gross P&L, fees and saved evidence.
+     * Returns null when the legs cannot be mapped unambiguously, so the caller can say which
+     * amount is unverified rather than silently substituting a different bundle.
+     */
+    fun closeLegQuotesJson(): JSONObject? {
+        if (legValuations.isEmpty()) return null
+        val out = JSONObject()
+        legValuations.forEach { lv ->
+            val slot = when (lv.leg.side.uppercase()) {
+                "LONG", "BUY" -> "buy"
+                "SHORT", "SELL" -> "sell"
+                else -> return null
+            }
+            // Two legs on the same side cannot be told apart in this shape; refuse rather
+            // than overwrite one with the other.
+            if (out.has(slot)) return null
+            out.put(slot, JSONObject().apply {
+                putOptNumber("bid", lv.bid)
+                putOptNumber("ask", lv.ask)
+                putOptNumber("ltp", lv.ltp)
+                putOptNumber("executable_price", lv.executablePrice)
+                put("instrument_key", lv.leg.instrumentKey ?: JSONObject.NULL)
+                put("strike", lv.leg.strike ?: JSONObject.NULL)
+                put("option_type", lv.leg.optionType ?: JSONObject.NULL)
+                put("side", lv.leg.side)
+                put("quote_status", lv.quoteStatus)
+            })
+        }
+        return out
+    }
+
+    /** Every leg carries a usable executable price, so one bundle can price both sides. */
+    fun closeBundleComplete(): Boolean =
+        legValuations.isNotEmpty() && legValuations.all { it.executablePrice.usable() }
 }
 
 private fun Double?.usable(): Boolean = this != null && this.isFinite() && this > 0.0
