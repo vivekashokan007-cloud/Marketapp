@@ -15,6 +15,33 @@ from test_single_leg_store_e2e_x1_identity import OK, admissible_result
 
 
 class PaperEvidenceIntegration(unittest.TestCase):
+    def test_native_quote_bridge_reaches_durable_research_without_changing_position_state(self):
+        import brain
+        with TemporaryDirectory() as root:
+            path = Path(root)/'single_leg_v1'
+            path.mkdir()
+            position_doc = {'schema': 'mr.single_leg_store.v1', 'positions': [], 'closed': [], 'history': []}
+            (path/'positions.json').write_text(json.dumps(position_doc))
+            original = (path/'positions.json').read_bytes()
+            ms = int(D.timestamp()*1000)
+            key = 'NSE_FO|fixture'
+            body = {'status':'success','data':{'symbol':{'instrument_token':key,'timestamp':ms,
+                'depth':{'buy':[{'price':100,'quantity':65}], 'sell':[{'price':101,'quantity':65}]}}}}
+            result = json.loads(brain.single_leg_put_quotes(str(path),json.dumps([key]),json.dumps(body),ms-20,ms,120))
+            self.assertEqual(result['stored'],1)
+            self.assertEqual(result['research_evidence']['status'],'RECORDED')
+            evidence = Path(root)/'proposal_evidence_v1'/f'{D.date()}.json'
+            samples = json.loads(evidence.read_text())['exact_quote_samples']
+            self.assertEqual(samples[0]['snapshot']['instrument_key'],key)
+            self.assertEqual(samples[0]['snapshot']['receipt_ms'],ms)
+            self.assertEqual(samples[0]['option_greeks']['iv']['status'],'absent')
+            failed = json.loads(brain.single_leg_put_quotes(str(path),json.dumps([key]),'{}',ms+5,ms+10,130))
+            self.assertEqual(failed['stored'],0)
+            self.assertEqual(failed['research_evidence']['status'],'RECORDED')
+            latest = json.loads(evidence.read_text())['exact_quote_samples'][-1]
+            self.assertEqual(latest['status'],'MISSING_QUOTE')
+            self.assertEqual((path/'positions.json').read_bytes(),original)
+
     def test_30_and_120_are_research_only_and_continue_after_60_min_exit(self):
         with TemporaryDirectory() as root:
             path = str(Path(root) / 'single_leg_v1')

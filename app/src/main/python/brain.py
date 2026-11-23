@@ -28501,7 +28501,7 @@ def single_leg_put_quotes(sl_dir, requested_json, quote_json, request_start_ms, 
                 if key:
                     context.setdefault(key, []).append({k: row.get(k) for k in
                         ('position_id', 'entry_decision_id', 'decision_id', 'index', 'expiry', 'strike', 'action', 'status')})
-            evidence_status = pe.record_quote_samples(os.path.dirname(sl_dir), json.loads(requested_json or '[]'), snaps,
+            evidence_status = pe.record_quote_samples(_os.path.dirname(sl_dir), json.loads(requested_json or '[]'), snaps,
                                     request_start_ms, receipt_ms, receipt_mono_ms, context=context,
                                     failure=rej or None)
         except Exception as exc:
