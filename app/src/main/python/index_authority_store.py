@@ -89,6 +89,21 @@ def compact_decision(dec, lineage=None):
            'spot': (inp.get('spot') or {}),
            'lineage': {'open_ref_ts': (inp.get('open_ref') or {}).get('poll_ts'),
                        'anchor_30_ts': (inp.get('anchor_30') or {}).get('poll_ts'),
+                       # The recent-move term is only an independent check when its anchor is a
+                       # DIFFERENT poll from the opening reference. Early in the session the
+                       # eligible set [open_ref, t - lookback] is empty or contains only the open
+                       # reference itself, so the two coincide and z_30 = z_open / sqrt(d/375) -
+                       # a positive multiple with the same sign, which cannot refuse anything
+                       # z_open admits. Publishing the fact and the ACTUAL covered minutes means
+                       # a replay (and a label) no longer has to infer either by comparing
+                       # timestamps, and cannot keep calling a 15-minute window "30 min".
+                       'anchor_30_shared_with_open_ref': (
+                           bool((inp.get('anchor_30') or {}).get('clamped_to_open_ref'))
+                           or ((inp.get('anchor_30') or {}).get('poll_ts') is not None
+                               and (inp.get('anchor_30') or {}).get('poll_ts')
+                               == (inp.get('open_ref') or {}).get('poll_ts'))),
+                       'anchor_30_elapsed_min': (inp.get('anchor_30') or {}).get('minutes'),
+                       'anchor_30_clamped_to_open_ref': (inp.get('anchor_30') or {}).get('clamped_to_open_ref'),
                        'scale_observed_at': (inp.get('scale') or {}).get('observed_at') if isinstance(inp.get('scale'), dict) else None,
                        'calendar_status': (dec.get('calendar_coverage') or {}).get('status'),
                        **dict(lineage or {})},
