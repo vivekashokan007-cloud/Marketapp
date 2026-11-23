@@ -284,3 +284,62 @@ from p group by 1;
 select max(date)::text newest, count(*) rows,
        count(*) filter (where date >= '2026-11-01') rows_since_november
 from chain_snapshots;
+
+-- =====================================================================================
+-- TEST 6 part 1 — tick extrema from FIRST PRINCIPLES, plus the structural bound.
+-- The mark is rebuilt from the raw per-leg bid/ask, never read from current_pnl or
+-- running_mfe, so this validates the app's numbers instead of restating them.
+-- =====================================================================================
+
+-- Q18. Reconstruction fidelity: the rebuilt mark must equal executable_mark, and
+-- current_pnl must equal (mark - entry_premium) * units.  Observed: 808 of 808 eligible
+-- ticks exact, max gap 0.0000.
+with t as (
+ select pt.trade_id, pt.current_pnl::numeric pnl, pt.executable_mark::numeric mk,
+   pt.quantity_units::numeric u, tv.entry_premium::numeric ep,
+   (select sum(case when upper(l->>'side') in ('LONG','BUY') then (l->>'bid')::numeric
+                    else -(l->>'ask')::numeric end)
+    from jsonb_array_elements(pt.legs_json) l) leg_mark,
+   (select count(*) from jsonb_array_elements(pt.legs_json) l
+    where (l->>'bid') is null or (l->>'ask') is null) null_legs
+ from position_ticks pt join trades_v2 tv on tv.id::text = pt.trade_id
+ where pt.trade_id in ('318','319','320','321'))
+select trade_id, count(*) ticks, sum(null_legs) legs_with_null_quote,
+ count(*) filter (where abs(pnl - (mk - ep)*u) < 0.01) pnl_matches_mark,
+ count(*) filter (where leg_mark is not null and abs(mk - leg_mark) < 0.001) mark_matches_legs,
+ round(max(abs(mk - leg_mark)),4) max_gap
+from t group by 1 order by 1;
+
+-- Q19. Whole-life extrema with the STRUCTURAL bound (a long debit spread's mark must lie in
+-- [0, width]).  Exactly one of 808 ticks violates it: trade 319 at 09:15:01, mark 194.25 on a
+-- 150-wide spread, because the short leg's quote was unrefreshed while the long leg's was
+-- current.  Preferred over excluding the opening window, which would have discarded two legal
+-- marks to remove one illegal one.
+with t as (
+ select pt.trade_id, pt.tick_ts, pt.quantity_units::numeric u, tv.entry_premium::numeric ep,
+   abs(tv.sell_strike::numeric - tv.buy_strike::numeric) width,
+   (select sum(case when upper(l->>'side') in ('LONG','BUY') then (l->>'bid')::numeric
+                    else -(l->>'ask')::numeric end)
+    from jsonb_array_elements(pt.legs_json) l) mk,
+   (select count(*) from jsonb_array_elements(pt.legs_json) l
+    where (l->>'bid') is null or (l->>'ask') is null) nulls
+ from position_ticks pt join trades_v2 tv on tv.id::text = pt.trade_id
+ where pt.trade_id in ('318','319','320','321')
+), r as (
+ select trade_id, width, mk, (mk - ep)*u pnl,
+        (mk >= -0.0001 and mk <= width + 0.0001) in_bounds
+ from t where nulls = 0 and mk is not null)
+select trade_id, max(width) width, count(*) ticks,
+ count(*) filter (where not in_bounds) out_of_bounds,
+ round(max(mk) filter (where not in_bounds),2) worst_impossible_mark,
+ round(min(pnl) filter (where in_bounds),2) trough_bounded,
+ round(max(pnl) filter (where in_bounds),2) peak_bounded
+from r group by 1 order by 1;
+
+-- Q20. The saved journey fields, for comparison with Q19.  Wrong on all four: the trough is
+-- pinned to 0 on both overnight trades, and trade 319's saved peak of 267 is BELOW its own
+-- booked actual_pnl of 3094, which is impossible for a peak.
+select id, abs(sell_strike::numeric - buy_strike::numeric) width,
+       peak_pnl::numeric saved_peak, journey_stats->>'trough_pnl' saved_trough,
+       actual_pnl::numeric booked_gross, net_pnl::numeric booked_net
+from trades_v2 where id in (318,319,320,321) order by id;
