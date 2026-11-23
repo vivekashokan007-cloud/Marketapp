@@ -10833,6 +10833,39 @@ def _first_row_value(*sources_and_keys):
             return value
     return None
 
+
+PCR_OI_LINEAGE_VERSION = 'pcr_oi_lineage_v1_winning_tier_recorded'
+
+
+def _traced_row_value(*labelled_sources_and_keys):
+    """`_first_row_value` with the winning tier recorded.
+
+    Takes `(label, source, keys)` triples in the same precedence order and returns
+    `(value, label, key, tiers_skipped)`.  The VALUE is identical to what
+    `_first_row_value` would return for the same sources and keys -- this exists only so the
+    frame can say WHICH tier supplied a number, which the untraced resolvers never did.
+
+    Why it exists: on 11-23 Nov 2026 `nf_pcr` reconciled with `nf_total_put_oi /
+    nf_total_call_oi` at 695 of 695 polls while `bnf_pcr` reconciled at 0 of 695 (mean
+    absolute residual 0.20-0.69 against a ratio ranging 0.71-1.39).  The cause could only be
+    narrowed by elimination, because the five-tier OI fallback and the three-tier PCR
+    fallback both resolved silently and neither recorded the tier that won.  See
+    `tools/pcr_vix_iv/TEST5_PCR_OI_PROVENANCE_20261123.md` (findings E8, E9).
+    """
+    skipped = []
+    for label, source, keys in labelled_sources_and_keys:
+        value = _row_value(source, keys)
+        if value is not None:
+            matched = None
+            if isinstance(source, dict):
+                for key in keys:
+                    if _percentile_float(source.get(key)) is not None:
+                        matched = key
+                        break
+            return value, label, matched, skipped
+        skipped.append(label)
+    return None, None, None, skipped
+
 def _positive_row_value(*sources_and_keys):
     for source, keys in sources_and_keys:
         value = _row_value(source, keys)
@@ -11941,6 +11974,87 @@ def _build_context_percentiles(ctx, polls, candidates, rejected_candidates, resu
         'realized_r_prior_sessions_only': None,
         'notification_count_session': _percentile_float(ctx.get('notificationCountSession') or ctx.get('notification_count_session')),
     }
+    # --- fix 3b: PCR / OI lineage (evidence only; no value is changed by this block) -------
+    # Records which fallback tier supplied each PCR and each OI total, and whether the PCR and
+    # the totals it should reconcile with came from the SAME tier.  Nothing here feeds a gate,
+    # a ranking or a notification; it exists so E8 is diagnosable in one query instead of by
+    # elimination.  The traced values are compared against the values already published above
+    # and any disagreement is reported rather than substituted.
+    def _oi_tiers(ix):
+        lower = ix.lower()
+        chain = bnf_chain if ix == 'BNF' else nf_chain
+        return (
+            ('chain', chain, ('totalCallOI', 'totalCallOi')),
+            ('market_forces', market_forces, (f'{lower}_total_call_oi', f'{ix.lower()}TotalCallOi')),
+            ('ctx', ctx, (f'{ix.lower()}TotalCallOi', f'{lower}_total_call_oi')),
+            ('latest_poll', latest_poll, (f'{lower}_total_call_oi',)),
+            ('snapshot_latest_poll', snapshot_latest_poll, (f'{lower}_total_call_oi',)),
+        )
+
+    def _oi_put_tiers(ix):
+        lower = ix.lower()
+        chain = bnf_chain if ix == 'BNF' else nf_chain
+        return (
+            ('chain', chain, ('totalPutOI', 'totalPutOi')),
+            ('market_forces', market_forces, (f'{lower}_total_put_oi', f'{ix.lower()}TotalPutOi')),
+            ('ctx', ctx, (f'{ix.lower()}TotalPutOi', f'{lower}_total_put_oi')),
+            ('latest_poll', latest_poll, (f'{lower}_total_put_oi',)),
+            ('snapshot_latest_poll', snapshot_latest_poll, (f'{lower}_total_put_oi',)),
+        )
+
+    def _pcr_tiers(ix, near=False):
+        profile = bnf_profile if ix == 'BNF' else nf_profile
+        chain = bnf_chain if ix == 'BNF' else nf_chain
+        keys = ('nearAtmPCR', 'near_atm_pcr') if near else ('pcr',)
+        tiers = [('profile', profile, keys), ('chain', chain, keys)]
+        if not near:
+            tiers.append(('latest_poll', latest_poll, (f'{ix.lower()}Pcr',)))
+        return tuple(tiers)
+
+    _pcr_oi_lineage = {'contract': PCR_OI_LINEAGE_VERSION}
+    for _ix in ('BNF', 'NF'):
+        _lx = _ix.lower()
+        _c_val, _c_src, _c_key, _ = _traced_row_value(*_oi_tiers(_ix))
+        _p_val, _p_src, _p_key, _ = _traced_row_value(*_oi_put_tiers(_ix))
+        _r_val, _r_src, _r_key, _r_skipped = _traced_row_value(*_pcr_tiers(_ix))
+        _n_val, _n_src, _n_key, _ = _traced_row_value(*_pcr_tiers(_ix, near=True))
+        _ratio = _numeric_ratio(_p_val, _c_val) if (_c_val and _p_val is not None) else None
+        _published = current_values.get(f'{_lx}_pcr')
+        _pcr_oi_lineage[_lx] = {
+            'total_call_oi_source': _c_src,
+            'total_call_oi_key': _c_key,
+            'total_put_oi_source': _p_src,
+            'total_put_oi_key': _p_key,
+            'pcr_source': _r_src,
+            'pcr_key': _r_key,
+            'pcr_tiers_skipped': _r_skipped,
+            'near_atm_pcr_source': _n_src,
+            'near_atm_pcr_available': _n_val is not None,
+            # the diagnostic that would have answered E8 directly
+            'pcr_and_oi_totals_same_source': (
+                None if (_r_src is None or _c_src is None or _p_src is None)
+                else (_r_src == _c_src == _p_src)
+            ),
+            'total_oi_ratio': _ratio,
+            'definition_residual': (
+                None if (_ratio is None or _published is None) else _ratio - _published
+            ),
+            'reconciles_with_own_totals': (
+                None if (_ratio is None or _published is None) else abs(_ratio - _published) < 5e-4
+            ),
+            # traced resolution must agree with the value actually published above; a
+            # disagreement is a defect in this block, so it is reported, never substituted
+            'traced_pcr_matches_published': (
+                None if (_r_val is None and _published is None)
+                else (_r_val is not None and _published is not None and abs(_r_val - _published) < 1e-9)
+            ),
+        }
+    # NOTE: this must NOT go into `current_values`.  Every entry of that dict is passed
+    # through `round(v, 4)` and `_percentile_cell` downstream, so a nested dict there raises
+    # TypeError and aborts the whole context-percentile block (observed: zero candidates
+    # generated).  It is published as a sibling of `current_values` instead.
+    # --- end fix 3b -----------------------------------------------------------------------
+
     stage_counts = {}
     stage_margins = {}
     for row in rejected_candidates or []:
@@ -12172,6 +12286,7 @@ def _build_context_percentiles(ctx, polls, candidates, rejected_candidates, resu
         },
         'variable_catalog': C3_CONTEXT_PERCENTILE_VARIABLES,
         'current_values': {k: (round(v, 4) if v is not None else None) for k, v in current_values.items()},
+        'pcr_oi_lineage': _pcr_oi_lineage,      # fix 3b, evidence only; see PCR_OI_LINEAGE_VERSION
         'variables': variables,
         'windows': windows,
     }
