@@ -18,7 +18,7 @@ class SingleLegAdmissionCoordinatorTest {
     private fun state(
         decisionId: String? = "idx1_a", key: String? = "NSE_FO|1", enabled: Boolean = true, paper: Boolean = true,
         selector: String = "BOTH", openTrades: String = "[]", capital: Double? = 250000.0, rev: Long = 1,
-    ) = SingleLegAdmissionCoordinator.State("{}", "NF", decisionId, key, "BUY_CE", 65, listOf("NSE_FO|1"),
+    ) = SingleLegAdmissionCoordinator.State("{}", "BNF", decisionId, key, "BUY_CE", 30, listOf("NSE_FO|1"),
         enabled, paper, selector, openTrades, capital, 10.0, rev)
 
     private class Rig(initial: SingleLegAdmissionCoordinator.State) {
@@ -65,7 +65,7 @@ class SingleLegAdmissionCoordinatorTest {
     private fun changedDuringFetch(change: (SingleLegAdmissionCoordinator.State) -> SingleLegAdmissionCoordinator.State,
                                    field: String) {
         val rig = Rig(state())
-        val p = JSONObject(rig.coord.submit("NF", "idx1_a", "NSE_FO|1", "r1"))
+        val p = JSONObject(rig.coord.submit("BNF", "idx1_a", "NSE_FO|1", "r1"))
         assertEquals("PENDING", p.getString("status"))               // non-blocking: returns before the fetch ends
         assertTrue(rig.entered.await(5, TimeUnit.SECONDS))
         assertEquals("PENDING", JSONObject(rig.coord.status("r1")).getString("status"))
@@ -79,11 +79,11 @@ class SingleLegAdmissionCoordinatorTest {
 
     @Test fun toggleOffDuringFetch() = changedDuringFetch({ it.copy(enabled = false) }, "enabled")
     @Test fun modeChangedDuringFetch() = changedDuringFetch({ it.copy(paper = false) }, "mode")
-    @Test fun selectorChangedDuringFetch() = changedDuringFetch({ it.copy(selector = "BNF") }, "selector")
+    @Test fun selectorChangedDuringFetch() = changedDuringFetch({ it.copy(selector = "NF") }, "selector")
     @Test fun decisionChangedDuringFetch() = changedDuringFetch({ it.copy(decisionId = "idx1_b") }, "decision_id")
     @Test fun capitalChangedDuringFetch() = changedDuringFetch({ it.copy(capital = 1000.0, configRevision = 2) }, "capital")
     @Test fun openManagedExposureDuringFetch() =
-        changedDuringFetch({ it.copy(openTrades = """[{"index_key":"NF","status":"OPEN","managed_policy_id":"index_managed_v1"}]""") }, "open_trades")
+        changedDuringFetch({ it.copy(openTrades = """[{"index_key":"BNF","status":"OPEN","managed_policy_id":"index_managed_v1"}]""") }, "open_trades")
     @Test fun configRevisionDuringFetch() = changedDuringFetch({ it.copy(configRevision = 9) }, "config_revision")
 
     @Test fun unchangedStateCommitsWithProbeAndDeadline() {
@@ -91,7 +91,7 @@ class SingleLegAdmissionCoordinatorTest {
         val seen = AtomicReference<SingleLegAdmissionCoordinator.Call?>(null)
         val base = rig.admitResult
         rig.admitResult = { c -> seen.set(c); base(c) }
-        rig.coord.submit("NF", "idx1_a", "NSE_FO|1", "r2")
+        rig.coord.submit("BNF", "idx1_a", "NSE_FO|1", "r2")
         rig.release.countDown()
         val out = rig.await("r2")
         assertEquals("ADMITTED", out.getString("status"))
@@ -100,7 +100,7 @@ class SingleLegAdmissionCoordinatorTest {
         assertEquals("r2", c.requestId)
         assertEquals(1_000_000L + 15_000L, c.deadlineMs)
         val probe = JSONObject(rig.lastProbe.get())
-        assertEquals("idx1_a", probe.getJSONObject("decisions").getJSONObject("NF").getString("decision_id"))
+        assertEquals("idx1_a", probe.getJSONObject("decisions").getJSONObject("BNF").getString("decision_id"))
         assertEquals(250000.0, probe.getDouble("capital"), 0.0)
         assertEquals(1L, probe.getLong("config_revision"))
     }
@@ -110,7 +110,7 @@ class SingleLegAdmissionCoordinatorTest {
         val rig = Rig(state())
         rig.admitResult = { c -> rig.st.set(rig.st.get().copy(enabled = false)); rig.lastProbe.set(c.probe.current());
             """{"status":"REJECTED","reason":"SINGLE_LEG_PAPER_DISABLED_AT_ADMISSION"}""" }
-        rig.coord.submit("NF", "idx1_a", "NSE_FO|1", "r3"); rig.release.countDown()
+        rig.coord.submit("BNF", "idx1_a", "NSE_FO|1", "r3"); rig.release.countDown()
         rig.await("r3")
         assertFalse(JSONObject(rig.lastProbe.get()).getBoolean("enabled"))
     }
@@ -121,7 +121,7 @@ class SingleLegAdmissionCoordinatorTest {
         val n = AtomicInteger(0)
         rig.reconcileResult = { id -> if (n.incrementAndGet() < 3) """{"found":false,"status":"NOT_RECORDED"}"""
             else """{"found":true,"status":"ADMITTED","position_id":"sl1_x","request_id":"$id"}""" }
-        rig.coord.submit("NF", "idx1_a", "NSE_FO|1", "r4"); rig.release.countDown()
+        rig.coord.submit("BNF", "idx1_a", "NSE_FO|1", "r4"); rig.release.countDown()
         val out = rig.await("r4")
         assertEquals("ADMITTED", out.getString("status"))
         assertTrue(out.getBoolean("reconciled"))
@@ -136,7 +136,7 @@ class SingleLegAdmissionCoordinatorTest {
         val busy = AtomicInteger(0)
         rig.cancelResult = { id -> if (busy.incrementAndGet() < 4) """{"found":false,"status":"OUTCOME_UNCONFIRMED","reason":"STORE_LOCK_BUSY"}"""
             else """{"found":true,"status":"ADMITTED","position_id":"sl1_x","request_id":"$id"}""" }
-        rig.coord.submit("NF", "idx1_a", "NSE_FO|1", "r5"); rig.release.countDown()
+        rig.coord.submit("BNF", "idx1_a", "NSE_FO|1", "r5"); rig.release.countDown()
         val seen = mutableListOf<String>()
         val end = System.currentTimeMillis() + 5000
         var out: JSONObject? = null
@@ -154,7 +154,7 @@ class SingleLegAdmissionCoordinatorTest {
         val rig = Rig(state())
         rig.admitResult = { null }
         rig.reconcileResult = { """{"found":false,"status":"NOT_RECORDED"}""" }
-        rig.coord.submit("NF", "idx1_a", "NSE_FO|1", "r5b"); rig.release.countDown()
+        rig.coord.submit("BNF", "idx1_a", "NSE_FO|1", "r5b"); rig.release.countDown()
         val out = rig.await("r5b")
         assertEquals("CANCELLED_BEFORE_COMMIT", out.getString("reason"))
         assertTrue(out.getBoolean("fence"))
@@ -176,24 +176,24 @@ class SingleLegAdmissionCoordinatorTest {
         rig.admitResult = { null }
         rig.reconcileResult = { """{"found":false}""" }
         rig.cancelResult = { """{"found":false,"status":"OUTCOME_UNCONFIRMED"}""" }
-        rig.coord.submit("NF", "idx1_a", "NSE_FO|1", "keep"); rig.release.countDown()
+        rig.coord.submit("BNF", "idx1_a", "NSE_FO|1", "keep"); rig.release.countDown()
         Thread.sleep(50)
         val other = Rig(state(enabled = false))
-        repeat(60) { other.coord.submit("NF", "idx1_a", "NSE_FO|1", "o$it") }
+        repeat(60) { other.coord.submit("BNF", "idx1_a", "NSE_FO|1", "o$it") }
         val st = JSONObject(rig.coord.status("keep"))
         assertEquals("PENDING", st.getString("status"))
     }
 
     @Test fun gatesClosedMakeNoBrokerCall() {
         val rig = Rig(state(enabled = false))
-        rig.coord.submit("NF", "idx1_a", "NSE_FO|1", "r6")
+        rig.coord.submit("BNF", "idx1_a", "NSE_FO|1", "r6")
         rig.await("r6")
         assertEquals(0, rig.fetches.get())
         assertEquals(1, rig.admits.get())                             // Python still records the named reason
     }
 
     @Test fun noProposalAndMissingCapital() {
-        val rig = Rig(state(decisionId = null)); rig.coord.submit("NF", "idx1_a", "NSE_FO|1", "r7")
+        val rig = Rig(state(decisionId = null)); rig.coord.submit("BNF", "idx1_a", "NSE_FO|1", "r7")
         assertEquals("NO_PROPOSAL", rig.await("r7").getString("reason"))
         val p = state(capital = null).probeJson()
         assertTrue(JSONObject(p).isNull("capital"))
@@ -226,7 +226,7 @@ class SingleLegAdmissionCoordinatorTest {
     private fun replacedBeforeFirstRead(change: (SingleLegAdmissionCoordinator.State) -> SingleLegAdmissionCoordinator.State,
                                         field: String) {
         val (rig, gate) = gatedRig(state())
-        val p = JSONObject(rig.coord.submit("NF", "idx1_a", "NSE_FO|1", "b1"))   // the user tapped what was displayed
+        val p = JSONObject(rig.coord.submit("BNF", "idx1_a", "NSE_FO|1", "b1"))   // the user tapped what was displayed
         assertEquals("PENDING", p.getString("status"))
         rig.st.set(change(rig.st.get()))            // a poll publishes a replacement BEFORE the worker's first read
         gate.runNext()                              // worker starts now
@@ -249,7 +249,7 @@ class SingleLegAdmissionCoordinatorTest {
 
     @Test fun displayedIdentityMatchingFirstReadProceedsWithExistingRevalidation() {
         val (rig, gate) = gatedRig(state())
-        rig.coord.submit("NF", "idx1_a", "NSE_FO|1", "b2")
+        rig.coord.submit("BNF", "idx1_a", "NSE_FO|1", "b2")
         gate.runNext()
         assertEquals("ADMITTED", rig.await("b2").getString("status"))
         assertEquals(1, rig.fetches.get()); assertEquals(1, rig.admits.get())
@@ -260,7 +260,7 @@ class SingleLegAdmissionCoordinatorTest {
     @Test fun missingDisplayedIdentityIsRejectedWithoutQueueing() {
         val (rig, gate) = gatedRig(state())
         for ((d, k) in listOf(null to "NSE_FO|1", "idx1_a" to null, " " to "NSE_FO|1", "idx1_a" to "")) {
-            val out = JSONObject(rig.coord.submit("NF", d, k, "m-$d-$k"))
+            val out = JSONObject(rig.coord.submit("BNF", d, k, "m-$d-$k"))
             assertEquals("REJECTED", out.getString("status"))
             assertEquals("DISPLAYED_IDENTITY_REQUIRED", out.getString("reason"))
             assertTrue(JSONObject(rig.coord.status("m-$d-$k")).getBoolean("completed"))
@@ -273,7 +273,7 @@ class SingleLegAdmissionCoordinatorTest {
     @Test fun uncoveredShortIsNotOfferedAndMakesNoBrokerCall() {
         for (a in listOf("SELL_PE", "SELL_CE")) {
             val (rig, gate) = gatedRig(state().copy(action = a))
-            rig.coord.submit("NF", "idx1_a", "NSE_FO|1", "s-$a")
+            rig.coord.submit("BNF", "idx1_a", "NSE_FO|1", "s-$a")
             gate.runNext()
             val out = rig.await("s-$a")
             assertEquals("REJECTED", out.getString("status"))

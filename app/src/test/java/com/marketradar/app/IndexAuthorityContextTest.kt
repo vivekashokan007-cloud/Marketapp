@@ -18,21 +18,23 @@ class IndexAuthorityContextTest {
 
     @Test fun analysisClockStampedOnLiveAndRefresh() {
         val dir = File("/tmp/x")
-        val live = JSONObject(); IndexAuthorityContext.apply(live, dir, false, 1000L, "nf")
+        val live = JSONObject().put("nfChain", JSONObject()).put("bnfChain", JSONObject()); IndexAuthorityContext.apply(live, dir, false, 1000L, "nf")
         assertEquals(1000L, live.getLong("analysisClockMs"))
         assertEquals(1000L, live.getLong("pollReceiptMs"))
         assertTrue(live.getBoolean("indexAuthorityDeferredWrite"))
-        assertEquals("NF", live.getString("indexSelector"))
+        assertEquals("BNF", live.getString("indexSelector"))
+        assertFalse(live.has("nfChain"))
+        assertTrue(live.has("bnfChain"))
         val refresh = JSONObject().put("pollReceiptMs", 5L)
         IndexAuthorityContext.apply(refresh, dir, true, 2000L, null)
         assertEquals(2000L, refresh.getLong("analysisClockMs"))
         assertFalse(refresh.has("pollReceiptMs"))
-        assertEquals("BOTH", refresh.getString("indexSelector"))
+        assertEquals("BNF", refresh.getString("indexSelector"))
     }
 
     @Test fun selectorNormalised() {
         assertEquals("BNF", IndexAuthorityContext.normalizeSelector("banknifty"))
-        assertEquals("BOTH", IndexAuthorityContext.normalizeSelector("garbage"))
+        assertEquals("BNF", IndexAuthorityContext.normalizeSelector("garbage"))
     }
 
     @Test fun persistDeltaDetachedFromResult() {
