@@ -51,7 +51,8 @@ class G2DebitTeacher(unittest.TestCase):
         bull = G._std_polls()
         for i, poll in enumerate(bull):
             poll['bnf'] = poll['bnfSpot'] = 52000 + 16 * i
-        for name, polls in (('bull', bull), ('bear', G._bear_polls()), ('neutral', G._std_polls())):
+        neutral = G.scenarios()['neutral_pair']['polls']
+        for name, polls in (('bull', bull), ('bear', G._bear_polls()), ('neutral', neutral)):
             r, snap, c, _ = G._run(name, polls)
             snap['id'] = 'g2-' + name
             res = _grade(snap, G._later_chain_rows(snap, c))
