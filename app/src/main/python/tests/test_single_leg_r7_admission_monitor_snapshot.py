@@ -215,9 +215,9 @@ class AdmissionRevalidation(Tmp):
         self.assertIn('PLAN_SCHEMA_UNSUPPORTED', sls.admit(self.d, r, 'NF', clock=at(5), **OK)['reasons'])
 
     def test_bridge_admit_reads_its_own_clock(self):
-        r = admissible_result()
+        r = json.loads(json.dumps(admissible_result()).replace('"NF"', '"BNF"'))
         with mock.patch.object(sls, '_wall_clock', lambda: D + timedelta(seconds=200)):
-            out = json.loads(brain.single_leg_admit(self.d, json.dumps(r), 'NF', '[]', True, True, 'BOTH', capital=250000.0, max_risk_pct=10.0))
+            out = json.loads(brain.single_leg_admit(self.d, json.dumps(r), 'BNF', '[]', True, True, 'BOTH', capital=250000.0, max_risk_pct=10.0))
         self.assertIn('SNAPSHOT_STALE_AT_ADMISSION', out['reasons'])
 
 
@@ -315,7 +315,7 @@ class QuoteTargets(Tmp):
             'NF': {'status': 'ELIGIBLE_PENDING_SNAPSHOT', 'quote_needed': ['NEW1']},
             'BNF': {'status': 'ELIGIBLE_PENDING_SNAPSHOT', 'quote_needed': ['NEW2']}}}
         t = json.loads(brain.single_leg_quote_targets(self.d, json.dumps(res), 2))
-        self.assertEqual(t['keys'], [key, 'NEW1'])                       # bounded; open position first
+        self.assertEqual(t['keys'], [key, 'NEW2'])                       # bounded; open position first
         t = json.loads(brain.single_leg_quote_targets(self.d, 'null'))
         self.assertEqual(t['keys'], [key])                               # independent of any proposal
 

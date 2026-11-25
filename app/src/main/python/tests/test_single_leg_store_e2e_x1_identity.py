@@ -98,7 +98,7 @@ class StoreAdmission(unittest.TestCase):
         self.assertEqual(sls.admit(self.d, r, 'NF', clock=at(5), **OK)['reason'], 'STORE_CORRUPT')
         rows = brain._ia_single_leg_positions({'singleLegStateDir': self.d})
         self.assertEqual({x['status'] for x in rows}, {'UNKNOWN_STORE_UNREADABLE'})
-        self.assertEqual(ia.managed_exposure('NF', [], rows)['count'], 1)
+        self.assertEqual(ia.managed_exposure('BNF', [], rows)['count'], 1)
         with self.assertRaises(sls.StoreError):
             sls.read('/tmp/not_the_store')
 

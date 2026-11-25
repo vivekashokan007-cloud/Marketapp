@@ -74,7 +74,7 @@ class CapitalAtAdmission(Tmp):
             self.assertEqual(out['reason'], why, (c, k, out))
         # bridge without config never falls back to 250000/10
         with mock.patch.object(sls, '_wall_clock', at(5)):
-            out = json.loads(brain.single_leg_admit(self.d, json.dumps(r), 'NF', '[]', True, True, 'BOTH'))
+            out = json.loads(brain.single_leg_admit(self.d, json.dumps(json.loads(json.dumps(r).replace('"NF"', '"BNF"'))), 'BNF', '[]', True, True, 'BNF'))
         self.assertEqual(out['reason'], 'CAPITAL_CONFIG_UNAVAILABLE')
         self.assertEqual(sls.read(self.d)['positions'], [])
 

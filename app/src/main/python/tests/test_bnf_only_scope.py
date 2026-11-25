@@ -92,6 +92,31 @@ class BnfOnly(unittest.TestCase):
             self.assertEqual(plan.call_args.kwargs['indices'], ('BNF',))
             self.assertFalse(any('_NF' in name for name in os.listdir(directory)))
 
+    def test_bnf_expiry_scale_recovers_and_survives_missing_next_poll_chain(self):
+        import tempfile
+        import os
+        import index_authority_store as store
+        with tempfile.TemporaryDirectory() as root:
+            directory = os.path.join(root, 'index_authority_v1')
+            session = '2026-11-23'
+            context = F.ctx(session_date=session, today_ist=session, bnfExpiry=session,
+                            indexAuthorityStateDir=directory)
+            def read(polls, next_chain=False):
+                current = dict(context)
+                if next_chain:
+                    current.update(bnfScaleChain=F.chain(52500, 100, lot=30),
+                                   bnfScaleExpiry='2026-12-29')
+                return brain.compute_index_authority(polls, F.with_clock(current, polls))['BNF']
+            first = read(self.polls[:2])
+            self.assertEqual(first['direction']['value'], 'UNAVAILABLE')
+            recovered = read(self.polls, next_chain=True)
+            self.assertNotEqual(recovered['direction']['value'], 'UNAVAILABLE')
+            saved = store.load(directory, session)['scales']['BNF']
+            self.assertEqual(saved['status'], 'OK')
+            self.assertEqual(saved['expiry'], '2026-12-29')
+            self.assertNotEqual(read(self.polls)['direction']['value'], 'UNAVAILABLE')
+            self.assertEqual(store.load(directory, session)['scales']['BNF'], saved)
+
     def test_cached_nifty_candidates_cannot_reenter_analysis(self):
         candidates = [
             {'index': 'NF', 'id': 'old-nf'},
