@@ -1224,7 +1224,7 @@ class MarketWatchService : Service() {
                     LogBuffer.add(
                         if (prov.optBoolean("all_identities_present", false)) 'I' else 'E',
                         TAG,
-                        "SPOT_PROVENANCE: phase=${prov.optString("session_phase")} NF=${prov.optJSONObject("NF")?.optString("status")}/${prov.optJSONObject("NF")?.optString("freshness")} BNF=${prov.optJSONObject("BNF")?.optString("status")}/${prov.optJSONObject("BNF")?.optString("freshness")}"
+                        "SPOT_PROVENANCE: phase=${prov.optString("session_phase")} BNF=${prov.optJSONObject("BNF")?.optString("status")}/${prov.optJSONObject("BNF")?.optString("freshness")}"
                     )
                 }
             } catch (e: Exception) {
@@ -1245,7 +1245,7 @@ class MarketWatchService : Service() {
             val bnfSpot = data.getJSONObject("NSE_INDEX:Nifty Bank").getDouble("last_price")
             val nfSpot = 0.0 // compatibility argument; never published as a live NF quote
             val vix = data.getJSONObject("NSE_INDEX:India VIX").getDouble("last_price")
-            Log.d(TAG, "POLL_DATA_RECEIVED: BNF=$bnfSpot NF=$nfSpot VIX=$vix")
+            Log.d(TAG, "POLL_DATA_RECEIVED: BNF=$bnfSpot VIX=$vix")
 
             // Step 5: Build poll object and save
             Log.d(TAG, "POLL_STEP5: Saving poll object")

@@ -94,7 +94,7 @@ class AcceptanceProbe(unittest.TestCase):
         self.assertEqual(final['direction'], 'BEAR')          # legacy behaviour retained this release
         self.assertEqual(final['strategy'], 'BEAR_CALL')
         self.assertFalse(final['market_view_validated'])
-        self.assertEqual(final['market_direction_scope'], 'COMBINED_NF_BNF_CONTEXT')
+        self.assertEqual(final['market_direction_scope'], 'BNF_CONTEXT')
         self.assertEqual(final['direction_semantics'], 'legacy_mixed_market_or_lane_v1')
         # The thesis survives on the aligned path (it was absent before b510).
         self.assertEqual(final['market_thesis']['direction'], 'BULL')

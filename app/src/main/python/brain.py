@@ -76,7 +76,7 @@ DECISION_GATE_STOP = 'STOP'
 #                             no strategy lane exists)
 VERDICT_DIRECTION_SEMANTICS_VERSION = 1
 VERDICT_DIRECTION_SEMANTICS = 'legacy_mixed_market_or_lane_v1'
-MARKET_VIEW_SCOPE = 'COMBINED_NF_BNF_CONTEXT'
+MARKET_VIEW_SCOPE = 'BNF_CONTEXT'
 MARKET_VIEW_SOURCE = 'synthesize_verdict_score_rule_v1'
 MARKET_VIEW_FIELDS = (
     'market_direction', 'market_bull_score', 'market_bear_score',
