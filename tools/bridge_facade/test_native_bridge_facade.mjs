@@ -187,9 +187,9 @@ test('8. C1 pilot: status/get/set forwarded; set returns the re-read status; abs
 test('9. A1 (17 Nov review): bound single-leg admission is declared in Kotlin and forwarded with the displayed identity', () => {
   const kt = nativeBridgeSource();
   assert.match(kt, /@JavascriptInterface\s+fun singleLegAdmitDisplayed\(index: String, decisionId: String, instrumentKey: String\)/);
-  assert.match(kt, /fun singleLegAdmitDisplayed\([^)]*\): String = try \{\s*singleLegCoordinator\.submit\(index, decisionId, instrumentKey\)/);
+  assert.match(kt, /fun singleLegAdmitDisplayed\([^)]*\): String = try \{\s*if \(!BnfScope\.permitsNew\(index\)\)[\s\S]*?else singleLegCoordinator\.submit\(index, decisionId, instrumentKey\)/);
   // the index-only entry is kept for older pages but submits WITHOUT identity, which the coordinator rejects
-  assert.match(kt, /fun singleLegAdmit\(index: String\): String = try \{\s*singleLegCoordinator\.submit\(index, null, null\)/);
+  assert.match(kt, /fun singleLegAdmit\(index: String\): String = try \{\s*if \(!BnfScope\.permitsNew\(index\)\)[\s\S]*?else singleLegCoordinator\.submit\(index, null, null\)/);
   const { ab, calls } = spy({ singleLegAdmitDisplayed: () => '{"status":"PENDING","request_id":"r"}' });
   const nb = runFacade({ AndroidBridge: ab });
   assert.deepEqual(calls, [], 'injection calls nothing');

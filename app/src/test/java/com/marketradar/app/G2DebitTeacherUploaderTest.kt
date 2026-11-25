@@ -22,7 +22,7 @@ class G2DebitTeacherUploaderTest {
 
         @BeforeClass @JvmStatic fun runChain() {
             G1AuthorityProvenanceChainTest.runChain()
-            for (name in listOf("bear_pair", "pair_both_admissible")) {
+            for (name in listOf("bear_pair", "pair_both_admissible", "neutral_pair")) {
                 val arr = G1AuthorityProvenanceChainTest.teacher.getValue(name).getJSONObject("batch").getJSONArray("outcomes")
                 for (i in 0 until arr.length()) {
                     val o = arr.getJSONObject(i)
@@ -30,7 +30,7 @@ class G2DebitTeacherUploaderTest {
                 }
             }
             val m = mutableMapOf<String, JSONObject>()
-            for (name in listOf("bear_pair", "pair_both_admissible")) {
+            for (name in listOf("bear_pair", "pair_both_admissible", "neutral_pair")) {
                 val gen = G1AuthorityProvenanceChainTest.uploaded.getValue(name).getJSONObject("context_json")
                     .getJSONArray("snapshot_generated_candidates")
                 for (i in 0 until gen.length()) gen.getJSONObject(i).let { m[it.getString("id")] = it }
@@ -50,7 +50,7 @@ class G2DebitTeacherUploaderTest {
 
     @Test fun teacherGradesDebitWithPositiveCostAndSignedPremiumSurvives() {
         val d = outcomes.filter { it.getString("strategy_type") in debit }
-        assertEquals(3, d.size)        // NF BULL_CALL, NF + BNF BEAR_PUT
+        assertEquals(2, d.size)        // BNF BULL_CALL and BEAR_PUT
         for (o in d) {
             val c = candidates.getValue(o.getString("candidate_id"))
             assertTrue(c.getDouble("netPremium") < 0)                   // signed premium still in the upload payload
@@ -83,7 +83,7 @@ class G2DebitTeacherUploaderTest {
 
     @Test fun creditIcIbUnchanged() {
         val credit = outcomes.filter { it.getString("strategy_type") !in debit }
-        assertEquals(5, credit.size)  // bear: NF + BNF BEAR_CALL; bull: NF BULL_PUT + BNF IC + IB
+        assertEquals(4, credit.size)  // BNF BEAR_CALL, BULL_PUT, IC and IB
         for (o in credit) {
             val c = candidates.getValue(o.getString("candidate_id"))
             assertEquals("OK", o.getString("price_integrity"))
@@ -94,7 +94,7 @@ class G2DebitTeacherUploaderTest {
 
     /** Codex R3: h2_entry_basis_source is absent from the final server rows but recoverable via the G1 join. */
     @Test fun finalRowsOmitBasisSourceButJoinRecoversItExactly() {
-        val snaps = listOf("bear_pair", "pair_both_admissible").associateWith { G1AuthorityProvenanceChainTest.uploaded.getValue(it) }
+        val snaps = listOf("bear_pair", "pair_both_admissible", "neutral_pair").associateWith { G1AuthorityProvenanceChainTest.uploaded.getValue(it) }
         for ((name, snap) in snaps) {
             val teacherRows = G1AuthorityProvenanceChainTest.teacher.getValue(name).getJSONObject("batch").getJSONArray("outcomes")
             val auth = (0 until teacherRows.length()).map { teacherRows.getJSONObject(it) }

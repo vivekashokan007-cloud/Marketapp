@@ -49,7 +49,7 @@ class M0CollectorCostMeasurementTest {
         val b0 = M0Durable.bytesWritten; val w0 = M0Durable.writes
         for (s in ResearchCalendar.slotGrid(LocalDate.parse(day))) {
             val now = s.nominalMs + 5_000
-            for ((ix, ch) in listOf("NF" to nf, "BNF" to bnf)) {
+            for ((ix, ch) in listOf("BNF" to bnf)) {
                 var st: ResearchCollector.Begin.Started? = null
                 timed("begin") { st = ResearchCollector.beginAttempt(dir, ix, "$day|${s.ordinal}", now) as ResearchCollector.Begin.Started }
                 timed("capture") {
@@ -69,7 +69,7 @@ class M0CollectorCostMeasurementTest {
         dir.listFiles()!!.groupBy { it.name.substringBefore("_").substringBefore(".") }.forEach { (k, fs) ->
             val b = fs.sumOf { it.length() }; total += b; sizes.put(k, JSONObject().put("files", fs.size).put("bytes", b))
         }
-        val slots = 2 * ResearchCalendar.slotGrid(LocalDate.parse(day)).size
+        val slots = ResearchCalendar.slotGrid(LocalDate.parse(day)).size
         val out = JSONObject().put("measured_on", "JVM unit test on review box (NOT a device)").put("slots", slots)
             .put("envelopes", ResearchCalendar.slotGrid(LocalDate.parse(day)).size)
             .put("strikes_per_index", 131).put("bytes_by_kind", sizes).put("bytes_total_session", total)

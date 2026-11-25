@@ -4147,7 +4147,7 @@ class PremiumCaptureTest {
         // other code depends on those semantics.
         assertTrue("capture must have its own completion clock for BNF",
             src.contains("capBnfCompletedAtMs = System.currentTimeMillis()"))
-        assertTrue("capture must have its own completion clock for NF",
+        assertFalse("retired NF capture clock must not be acquired",
             src.contains("capNfCompletedAtMs = evNfChainFetchedAtMs"))
         assertTrue("the success-only x1 semantics must be preserved",
             src.contains("if (it != null) x1BnfChainFetchedAtMs = capBnfCompletedAtMs"))

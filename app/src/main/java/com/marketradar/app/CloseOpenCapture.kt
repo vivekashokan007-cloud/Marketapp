@@ -155,7 +155,8 @@ object CloseOpenCapture {
             val rejectedSoFar = overlapRejected.get()
             try {
                 executor.execute {
-                    try { process(filesDir, sessionDate, slot, acquisitions, overlapSince = rejectedSoFar) }
+                    try { process(filesDir, sessionDate, slot, acquisitions, overlapSince = rejectedSoFar,
+                        indices = BnfScope.indices) }
                     catch (t: Throwable) { /* recorded as absent work; never escapes */ }
                 }
                 submitted.incrementAndGet()
@@ -185,7 +186,8 @@ object CloseOpenCapture {
      * (Export inclusion is computed when the section is built.)
      */
     fun process(filesDir: File, sessionDate: String, slot: String,
-                acquisitions: List<Acquisition>, overlapSince: Long = 0L): JSONObject = synchronized(lock) {
+                acquisitions: List<Acquisition>, overlapSince: Long = 0L,
+                indices: Collection<String> = UNDERLYING.keys): JSONObject = synchronized(lock) {
         val started = System.nanoTime()
         val res = JSONObject().put("session", sessionDate).put("slot", slot)
         val kind = slotKind(slot)
@@ -195,7 +197,7 @@ object CloseOpenCapture {
         root(filesDir).mkdirs()
         val per = JSONObject()
         // fixed index order; each index is independent and one cannot block the other
-        for (ix in UNDERLYING.keys) {
+        for (ix in indices) {
             val acq = acquisitions.firstOrNull { it.index.trim().uppercase() == ix }
             per.put(ix, try {
                 if (kind == "CLOSE") closeSlot(filesDir, date, slot, ix, acq, overlapSince)

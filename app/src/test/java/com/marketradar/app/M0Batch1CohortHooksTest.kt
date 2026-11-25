@@ -19,7 +19,7 @@ class M0Batch1CohortHooksTest {
     @Before fun setUp() { dir = Files.createTempDirectory("m0b1w8").toFile(); man0 = ResearchCollector.MAX_MANIFEST_SESSIONS; env0 = ResearchCollector.MAX_ENVELOPE_FILES }
     @After fun tearDown() { dir.deleteRecursively(); ResearchCollector.MAX_MANIFEST_SESSIONS = man0; ResearchCollector.MAX_ENVELOPE_FILES = env0 }
 
-    private val k = ResearchCohorts.Contract("NF", "2026-10-27", 24300, "CE")
+    private val k = ResearchCohorts.Contract("BNF", "2026-10-27", 24300, "CE")
     private fun items(env: String, manifest: String, exit: ResearchCohorts.Contract = k) = listOf(
         ResearchCohorts.Item("ENTRY_MARK", k, """{"bid":101.0,"ask":101.5}""", "poll:$S1|40"),
         ResearchCohorts.Item("ENTRY_QUOTE", k, """{"bid":101.0,"ask":101.5,"ts":"$S1 12:30:05"}""", "poll:$S1|40"),
@@ -32,7 +32,7 @@ class M0Batch1CohortHooksTest {
 
     @Test fun pruning_raw_data_never_removes_cohort_copies() {
         ResearchCollector.setEnabled(dir, true, ms(S1, 9, 0))
-        ResearchCollector.beginAttempt(dir, "NF", "$S1|40", ms(S1, 12, 30))
+        ResearchCollector.beginAttempt(dir, "BNF", "$S1|40", ms(S1, 12, 30))
         assertEquals(ResearchCollector.EnvResult.STORED, ResearchCollector.putEnvelope(dir,
             ResearchCollector.buildEnvelope("$S1|40", null, 1L, 2L, "v", 1, JSONObject()), 3L))
         val envText = String(ResearchCollector.envelopeArchiveBytes(dir, "$S1|40")!!)

@@ -31,8 +31,8 @@ class M0Batch1ProtectionWiringTest {
 
     private fun capture(day: String, ord: Int): String {
         val t = ms(day, 12, 30) + 5000
-        val b = ResearchCollector.beginAttempt(dir, "NF", "$day|$ord", t) as ResearchCollector.Begin.Started
-        val c = ResearchCollector.captureFromChain(dir, "NF", chain(), t, t, "ml_option_chain_snapshots", t, "poll-$day-$ord", t, b.attemptId)
+        val b = ResearchCollector.beginAttempt(dir, "BNF", "$day|$ord", t) as ResearchCollector.Begin.Started
+        val c = ResearchCollector.captureFromChain(dir, "BNF", chain(), t, t, "ml_option_chain_snapshots", t, "poll-$day-$ord", t, b.attemptId)
         assertEquals(ResearchCollector.RecordResult.RECORDED, ResearchCollector.recordCapture(dir, b.slotId, b.attemptId, c, t + 1000))
         return ResearchCollector.chainProtectionId(b.slotId, b.attemptId)   // B1-R2: per-attempt protection id
     }
@@ -43,8 +43,8 @@ class M0Batch1ProtectionWiringTest {
             .put("bid", 1.0).put("ask", 1.1).put("ltp", JSONObject.NULL) } }
 
     private fun chainAck(id: String, poll: String, rows: Int): Pair<JSONObject, ByteArray> {
-        val content = JSONObject().put("index", "NF").put("poll_ts", poll).put("rows", JSONArray(genuineRows().take(rows))).toString().toByteArray()
-        return JSONObject().put("entry_id", id).put("index", "NF").put("poll_ts", poll).put("roles", JSONArray(listOf("CHAIN_POLL")))
+        val content = JSONObject().put("index", "BNF").put("poll_ts", poll).put("rows", JSONArray(genuineRows().take(rows))).toString().toByteArray()
+        return JSONObject().put("entry_id", id).put("index", "BNF").put("poll_ts", poll).put("roles", JSONArray(listOf("CHAIN_POLL")))
             .put("content_sha256", M0Durable.sha256(content)).put("content_bytes", content.size).put("row_count", rows) to content
     }
 
@@ -54,8 +54,8 @@ class M0Batch1ProtectionWiringTest {
         val slot = capture(S1, 40)
         assertEquals("STAGED", ResearchProtection.entry(dir, slot)!!.getString("state"))
         assertEquals(4, ResearchProtection.entry(dir, slot)!!.getInt("expected_rows"))
-        assertTrue(ResearchProtection.isProtected(dir, "NF", "poll-$S1-40"))
-        assertEquals("STAGED", ResearchCollector.readManifest(dir, S1)!!.getJSONObject("indices").getJSONObject("NF")
+        assertTrue(ResearchProtection.isProtected(dir, "BNF", "poll-$S1-40"))
+        assertEquals("STAGED", ResearchCollector.readManifest(dir, S1)!!.getJSONObject("indices").getJSONObject("BNF")
             .getJSONObject("slots").getJSONObject("40").getString("protection"))
 
         // 2. restart (all state is on disk) + reconcile on the next day protects the past session manifest
@@ -65,7 +65,7 @@ class M0Batch1ProtectionWiringTest {
 
         // 3. archive/upload failure: arbitrary bytes, wrong rows, stale manifest are all rejected; nothing deleted
         val junk = "x".toByteArray()
-        val bad = JSONObject().put("entry_id", slot).put("index", "NF").put("poll_ts", "poll-$S1-40").put("roles", JSONArray(listOf("CHAIN_POLL")))
+        val bad = JSONObject().put("entry_id", slot).put("index", "BNF").put("poll_ts", "poll-$S1-40").put("roles", JSONArray(listOf("CHAIN_POLL")))
             .put("content_sha256", M0Durable.sha256(junk)).put("content_bytes", 1)
         assertTrue(ResearchProtection.acknowledgeArchive(dir, slot, bad, junk, 1L).startsWith("REJECTED:"))
         val (wm, wc) = chainAck(slot, "poll-$S1-40", 3)
@@ -82,25 +82,25 @@ class M0Batch1ProtectionWiringTest {
         // 4. cap pressure: manifest retention cap reached with nothing acknowledged -> admission refused, nothing deleted
         ResearchCollector.MAX_MANIFEST_SESSIONS = 2
         assertNotNull(ResearchCollector.readManifest(dir, S2))
-        assertEquals(ResearchCollector.Begin.Unavailable("MANIFEST_CAPACITY_BACKLOG"), ResearchCollector.beginAttempt(dir, "NF", "$S3|40", ms(S3, 12, 30)))
+        assertEquals(ResearchCollector.Begin.Unavailable("MANIFEST_CAPACITY_BACKLOG"), ResearchCollector.beginAttempt(dir, "BNF", "$S3|40", ms(S3, 12, 30)))
         assertNotNull(ResearchCollector.readManifest(dir, S1))
         // protection cap -> further capture rejected visibly
         val active = ResearchProtection.summary(dir, S2).getJSONObject("counts").let { it.getInt("STAGED") + it.getInt("ARCHIVE_ACKED") + it.getInt("LAG_EXCEEDED") }
         ResearchProtection.CAPACITY = active
-        assertEquals(ResearchCollector.Begin.Unavailable("PROTECTION_BACKLOG_AT_CAPACITY"), ResearchCollector.beginAttempt(dir, "NF", "$S2|41", ms(S2, 12, 35)))
+        assertEquals(ResearchCollector.Begin.Unavailable("PROTECTION_BACKLOG_AT_CAPACITY"), ResearchCollector.beginAttempt(dir, "BNF", "$S2|41", ms(S2, 12, 35)))
         assertEquals("BACKLOG_AT_CAPACITY", ResearchCollector.status(dir, ms(S2, 12, 36)).getString("label"))
         ResearchProtection.CAPACITY = cap0
 
         // 5. acknowledgement against verified manifests
         val (gm, gc) = chainAck(slot, "poll-$S1-40", 4)
         assertEquals("ARCHIVE_ACKED", ResearchProtection.acknowledgeArchive(dir, slot, gm, gc, 2L))
-        assertFalse(ResearchProtection.isProtected(dir, "NF", "poll-$S1-40"))
+        assertFalse(ResearchProtection.isProtected(dir, "BNF", "poll-$S1-40"))
         assertEquals("ARCHIVE_ACKED", ResearchProtection.acknowledgeArchive(dir, manId,
             JSONObject().put("entry_id", manId).put("index", "SESSION").put("poll_ts", S1).put("roles", JSONArray(listOf("SESSION_MANIFEST")))
                 .put("content_sha256", msha).put("content_bytes", mb.size), mb, 2L, ResearchCollector.manifestArchive(dir, S1)!!.second))
 
         // 6. deletion: only now may the oldest manifest go; its entries become RELEASED
-        assertTrue(ResearchCollector.beginAttempt(dir, "NF", "$S3|40", ms(S3, 12, 30)) is ResearchCollector.Begin.Started)
+        assertTrue(ResearchCollector.beginAttempt(dir, "BNF", "$S3|40", ms(S3, 12, 30)) is ResearchCollector.Begin.Started)
         assertNull(ResearchCollector.readManifest(dir, S1))
         assertEquals("RELEASED", ResearchProtection.entry(dir, slot)!!.getString("state"))
         assertEquals("RELEASED", ResearchProtection.entry(dir, manId)!!.getString("state"))

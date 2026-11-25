@@ -715,7 +715,7 @@ object ResearchCollector {
         out.put("envelopes_unprotected", unprotectedEnvelopes(dir).length())
         val integ = integrity(dir)
         out.put("corrupt_files", integ)
-        val todayPlan = ResearchCalendar.plan(today, "NF")
+        val todayPlan = ResearchCalendar.plan(today, "BNF")
         val label = when {
             prot.optString("integrity") == "LEDGER_CORRUPT" || integ.length() > 0 -> "INTEGRITY_FAULT"
             !enabled -> "DISABLED"

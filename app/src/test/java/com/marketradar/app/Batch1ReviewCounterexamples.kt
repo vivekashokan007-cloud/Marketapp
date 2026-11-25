@@ -26,8 +26,8 @@ class Batch1ReviewCounterexamples {
         .put("put_options", JSONObject().put("instrument_key", "NSE_FO|12346")
             .put("market_data", JSONObject().put("bid_price", 12).put("ask_price", 13)))))
     private fun capture(dir: File, poll: String = "original-poll"): Pair<ResearchCollector.Begin.Started, ResearchCollector.Capture> {
-        val a = ResearchCollector.beginAttempt(dir, "NF", "$day|40", now()) as ResearchCollector.Begin.Started
-        val c = ResearchCollector.captureFromChain(dir, "NF", chain(), now(), now(), ChainEvidenceRef.TABLE, now(), poll, now(), a.attemptId)
+        val a = ResearchCollector.beginAttempt(dir, "BNF", "$day|40", now()) as ResearchCollector.Begin.Started
+        val c = ResearchCollector.captureFromChain(dir, "BNF", chain(), now(), now(), ChainEvidenceRef.TABLE, now(), poll, now(), a.attemptId)
         assertEquals(ResearchCollector.RecordResult.RECORDED, ResearchCollector.recordCapture(dir, a.slotId, a.attemptId, c, now()))
         return a to c
     }
@@ -35,16 +35,16 @@ class Batch1ReviewCounterexamples {
     @Test fun unrelatedSameCountArchiveMustNotUnprotectOriginalChain() = fixture { dir ->
         val (a, _) = capture(dir)
         // These integers are not the captured bid/ask/instrument rows. Self-consistent metadata is not source proof.
-        val bytes = JSONObject().put("index", "NF").put("poll_ts", "original-poll")
+        val bytes = JSONObject().put("index", "BNF").put("poll_ts", "original-poll")
             .put("rows", JSONArray(listOf(0, 1))).toString().toByteArray(Charsets.UTF_8)
         // Fixture adapted to the B1-R2 API: protection is per durable attempt (id = slot@attempt).
         val pid = ResearchCollector.chainProtectionId(a.slotId, a.attemptId)
-        val manifest = JSONObject().put("entry_id", pid).put("index", "NF").put("poll_ts", "original-poll")
+        val manifest = JSONObject().put("entry_id", pid).put("index", "BNF").put("poll_ts", "original-poll")
             .put("roles", JSONArray(listOf("CHAIN_POLL"))).put("row_count", 2)
             .put("content_sha256", M0Durable.sha256(bytes)).put("content_bytes", bytes.size)
         val result = ResearchProtection.acknowledgeArchive(dir, pid, manifest, bytes, now())
         assertTrue("unrelated rows were accepted: $result", result.startsWith("REJECTED:"))
-        assertTrue(ResearchProtection.isProtected(dir, "NF", "original-poll"))
+        assertTrue(ResearchProtection.isProtected(dir, "BNF", "original-poll"))
     }
 
     @Test fun mapIndexLossMustNotDeleteManifestReferencedMap() = fixture { dir ->
@@ -52,7 +52,7 @@ class Batch1ReviewCounterexamples {
         val old = File(dir, "imap_${c.imapVersion}.json")
         assertTrue(old.exists())
         assertTrue(File(dir, "imapindex.json").delete())
-        val result = ResearchCollector.putInstrumentMap(dir, "NF", listOf("NF|2026-10-27|22700|CE|NSE_FO|99999"), now(), "new-attempt")
+        val result = ResearchCollector.putInstrumentMap(dir, "BNF", listOf("BNF|2026-10-27|22700|CE|NSE_FO|99999"), now(), "new-attempt")
         assertTrue("map returned $result but erased a map still referenced by the durable manifest", old.exists())
     }
 
@@ -81,13 +81,13 @@ class Batch1ReviewCounterexamples {
     @Test fun everyDurableRetryPollMustBeProtected() = fixture { dir ->
         capture(dir, "first-poll")
         capture(dir, "second-poll")
-        assertTrue("second durable attempt is recorded but only first poll is protected", ResearchProtection.isProtected(dir, "NF", "second-poll"))
+        assertTrue("second durable attempt is recorded but only first poll is protected", ResearchProtection.isProtected(dir, "BNF", "second-poll"))
     }
 
     @Test fun mapByteCapMustMeasureWrittenSealedBytes() = fixture { dir ->
-        val lines = (1..100).map { "NF|2026-10-27|${22000 + it * 50}|CE|NSE_FO|${100000 + it}" }
+        val lines = (1..100).map { "BNF|2026-10-27|${22000 + it * 50}|CE|NSE_FO|${100000 + it}" }
         ResearchCollector.MAX_IMAP_BYTES = lines.joinToString("\n").length.toLong() + 256
-        val result = ResearchCollector.putInstrumentMap(dir, "NF", lines, now(), "lease")
+        val result = ResearchCollector.putInstrumentMap(dir, "BNF", lines, now(), "lease")
         val actual = dir.listFiles()!!.filter { it.name.startsWith("imap_") }.sumOf { it.length() }
         assertTrue("result=$result actual_sealed_bytes=$actual cap=${ResearchCollector.MAX_IMAP_BYTES}", actual <= ResearchCollector.MAX_IMAP_BYTES)
     }

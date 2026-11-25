@@ -44,10 +44,10 @@ class M0Stage2ExportStatusTest {
         return JSONObject().put("status", "success").put("data", data)
     }
 
-    /** One real poll (NF+BNF attempts, captures, envelope) through the collector APIs. */
+    /** One real poll (BNF attempts, captures, envelope) through the collector APIs. */
     private fun poll(ord: Int) {
         val now = ms(S1, 9, 15) + (ord - 1) * 300_000L + 5_000
-        for (ix in listOf("NF", "BNF")) {
+        for (ix in listOf("BNF")) {
             val a = ResearchCollector.beginAttempt(dir, ix, "$S1|$ord", now) as ResearchCollector.Begin.Started
             val cap = ResearchCollector.captureFromChain(dir, ix, chain(ix), now - 800, now, "ml_option_chain_snapshots", now + 300, java.time.Instant.ofEpochMilli(now).toString(), now, a.attemptId)
             ResearchCollector.recordCapture(dir, a.slotId, a.attemptId, cap, now)

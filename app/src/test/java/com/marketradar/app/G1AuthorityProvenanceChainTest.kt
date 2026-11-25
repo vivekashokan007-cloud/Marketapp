@@ -93,7 +93,7 @@ class G1AuthorityProvenanceChainTest {
             val rec = record(name)
             assertEquals("mr.snapshot_primary.index_direction_v1", rec.getString("record_schema"))
             assertTrue(rec.getString("coverage_note").contains("not chosen-trade labels"))
-            for (ix in listOf("NF", "BNF")) {
+            for (ix in listOf("BNF")) {
                 assertEquals(decisionId(name, ix), rec.getJSONObject("by_index").getJSONObject(ix).getString("decision_id"))
                 val m = managed(name, ix)
                 assertEquals("index_managed_v1", m.getString("policy_id"))
@@ -105,7 +105,7 @@ class G1AuthorityProvenanceChainTest {
 
     @Test fun candidateLineageAndLegFreshnessSurviveCompaction() {
         val gen = ctx("pair_both_admissible").getJSONArray("snapshot_generated_candidates")
-        assertEquals(4, gen.length())
+        assertEquals(2, gen.length())
         for (i in 0 until gen.length()) {
             val c = gen.getJSONObject(i)
             assertEquals("index_direction_v1", c.getString("authorityPolicyVersion"))
@@ -143,7 +143,7 @@ class G1AuthorityProvenanceChainTest {
     }
 
     @Test fun bothAdmissiblePairHasNoPrimary() {
-        for (ix in listOf("NF", "BNF")) {
+        for (ix in listOf("BNF")) {
             assertEquals("STRUCTURE_CHOICE_RULE_UNSPECIFIED", managed("pair_both_admissible", ix).getString("reason"))
             assertEquals(2, managed("pair_both_admissible", ix).getInt("admissible_count"))
         }
@@ -152,7 +152,7 @@ class G1AuthorityProvenanceChainTest {
     }
 
     @Test fun managedCapBlocksBothAndIsRecorded() {
-        for (ix in listOf("NF", "BNF")) {
+        for (ix in listOf("BNF")) {
             val m = managed("managed_cap_both_blocked", ix)
             assertEquals("NO_ADMISSIBLE_CANDIDATE", m.getString("reason"))
             assertEquals(1, m.getInt("exposure_count"))
@@ -168,9 +168,9 @@ class G1AuthorityProvenanceChainTest {
 
     @Test fun exactlyOneAdmittedStaleLegBecomesIndexManagedPrimary() {
         val name = "exactly_one_admitted_stale_leg"
-        val m = managed(name, "NF")
+        val m = managed(name, "BNF")
         assertEquals(1, m.getInt("admissible_count"))
-        val stale = index.getJSONObject(name).getJSONObject("stale_candidate").getString("NF")
+        val stale = index.getJSONObject(name).getJSONObject("stale_candidate").getString("BNF")
         val gates = m.getJSONArray("gates")
         val staleGate = (0 until gates.length()).map { gates.getJSONObject(it) }.single { it.getString("candidate_id") == stale }
         assertEquals("STALE", staleGate.getString("freshness_status"))
@@ -181,30 +181,30 @@ class G1AuthorityProvenanceChainTest {
         val prim = uploaded.getValue(name).getJSONObject("primary_candidate_json")
         assertEquals(selected, prim.getString("id"))
         assertEquals("index_managed_v1", prim.getString("policySelectorVersion"))
-        assertEquals(decisionId(name, "NF"), prim.getString("indexDecisionId"))
+        assertEquals(decisionId(name, "BNF"), prim.getString("indexDecisionId"))
         val p = outcomes(name).single { it.optString("role") == "primary" }
         assertEquals(selected, p.getString("candidate_id"))
         assertEquals("index_managed_v1", p.getString("policy_selector_version"))
-        assertEquals(decisionId(name, "NF"), p.getString("indexDecisionId"))
-        // selector excluded BNF from new admission; the reason survives
-        assertTrue(managed(name, "BNF").getJSONArray("gates").toString().contains("INDEX_NOT_SELECTED"))
+        assertEquals(decisionId(name, "BNF"), p.getString("indexDecisionId"))
+        // A retired NF selector cannot reactivate NF or suppress the active BNF path.
+        assertFalse(rec.getJSONObject("by_index").has("NF"))
     }
 
-    @Test fun twoIndicesSelectingIsMultipleWithoutPrimary() {
+    @Test fun retiredNfSelectionDoesNotCompeteWithBnfPrimary() {
         val name = "two_indices_selecting"
         val rec = record(name)
-        assertEquals("MULTIPLE_MANAGED_SELECTIONS", rec.getString("primary_reason"))
-        assertEquals(2, rec.getJSONArray("selected_candidate_ids").length())
-        for (ix in listOf("NF", "BNF")) assertNotNull(managed(name, ix).optString("selected_candidate_id").ifBlank { null })
-        assertTrue(outcomes(name).none { it.optString("role") == "primary" })
+        assertEquals(1, rec.getJSONArray("selected_candidate_ids").length())
+        assertNotNull(managed(name, "BNF").optString("selected_candidate_id").ifBlank { null })
+        assertFalse(rec.getJSONObject("by_index").has("NF"))
+        assertEquals(1, outcomes(name).count { it.optString("role") == "primary" })
     }
 
     @Test fun nfExpiryDayAndPost1515AreRecordedNotLost() {
         val e = record("nf_expiry_day").getJSONObject("by_index")
-        assertEquals(0, e.getJSONObject("NF").getJSONArray("candidate_ids").length())
+        assertFalse(e.has("NF"))
         assertEquals(2, e.getJSONObject("BNF").getJSONArray("candidate_ids").length())
         val p = record("post_1515").getJSONObject("by_index")
-        for (ix in listOf("NF", "BNF")) {
+        for (ix in listOf("BNF")) {
             assertEquals("NO_NEW_ENTRY", p.getJSONObject(ix).getString("action"))
             assertEquals(0, managed("post_1515", ix).getInt("gate_count"))
         }

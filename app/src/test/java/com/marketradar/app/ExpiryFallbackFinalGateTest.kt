@@ -29,12 +29,12 @@ class ExpiryFallbackFinalGateTest {
             .put("expiry_fallback", JSONObject().put("status", "EVIDENCE_REQUIRED").put("decision_id", did)
                 .put("trade_expiry", "2026-11-23").put("base_reasons", JSONArray().put("EXPIRY_DAY_NO_NEXT_CHAIN"))
                 .put("base_status", "BLOCKED"))
-        return JSONObject().put("single_leg_by_index", JSONObject().put("NF", plan("idx1_n")))
+        return JSONObject().put("single_leg_by_index", JSONObject().put("BNF", plan("idx1_b")))
     }
 
-    private fun patchFor(attempt: JSONObject): String = JSONObject().put("single_leg_by_index", JSONObject().put("NF",
-        JSONObject().put("decision_id", "idx1_n").put("status", "ELIGIBLE_PENDING_SNAPSHOT")
-            .put("instrument_key", "NSE_FO|NF2026120124000CE").put("reasons", JSONArray())
+    private fun patchFor(attempt: JSONObject): String = JSONObject().put("single_leg_by_index", JSONObject().put("BNF",
+        JSONObject().put("decision_id", "idx1_b").put("status", "ELIGIBLE_PENDING_SNAPSHOT")
+            .put("instrument_key", "NSE_FO|BNF2026122952000CE").put("reasons", JSONArray())
             .put("expiry_fallback", JSONObject().put("status", "APPLIED").put("attempt", attempt)))).put("attempt", attempt).toString()
 
     private data class Ack(val id: String, val gen: Long, val state: S, val reason: String?, val decidedMs: Long?)
@@ -57,7 +57,7 @@ class ExpiryFallbackFinalGateTest {
         val d = ExpiryFallbackPublication.applyAndPublish(r, w.pub, "test.efb.gate." + System.nanoTime(), 2_000L,
             Long.MAX_VALUE, { 0L }, { a -> patchFor(a) }, w.acks::add)
         assertEquals(S.APPLY_ACCEPTED, d.state)
-        assertEquals("NSE_FO|NF2026120124000CE", r.getJSONObject("single_leg_by_index").getJSONObject("NF").getString("instrument_key"))
+        assertEquals("NSE_FO|BNF2026122952000CE", r.getJSONObject("single_leg_by_index").getJSONObject("BNF").getString("instrument_key"))
         assertTrue("no acknowledgement before the final gate", w.acks.list.none { it.id == d.attempt.id })
         return d.attempt
     }

@@ -39,7 +39,7 @@ class M0Batch1DurabilityTest {
             .put("put_options", JSONObject().put("instrument_key", "NSE_FO|$keyTag$k" + "PE").put("market_data", JSONObject().put("bid_price", 1.0).put("ask_price", 1.1))))
     })
 
-    private fun captureSlot(ord: Int, keyTag: String, index: String = "NF"): JSONObject {
+    private fun captureSlot(ord: Int, keyTag: String, index: String = "BNF"): JSONObject {
         val now = ResearchCalendar.slotGrid(java.time.LocalDate.parse(S)).first { it.ordinal == ord }.nominalMs + 5_000
         val b = ResearchCollector.beginAttempt(dir, index, "$S|$ord", now) as ResearchCollector.Begin.Started
         val c = ResearchCollector.captureFromChain(dir, index, chain(index, keyTag), now, now, "ml_option_chain_snapshots", now,
@@ -71,19 +71,19 @@ class M0Batch1DurabilityTest {
 
     @Test fun admitted_map_lease_protects_it_until_the_capture_commits() {
         ResearchCollector.MAX_IMAP_FILES = 2
-        val a = ResearchCollector.putInstrumentMap(dir, "NF", listOf("NF|e|1|CE|A"), 1L, "attemptA") as ResearchCollector.MapRef.Ok
+        val a = ResearchCollector.putInstrumentMap(dir, "BNF", listOf("BNF|e|1|CE|A"), 1L, "attemptA") as ResearchCollector.MapRef.Ok
         // another index admits maps in between (the old prune could delete A here)
-        ResearchCollector.putInstrumentMap(dir, "BNF", listOf("BNF|e|1|CE|B"), 2L, null)
-        ResearchCollector.putInstrumentMap(dir, "BNF", listOf("BNF|e|1|CE|C"), 3L, null)
+        ResearchCollector.putInstrumentMap(dir, "NF", listOf("NF|e|1|CE|B"), 2L, null)
+        ResearchCollector.putInstrumentMap(dir, "NF", listOf("NF|e|1|CE|C"), 3L, null)
         assertNotNull(ResearchCollector.readInstrumentMap(dir, a.version))
         assertTrue(imapCount() <= 2)
         // sustained map churn without references stays bounded
-        repeat(50) { ResearchCollector.putInstrumentMap(dir, "BNF", listOf("BNF|e|1|CE|X$it"), 10L + it, null) }
+        repeat(50) { ResearchCollector.putInstrumentMap(dir, "NF", listOf("NF|e|1|CE|X$it"), 10L + it, null) }
         assertTrue(imapCount() <= 2); assertNotNull(ResearchCollector.readInstrumentMap(dir, a.version))
         // B1-R4: an unverifiable unindexed map file is never served and NEVER deleted by absence from the index
         // (it is kept, counted against the byte cap and reported as unverified).
         File(dir, "imap_${"f".repeat(64)}.json").writeText("x")
-        ResearchCollector.putInstrumentMap(dir, "BNF", listOf("BNF|e|1|CE|Y"), 99L, null)
+        ResearchCollector.putInstrumentMap(dir, "NF", listOf("NF|e|1|CE|Y"), 99L, null)
         assertTrue(File(dir, "imap_${"f".repeat(64)}.json").exists())
         assertNull(ResearchCollector.readInstrumentMap(dir, "f".repeat(64)))
     }
@@ -105,8 +105,8 @@ class M0Batch1DurabilityTest {
         var maxEntries = 0; var maxBytes = 0
         repeat(300) { i ->
             val id = "e$i"
-            assertEquals("STAGED", ResearchProtection.request(dir, id, "o", "NF", "p$i", S, listOf("CHAIN_POLL"), i.toLong(), expectedRows = 2, sourceSha = srcSha("NF", 2)))
-            val (m, c) = chainArchive(id, "NF", "p$i", 2)
+            assertEquals("STAGED", ResearchProtection.request(dir, id, "o", "BNF", "p$i", S, listOf("CHAIN_POLL"), i.toLong(), expectedRows = 2, sourceSha = srcSha("BNF", 2)))
+            val (m, c) = chainArchive(id, "BNF", "p$i", 2)
             assertEquals("ARCHIVE_ACKED", ResearchProtection.acknowledgeArchive(dir, id, m, c, i.toLong()))
             assertEquals("RELEASED", ResearchProtection.release(dir, id, i.toLong()))
             val txt = (M0Durable.read(File(dir, "protection.json")) as M0Durable.Read.Ok).json
@@ -119,15 +119,15 @@ class M0Batch1DurabilityTest {
         assertEquals(64, sum.getJSONObject("compacted").getString("chain").length)
         assertEquals("OK", sum.getString("integrity"))
         // acknowledged-but-unreleased entries still count against the cap (no bypass through final-ish states)
-        repeat(5) { i -> ResearchProtection.request(dir, "h$i", "o", "NF", "q$i", S, listOf("CHAIN_POLL"), 1L, expectedRows = 1)
-            val (m, c) = chainArchive("h$i", "NF", "q$i", 1); ResearchProtection.acknowledgeArchive(dir, "h$i", m, c, 1L) }
-        assertEquals("CAPACITY_REJECTED", ResearchProtection.request(dir, "h9", "o", "NF", "q9", S, listOf("CHAIN_POLL"), 1L, expectedRows = 1))
+        repeat(5) { i -> ResearchProtection.request(dir, "h$i", "o", "BNF", "q$i", S, listOf("CHAIN_POLL"), 1L, expectedRows = 1)
+            val (m, c) = chainArchive("h$i", "BNF", "q$i", 1); ResearchProtection.acknowledgeArchive(dir, "h$i", m, c, 1L) }
+        assertEquals("CAPACITY_REJECTED", ResearchProtection.request(dir, "h9", "o", "BNF", "q9", S, listOf("CHAIN_POLL"), 1L, expectedRows = 1))
         assertEquals("PROTECTION_BACKLOG_AT_CAPACITY", ResearchProtection.admission(dir))
         // byte bound (fresh ledger)
         dir.listFiles()!!.forEach { it.delete() }
         ResearchProtection.CAPACITY = 1000; ResearchProtection.MAX_BYTES = 3_000
         var rejected = false
-        repeat(50) { i -> if (ResearchProtection.request(dir, "b$i".repeat(10), "o", "NF", "x$i", S, listOf("CHAIN_POLL"), 1L) == "CAPACITY_REJECTED") rejected = true }
+        repeat(50) { i -> if (ResearchProtection.request(dir, "b$i".repeat(10), "o", "BNF", "x$i", S, listOf("CHAIN_POLL"), 1L) == "CAPACITY_REJECTED") rejected = true }
         assertTrue(rejected)
         assertTrue((M0Durable.read(File(dir, "protection.json")) as M0Durable.Read.Ok).body.length <= 3_000)
     }
@@ -136,7 +136,7 @@ class M0Batch1DurabilityTest {
     @Test fun corrupt_ledger_is_not_reported_as_healthy() {
         // first use: absent ledger is NO_EVIDENCE, not OK
         assertEquals("NO_EVIDENCE", ResearchProtection.summary(dir, S).getString("integrity"))
-        ResearchProtection.request(dir, "A", "o", "NF", "t1", S, listOf("CHAIN_POLL"), 1L, expectedRows = 1)
+        ResearchProtection.request(dir, "A", "o", "BNF", "t1", S, listOf("CHAIN_POLL"), 1L, expectedRows = 1)
         File(dir, "protection.json").writeText("{garbage")
         assertEquals("LEDGER_CORRUPT", ResearchProtection.summary(dir, S).getString("integrity"))
         ResearchCollector.setEnabled(dir, true, ms(9, 0))
@@ -144,39 +144,39 @@ class M0Batch1DurabilityTest {
         // persisted: even if the corrupt file disappears, the ledger is not silently reset to empty/healthy
         File(dir, "protection.json").delete()
         assertEquals("LEDGER_CORRUPT", ResearchProtection.summary(dir, S).getString("integrity"))
-        assertTrue(ResearchProtection.isProtected(dir, "NF", "anything"))
+        assertTrue(ResearchProtection.isProtected(dir, "BNF", "anything"))
     }
 
     @Test fun lost_established_ledger_is_corrupt_not_first_use() {
-        ResearchProtection.request(dir, "A", "o", "NF", "t1", S, listOf("CHAIN_POLL"), 1L, expectedRows = 1)
+        ResearchProtection.request(dir, "A", "o", "BNF", "t1", S, listOf("CHAIN_POLL"), 1L, expectedRows = 1)
         File(dir, "protection.json").delete()
         val s = ResearchProtection.summary(dir, S)
         assertEquals("LEDGER_CORRUPT", s.getString("integrity")); assertEquals("established_ledger_lost", s.getString("corrupt_reason"))
     }
 
     @Test fun request_does_not_overwrite_corrupted_evidence() {
-        ResearchProtection.request(dir, "A", "o", "NF", "t1", S, listOf("CHAIN_POLL"), 1L, expectedRows = 1)
+        ResearchProtection.request(dir, "A", "o", "BNF", "t1", S, listOf("CHAIN_POLL"), 1L, expectedRows = 1)
         val f = File(dir, "protection.json")
         val sealed = JSONObject(f.readText()); sealed.put("body", sealed.getString("body").replace("t1", "tX"))   // digest mismatch
         f.writeText(sealed.toString())
         val before = f.readBytes()
-        assertEquals("LEDGER_CORRUPT", ResearchProtection.request(dir, "B", "o", "NF", "t2", S, listOf("CHAIN_POLL"), 2L))
-        val (m, c) = chainArchive("A", "NF", "t1", 1)
+        assertEquals("LEDGER_CORRUPT", ResearchProtection.request(dir, "B", "o", "BNF", "t2", S, listOf("CHAIN_POLL"), 2L))
+        val (m, c) = chainArchive("A", "BNF", "t1", 1)
         assertEquals("LEDGER_CORRUPT", ResearchProtection.acknowledgeArchive(dir, "A", m, c, 3L))
         assertEquals("LEDGER_CORRUPT", ResearchProtection.release(dir, "A", 3L))
         assertEquals(0, ResearchProtection.enforceLag(dir, "2026-12-01", 1))
         assertArrayEquals(before, f.readBytes())
         ResearchCollector.setEnabled(dir, true, ms(9, 0))
-        assertEquals(ResearchCollector.Begin.Unavailable("LEDGER_CORRUPT"), ResearchCollector.beginAttempt(dir, "NF", "$S|40", ms(12, 30)))
+        assertEquals(ResearchCollector.Begin.Unavailable("LEDGER_CORRUPT"), ResearchCollector.beginAttempt(dir, "BNF", "$S|40", ms(12, 30)))
         assertArrayEquals(before, f.readBytes())
     }
 
     @Test fun corrupt_manifest_is_never_recreated_over() {
         ResearchCollector.setEnabled(dir, true, ms(9, 0))
-        ResearchCollector.beginAttempt(dir, "NF", "$S|40", ms(12, 30))
+        ResearchCollector.beginAttempt(dir, "BNF", "$S|40", ms(12, 30))
         val f = File(dir, "manifest_$S.json"); f.writeText(f.readText().dropLast(20))
         val before = f.readBytes()
-        assertEquals(ResearchCollector.Begin.Unavailable("MANIFEST_CORRUPT"), ResearchCollector.beginAttempt(dir, "NF", "$S|41", ms(12, 35)))
+        assertEquals(ResearchCollector.Begin.Unavailable("MANIFEST_CORRUPT"), ResearchCollector.beginAttempt(dir, "BNF", "$S|41", ms(12, 35)))
         val r = ResearchCollector.reconcile(dir, ms(23, 0))
         assertEquals(S, r.getJSONArray("corrupt_manifests").getString(0))
         assertArrayEquals(before, f.readBytes())
@@ -240,7 +240,7 @@ class M0Batch1DurabilityTest {
             val ids = (l as ResearchProtection.Load.Ok).o.getJSONObject("entries").keys().asSequence().toSet()
             assertTrue("protection@$b ids=$ids", ids == setOf("A") || ids == setOf("A", "B"))
             assertNotEquals("NO_EVIDENCE", ResearchProtection.summary(dir, S).getString("integrity"))
-            assertTrue(ResearchProtection.isProtected(dir, "NF", "t1"))
+            assertTrue(ResearchProtection.isProtected(dir, "BNF", "t1"))
 
             // first-ever ledger write: old = genuine first use (NO_EVIDENCE, never OK), new = {B}
             dir.deleteRecursively(); dir.mkdirs()
@@ -256,16 +256,16 @@ class M0Batch1DurabilityTest {
             assertEquals(77, runChild("manifest", b, "manifest_$S.json"))
             M0Durable.recover(dir)
             val m = ResearchCollector.readManifest(dir, S)!!
-            val n = m.getJSONObject("indices").getJSONObject("NF").getJSONObject("slots").getJSONObject("40").getJSONArray("attempts").length()
+            val n = m.getJSONObject("indices").getJSONObject("BNF").getJSONObject("slots").getJSONObject("40").getJSONArray("attempts").length()
             assertTrue("manifest@$b attempts=$n", n == 1 || n == 2)
-            assertEquals(78, m.getJSONObject("indices").getJSONObject("NF").getInt("expected"))
+            assertEquals(78, m.getJSONObject("indices").getJSONObject("BNF").getInt("expected"))
 
             // instrument-map admission index: map 1 always admitted and resolvable
             dir.deleteRecursively(); dir.mkdirs()
             assertEquals(77, runChild("imap", b, "imapindex.json"))
             M0Durable.recover(dir)
             val adm = InstrumentMaps.admitted(dir)
-            val v1 = M0Durable.sha256("NF|2026-10-27|100|CE|K1")
+            val v1 = M0Durable.sha256("BNF|2026-10-27|100|CE|K1")
             assertTrue("imap@$b", v1 in adm && adm.size in 1..2)
             for (v in adm) assertNotNull(ResearchCollector.readInstrumentMap(dir, v))
         }

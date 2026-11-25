@@ -43,7 +43,7 @@ class ExpiryFallbackPublicationTest {
     private fun fb(r: JSONObject, ix: String) = r.getJSONObject("single_leg_by_index").getJSONObject(ix).getJSONObject("expiry_fallback")
 
     private fun assertWaited(r: JSONObject, code: String) {
-        for (ix in listOf("NF", "BNF")) {
+        for (ix in listOf("BNF")) {
             val p = r.getJSONObject("single_leg_by_index").getJSONObject(ix)
             assertEquals("WAIT", fb(r, ix).getString("status"))
             assertEquals(code, fb(r, ix).getString("reason"))
@@ -80,7 +80,7 @@ class ExpiryFallbackPublicationTest {
 
     @Test fun pyTimeoutLateCompletionIsNeverPublishedThenNextPollPublishes() {
         val ev = acquire()
-        assertTrue(ev.has("NF") && ev.has("BNF"))
+        assertFalse(ev.has("NF")); assertTrue(ev.has("BNF"))
         val pub = ExpiryFallbackPublication(ExpiryFallbackPublication.MemoryStore())
         val rec = Recon()
         val r = result()

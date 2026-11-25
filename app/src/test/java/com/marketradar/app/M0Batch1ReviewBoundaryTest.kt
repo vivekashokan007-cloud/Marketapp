@@ -43,14 +43,14 @@ class M0Batch1ReviewBoundaryTest {
         JSONObject().put("expiry", "2026-10-27").put("strike", 22650).put("option_type", "PE").put("instrument_key", "NSE_FO|12346").put("bid", 12).put("ask", 13).put("ltp", JSONObject.NULL))
 
     private fun capture(poll: String, ord: Int = 40): String {
-        val a = ResearchCollector.beginAttempt(dir, "NF", "$day|$ord", now()) as ResearchCollector.Begin.Started
-        val c = ResearchCollector.captureFromChain(dir, "NF", chain(), now(), now(), ChainEvidenceRef.TABLE, now(), poll, now(), a.attemptId)
+        val a = ResearchCollector.beginAttempt(dir, "BNF", "$day|$ord", now()) as ResearchCollector.Begin.Started
+        val c = ResearchCollector.captureFromChain(dir, "BNF", chain(), now(), now(), ChainEvidenceRef.TABLE, now(), poll, now(), a.attemptId)
         assertEquals(ResearchCollector.RecordResult.RECORDED, ResearchCollector.recordCapture(dir, a.slotId, a.attemptId, c, now()))
         return ResearchCollector.chainProtectionId(a.slotId, a.attemptId)
     }
     private fun ack(id: String, rows: List<JSONObject>, poll: String = "p"): String {
-        val bytes = JSONObject().put("index", "NF").put("poll_ts", poll).put("rows", JSONArray(rows)).toString().toByteArray(Charsets.UTF_8)
-        val m = JSONObject().put("entry_id", id).put("index", "NF").put("poll_ts", poll).put("roles", JSONArray(listOf("CHAIN_POLL")))
+        val bytes = JSONObject().put("index", "BNF").put("poll_ts", poll).put("rows", JSONArray(rows)).toString().toByteArray(Charsets.UTF_8)
+        val m = JSONObject().put("entry_id", id).put("index", "BNF").put("poll_ts", poll).put("roles", JSONArray(listOf("CHAIN_POLL")))
             .put("row_count", rows.size).put("content_sha256", M0Durable.sha256(bytes)).put("content_bytes", bytes.size)
         return ResearchProtection.acknowledgeArchive(dir, id, m, bytes, now())
     }
@@ -66,24 +66,24 @@ class M0Batch1ReviewBoundaryTest {
         for ((name, alter) in alterations) {
             val rows = genuine().map { JSONObject(it.toString()) }; alter(rows[0])
             assertEquals("altered $name", "REJECTED:source_rows_mismatch", ack(id, rows))
-            assertTrue(ResearchProtection.isProtected(dir, "NF", "p"))
+            assertTrue(ResearchProtection.isProtected(dir, "BNF", "p"))
         }
         // same-count non-canonical rows (Codex counterexample shape) are rejected too
         assertEquals("REJECTED:chain_rows_not_canonical", ResearchProtection.acknowledgeArchive(dir, id,
-            JSONObject().put("entry_id", id).put("index", "NF").put("poll_ts", "p").put("roles", JSONArray(listOf("CHAIN_POLL"))).put("row_count", 2)
-                .put("content_sha256", M0Durable.sha256("{\"index\":\"NF\",\"poll_ts\":\"p\",\"rows\":[0,1]}".toByteArray())).put("content_bytes", "{\"index\":\"NF\",\"poll_ts\":\"p\",\"rows\":[0,1]}".toByteArray().size),
-            "{\"index\":\"NF\",\"poll_ts\":\"p\",\"rows\":[0,1]}".toByteArray(), now()))
+            JSONObject().put("entry_id", id).put("index", "BNF").put("poll_ts", "p").put("roles", JSONArray(listOf("CHAIN_POLL"))).put("row_count", 2)
+                .put("content_sha256", M0Durable.sha256("{\"index\":\"BNF\",\"poll_ts\":\"p\",\"rows\":[0,1]}".toByteArray())).put("content_bytes", "{\"index\":\"BNF\",\"poll_ts\":\"p\",\"rows\":[0,1]}".toByteArray().size),
+            "{\"index\":\"BNF\",\"poll_ts\":\"p\",\"rows\":[0,1]}".toByteArray(), now()))
         // a genuine archive in another row order / numeric spelling (10 vs 10.0, CALL vs CE) is the same evidence
         val g = genuine().reversed().map { JSONObject(it.toString()) }
         g[0].put("bid", 12.0); g[1].put("option_type", "CALL")
         assertEquals("ARCHIVE_ACKED", ack(id, g))
-        assertFalse(ResearchProtection.isProtected(dir, "NF", "p"))
+        assertFalse(ResearchProtection.isProtected(dir, "BNF", "p"))
     }
 
     @Test fun r1_without_source_proof_the_entry_stays_protected_with_a_reason() {
-        assertEquals("STAGED", ResearchProtection.request(dir, "x", "o", "NF", "p", day, listOf("CHAIN_POLL"), 1L, expectedRows = 2))
+        assertEquals("STAGED", ResearchProtection.request(dir, "x", "o", "BNF", "p", day, listOf("CHAIN_POLL"), 1L, expectedRows = 2))
         assertEquals("REJECTED:source_proof_unavailable", ack("x", genuine()))
-        assertTrue(ResearchProtection.isProtected(dir, "NF", "p"))
+        assertTrue(ResearchProtection.isProtected(dir, "BNF", "p"))
         assertEquals("source_proof_unavailable", ResearchProtection.entry(dir, "x")!!.getString("last_ack_error"))
     }
 
@@ -91,7 +91,7 @@ class M0Batch1ReviewBoundaryTest {
         ResearchCollector.setEnabled(dir, true, now())
         val id = capture("p")
         val src = ResearchProtection.entry(dir, id)!!.getString("source_rows_sha256")
-        val slot = ResearchCollector.readManifest(dir, day)!!.getJSONObject("indices").getJSONObject("NF").getJSONObject("slots").getJSONObject("40")
+        val slot = ResearchCollector.readManifest(dir, day)!!.getJSONObject("indices").getJSONObject("BNF").getJSONObject("slots").getJSONObject("40")
         val cap = slot.getJSONArray("attempts").getJSONObject(0).getJSONObject("capture")
         assertEquals(src, cap.getString("source_rows_sha256"))
         assertEquals(64, src.length)
@@ -102,8 +102,8 @@ class M0Batch1ReviewBoundaryTest {
     // ------------------------------------------------------------------ B1-R2
     @Test fun r2_each_attempt_has_its_own_entry_retries_are_idempotent_and_identity_conflicts_are_explicit() {
         ResearchCollector.setEnabled(dir, true, now())
-        val a = ResearchCollector.beginAttempt(dir, "NF", "$day|40", now()) as ResearchCollector.Begin.Started
-        val c = ResearchCollector.captureFromChain(dir, "NF", chain(), now(), now(), ChainEvidenceRef.TABLE, now(), "first", now(), a.attemptId)
+        val a = ResearchCollector.beginAttempt(dir, "BNF", "$day|40", now()) as ResearchCollector.Begin.Started
+        val c = ResearchCollector.captureFromChain(dir, "BNF", chain(), now(), now(), ChainEvidenceRef.TABLE, now(), "first", now(), a.attemptId)
         assertEquals(ResearchCollector.RecordResult.RECORDED, ResearchCollector.recordCapture(dir, a.slotId, a.attemptId, c, now()))
         // retry of the same attempt (process restart re-delivers) -> idempotent, no second entry
         assertEquals(ResearchCollector.RecordResult.IDEMPOTENT, ResearchCollector.recordCapture(dir, a.slotId, a.attemptId, c, now()))
@@ -112,16 +112,16 @@ class M0Batch1ReviewBoundaryTest {
         val counts = ResearchProtection.summary(dir, day).getJSONObject("counts")
         assertEquals(3, counts.getInt("STAGED"))
         assertEquals(setOf(ResearchCollector.chainProtectionId(a.slotId, a.attemptId), id2, id3).size, 3)
-        for (p in listOf("first", "second", "third")) assertTrue(ResearchProtection.isProtected(dir, "NF", p))
-        // same id with different contents is an IDENTITY_CONFLICT; the original identity is untouched
+        for (p in listOf("first", "second", "third")) assertTrue(ResearchProtection.isProtected(dir, "BNF", p))
+        // same id with different contents is an IDENTITY_COBNFLICT; the original identity is untouched
         val e0 = ResearchProtection.entry(dir, id2)!!.toString()
-        assertEquals("IDENTITY_CONFLICT", ResearchProtection.request(dir, id2, "research_m0", "NF", "other-poll", day, listOf("CHAIN_POLL"), now(), expectedRows = 2))
-        assertEquals("IDENTITY_CONFLICT", ResearchProtection.request(dir, id2, "research_m0", "NF", "second", day, listOf("CHAIN_POLL"), now(), expectedRows = 2, sourceSha = "0".repeat(64)))
+        assertEquals("IDENTITY_COBNFLICT", ResearchProtection.request(dir, id2, "research_m0", "BNF", "other-poll", day, listOf("CHAIN_POLL"), now(), expectedRows = 2))
+        assertEquals("IDENTITY_COBNFLICT", ResearchProtection.request(dir, id2, "research_m0", "BNF", "second", day, listOf("CHAIN_POLL"), now(), expectedRows = 2, sourceSha = "0".repeat(64)))
         assertEquals(e0, ResearchProtection.entry(dir, id2)!!.toString())
-        assertEquals(2, ResearchProtection.summary(dir, day).getInt("IDENTITY_CONFLICT"))
+        assertEquals(2, ResearchProtection.summary(dir, day).getInt("IDENTITY_COBNFLICT"))
         // identical re-request (restart) returns the state without a new entry
         val x = ResearchProtection.entry(dir, id2)!!
-        assertEquals("STAGED", ResearchProtection.request(dir, id2, x.getString("owner"), "NF", "second", day, listOf("CHAIN_POLL"), now() + 99,
+        assertEquals("STAGED", ResearchProtection.request(dir, id2, x.getString("owner"), "BNF", "second", day, listOf("CHAIN_POLL"), now() + 99,
             expectedRows = x.getInt("expected_rows"), sourceSha = x.getString("source_rows_sha256")))
         assertEquals(3, ResearchProtection.summary(dir, day).getJSONObject("counts").getInt("STAGED"))
     }
@@ -204,7 +204,7 @@ class M0Batch1ReviewBoundaryTest {
         val before = dir.listFiles()!!.filter { it.name.startsWith("imap_") }.map { it.name }.toSet()
         File(dir, "imapindex.json").writeText("{garbage")
         ResearchCollector.MAX_IMAP_FILES = 1
-        val r = ResearchCollector.putInstrumentMap(dir, "NF", listOf("NF|2026-10-27|1|CE|Z"), now(), null)
+        val r = ResearchCollector.putInstrumentMap(dir, "BNF", listOf("BNF|2026-10-27|1|CE|Z"), now(), null)
         assertEquals(ResearchCollector.MapRef.Unavailable("IMAP_INDEX_CORRUPT"), r)
         assertEquals(before, dir.listFiles()!!.filter { it.name.startsWith("imap_") }.map { it.name }.toSet())
     }
@@ -212,11 +212,11 @@ class M0Batch1ReviewBoundaryTest {
     @Test fun r4_corrupt_manifest_under_cap_pressure_prunes_nothing() {
         ResearchCollector.setEnabled(dir, true, now())
         ResearchCollector.MAX_IMAP_FILES = 2
-        val m1 = ResearchCollector.putInstrumentMap(dir, "BNF", listOf("BNF|e|1|CE|A"), 1L, null) as ResearchCollector.MapRef.Ok
-        capture("p")   // creates the session manifest and an NF map referenced by it
+        val m1 = ResearchCollector.putInstrumentMap(dir, "NF", listOf("NF|e|1|CE|A"), 1L, null) as ResearchCollector.MapRef.Ok
+        capture("p")   // creates the session manifest and an BNF map referenced by it
         val mf = dir.listFiles()!!.first { it.name.startsWith("manifest_") }
         mf.writeText("{corrupt")
-        val r = ResearchCollector.putInstrumentMap(dir, "BNF", listOf("BNF|e|1|CE|B"), 2L, null)
+        val r = ResearchCollector.putInstrumentMap(dir, "NF", listOf("NF|e|1|CE|B"), 2L, null)
         assertEquals(ResearchCollector.MapRef.Unavailable("IMAP_CAPACITY_REFERENCES_UNKNOWN"), r)
         assertNotNull(ResearchCollector.readInstrumentMap(dir, m1.version))   // even the unreferenced map is kept
         assertEquals(2, dir.listFiles()!!.count { it.name.startsWith("imap_") })
@@ -225,21 +225,21 @@ class M0Batch1ReviewBoundaryTest {
     @Test fun r4_index_loss_after_restart_is_rebuilt_by_validation_and_referenced_maps_survive() {
         ResearchCollector.setEnabled(dir, true, now())
         val id = capture("p")
-        val v = ResearchCollector.readManifest(dir, day)!!.getJSONObject("indices").getJSONObject("NF").getJSONObject("slots")
+        val v = ResearchCollector.readManifest(dir, day)!!.getJSONObject("indices").getJSONObject("BNF").getJSONObject("slots")
             .getJSONObject("40").getJSONArray("attempts").getJSONObject(0).getJSONObject("capture").getString("imap_version")
         assertTrue(File(dir, "imap.established").exists())
         assertTrue(File(dir, "imapindex.json").delete())
         ResearchCollector.reconcile(dir, now() + 1000)   // restart
         ResearchCollector.MAX_IMAP_FILES = 1             // cap pressure: only one map may remain
-        val r = ResearchCollector.putInstrumentMap(dir, "NF", listOf("NF|2026-10-27|22700|CE|NSE_FO|1"), now(), null)
+        val r = ResearchCollector.putInstrumentMap(dir, "BNF", listOf("BNF|2026-10-27|22700|CE|NSE_FO|1"), now(), null)
         assertTrue("$r", r is ResearchCollector.MapRef.Unavailable)   // referenced map cannot be pruned -> capacity, visible
         assertNotNull(ResearchCollector.readInstrumentMap(dir, v))
         assertTrue(InstrumentMaps.admitted(dir).contains(v))
-        assertTrue(ResearchProtection.isProtected(dir, "NF", "p")); assertNotNull(id)
+        assertTrue(ResearchProtection.isProtected(dir, "BNF", "p")); assertNotNull(id)
         // with both the index AND marker gone but map files present, it is still not treated as first use
         File(dir, "imapindex.json").delete(); File(dir, "imap.established").delete()
         ResearchCollector.MAX_IMAP_FILES = imapFiles0
-        assertTrue(ResearchCollector.putInstrumentMap(dir, "NF", listOf("NF|2026-10-27|22750|CE|NSE_FO|2"), now(), null) is ResearchCollector.MapRef.Ok)
+        assertTrue(ResearchCollector.putInstrumentMap(dir, "BNF", listOf("BNF|2026-10-27|22750|CE|NSE_FO|2"), now(), null) is ResearchCollector.MapRef.Ok)
         assertNotNull(ResearchCollector.readInstrumentMap(dir, v))
     }
 
@@ -247,22 +247,22 @@ class M0Batch1ReviewBoundaryTest {
     private val nasty = "q\"uote\\back\\\\slash ₹ नमस्ते 漢字 \u0001 /</"
 
     @Test fun r5_map_cap_is_exact_sealed_utf8_bytes_including_escapes_and_multibyte() {
-        val lines = (1..40).map { "NF|2026-10-27|${22000 + it}|CE|$nasty$it" }
+        val lines = (1..40).map { "BNF|2026-10-27|${22000 + it}|CE|$nasty$it" }
         val text = lines.joinToString("\n")
         val v = M0Durable.sha256(text)
         val probe = File(Files.createTempDirectory("probe").toFile(), "x")
         ResearchCollector.MAX_IMAP_BYTES = 10_000_000
-        val ok = ResearchCollector.putInstrumentMap(probe.parentFile, "NF", lines, 7L, null) as ResearchCollector.MapRef.Ok
+        val ok = ResearchCollector.putInstrumentMap(probe.parentFile, "BNF", lines, 7L, null) as ResearchCollector.MapRef.Ok
         val exact = File(probe.parentFile, "imap_${ok.version}.json").length()
         assertTrue("utf-8 + escapes exceed char count", exact > text.length + 256)
         ResearchCollector.MAX_IMAP_BYTES = exact - 1
-        assertTrue(ResearchCollector.putInstrumentMap(dir, "NF", lines, 7L, null) is ResearchCollector.MapRef.Unavailable)
+        assertTrue(ResearchCollector.putInstrumentMap(dir, "BNF", lines, 7L, null) is ResearchCollector.MapRef.Unavailable)
         assertFalse(File(dir, "imap_$v.json").exists())
         ResearchCollector.MAX_IMAP_BYTES = exact
-        assertTrue(ResearchCollector.putInstrumentMap(dir, "NF", lines, 7L, null) is ResearchCollector.MapRef.Ok)
+        assertTrue(ResearchCollector.putInstrumentMap(dir, "BNF", lines, 7L, null) is ResearchCollector.MapRef.Ok)
         assertEquals(exact, File(dir, "imap_$v.json").length())
         // repeated admission of the same map is idempotent and adds no bytes
-        repeat(5) { assertTrue(ResearchCollector.putInstrumentMap(dir, "NF", lines, 8L + it, "l$it") is ResearchCollector.MapRef.Ok) }
+        repeat(5) { assertTrue(ResearchCollector.putInstrumentMap(dir, "BNF", lines, 8L + it, "l$it") is ResearchCollector.MapRef.Ok) }
         assertTrue(dir.listFiles()!!.filter { it.name.startsWith("imap_") }.sumOf { it.length() } <= ResearchCollector.MAX_IMAP_BYTES)
         probe.parentFile.deleteRecursively()
     }
@@ -273,10 +273,10 @@ class M0Batch1ReviewBoundaryTest {
         val f = File(dir, "protection.json")
         for (i in 0 until 60) {
             val id = "$nasty#$i"
-            val r = ResearchProtection.request(dir, id, "own$nasty", "NF", "poll$nasty$i", day, listOf("CHAIN_POLL"), i.toLong(), expectedRows = 2, sourceSha = "a".repeat(64))
+            val r = ResearchProtection.request(dir, id, "own$nasty", "BNF", "poll$nasty$i", day, listOf("CHAIN_POLL"), i.toLong(), expectedRows = 2, sourceSha = "a".repeat(64))
             if (r == "STAGED") staged++ else { assertEquals("CAPACITY_REJECTED", r); rejected++ }
             // repeated admission of the same id: no growth beyond the identical entry
-            ResearchProtection.request(dir, id, "own$nasty", "NF", "poll$nasty$i", day, listOf("CHAIN_POLL"), i.toLong() + 1, expectedRows = 2, sourceSha = "a".repeat(64))
+            ResearchProtection.request(dir, id, "own$nasty", "BNF", "poll$nasty$i", day, listOf("CHAIN_POLL"), i.toLong() + 1, expectedRows = 2, sourceSha = "a".repeat(64))
             maxDisk = maxOf(maxDisk, f.length())
             // ack failures and lag bookkeeping on every protected entry stay within the reserve
             if (r == "STAGED") {
@@ -292,7 +292,7 @@ class M0Batch1ReviewBoundaryTest {
     }
 
     @Test fun r5_cohort_hook_accounts_exact_sealed_bytes_and_temp_reserve() {
-        val c = ResearchCohorts.Contract("NF", "2026-10-27", 22650, "CE")
+        val c = ResearchCohorts.Contract("BNF", "2026-10-27", 22650, "CE")
         fun items(n: Int) = ResearchCohorts.REQUIRED.map { k ->
             ResearchCohorts.Item(k, if (k in setOf("ENTRY_MARK", "EXIT_MARK", "ENTRY_QUOTE")) c else null,
                 if (k == "VERSIONS") JSONObject().put("calendar_version", "c").put("lot_version", "l").put("fee_version", "f").put("rate_version", "r").toString()

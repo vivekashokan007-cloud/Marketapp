@@ -15,15 +15,15 @@ object M0CrashChild {
         M0Durable.crashAt = null
         when (scenario) {
             "protection" -> {
-                if (args.getOrNull(4) != "first") ResearchProtection.request(dir, "A", "o", "NF", "t1", "2026-10-21", listOf("CHAIN_POLL"), 1L, expectedRows = 2)
+                if (args.getOrNull(4) != "first") ResearchProtection.request(dir, "A", "o", "BNF", "t1", "2026-10-21", listOf("CHAIN_POLL"), 1L, expectedRows = 2)
                 M0Durable.crashAt = boundary; M0Durable.crashFile = target
-                ResearchProtection.request(dir, "B", "o", "NF", "t2", "2026-10-21", listOf("CHAIN_POLL"), 2L, expectedRows = 2)
+                ResearchProtection.request(dir, "B", "o", "BNF", "t2", "2026-10-21", listOf("CHAIN_POLL"), 2L, expectedRows = 2)
             }
             "manifest" -> {
                 ResearchCollector.setEnabled(dir, true, 1_792_000_000_000L)
-                ResearchCollector.beginAttempt(dir, "NF", "2026-10-21|40", 1_792_000_000_000L)
+                ResearchCollector.beginAttempt(dir, "BNF", "2026-10-21|40", 1_792_000_000_000L)
                 M0Durable.crashAt = boundary; M0Durable.crashFile = target
-                ResearchCollector.beginAttempt(dir, "NF", "2026-10-21|40", 1_792_000_100_000L)
+                ResearchCollector.beginAttempt(dir, "BNF", "2026-10-21|40", 1_792_000_100_000L)
             }
             "envelope" -> {   // B1-R3: kill at the envelope-commit / protection-request boundary (and durable boundaries)
                 ResearchCollector.setEnabled(dir, true, 1_792_000_000_000L)
@@ -32,10 +32,10 @@ object M0CrashChild {
                 ResearchCollector.putEnvelope(dir, env, 3L)
             }
             "imap" -> {
-                val lines1 = listOf("NF|2026-10-27|100|CE|K1")
-                ResearchCollector.putInstrumentMap(dir, "NF", lines1, 1L, "L1")
+                val lines1 = listOf("BNF|2026-10-27|100|CE|K1")
+                ResearchCollector.putInstrumentMap(dir, "BNF", lines1, 1L, "L1")
                 M0Durable.crashAt = boundary; M0Durable.crashFile = target
-                ResearchCollector.putInstrumentMap(dir, "NF", listOf("NF|2026-10-27|100|CE|K2"), 2L, "L2")
+                ResearchCollector.putInstrumentMap(dir, "BNF", listOf("BNF|2026-10-27|100|CE|K2"), 2L, "L2")
             }
         }
         System.out.println("NO_CRASH")

@@ -52,7 +52,7 @@ def _ctx(state_dir, poll_list, **kw):
 def _std_polls(end='11:00'):
     ts = F.times('09:15', end)
     n = len(ts)
-    return F.polls(F.linear(24000, 8, n), [52000 + ((-1) ** i) * 20 for i in range(n)], ts=ts)
+    return F.polls(F.linear(24000, 8, n), F.linear(52000, 16, n), ts=ts)
 
 
 def _stale_first_leg_of(result_probe, ix, chain):
@@ -114,12 +114,14 @@ def scenarios():
     return {
         # G2: falling path -> BEAR on both indices -> BEAR_PUT (debit) + BEAR_CALL (credit) pairs
         'bear_pair': dict(polls=_bear_polls()),
+        'neutral_pair': dict(polls=F.polls(F.linear(24000, 8, len(std)),
+            [52000 + ((-1) ** i) * 20 for i in range(len(std))], ts=F.times('09:15', '11:00'))),
         # both structures of each index admissible -> STRUCTURE_CHOICE_RULE_UNSPECIFIED, no primary
         'pair_both_admissible': dict(polls=std),
         # one managed position open on each index -> MANAGED_POLICY_CAP_ONE_PER_INDEX, both blocked
         'managed_cap_both_blocked': dict(polls=std, open_trades=[MANAGED_OPEN('NF'), MANAGED_OPEN('BNF')]),
         # NF: one structure has a stale leg -> exactly one admitted; BNF not selected -> exactly one primary
-        'exactly_one_admitted_stale_leg': dict(polls=std, mutate=_stale_mutator(['NF']), indexSelector='NF'),
+        'exactly_one_admitted_stale_leg': dict(polls=std, mutate=_stale_mutator(['BNF']), indexSelector='NF'),
         # one admitted on EACH index -> MULTIPLE_MANAGED_SELECTIONS
         'two_indices_selecting': dict(polls=std, mutate=_stale_mutator(['NF', 'BNF'])),
         # NF expiry day: expiry_day_contract -> NF not executable
@@ -188,13 +190,13 @@ def produce(out):
             'managed': {ix: {'reason': r['managed_policy'][ix].get('reason'),
                              'selected': (r['managed_policy'][ix].get('selected') or {}).get('candidate_id'),
                              'gates': [(g['candidate_id'], g['admit'], g['reasons']) for g in r['managed_policy'][ix]['gates']]}
-                        for ix in ('NF', 'BNF')},
+                        for ix in ('BNF',)},
             'candidates': {ix: [{'id': x['id'], 'type': x['type'], 'isCredit': x['isCredit'],
                                  'netPremium': x['netPremium'], 'entryEligible': x['entryEligible'],
                                  'indexDecisionId': x.get('indexDecisionId')}
                                 for x in (r.get('candidates_by_index') or {}).get(ix) or []]
-                           for ix in ('NF', 'BNF')},
-            'decision_ids': {ix: r['by_index'][ix].get('decision_id') for ix in ('NF', 'BNF')},
+                           for ix in ('BNF',)},
+            'decision_ids': {ix: r['by_index'][ix].get('decision_id') for ix in ('BNF',)},
         }
     with open(os.path.join(out, 'index.json'), 'w', encoding='utf-8') as f:
         json.dump(index, f, indent=1, sort_keys=True)

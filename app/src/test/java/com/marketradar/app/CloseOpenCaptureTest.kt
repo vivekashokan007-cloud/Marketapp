@@ -421,7 +421,8 @@ class CloseOpenCaptureTest {
         val lockField = CloseOpenCapture::class.java.getDeclaredField("lock").apply { isAccessible = true }
         val lock = lockField.get(CloseOpenCapture)
         val statuses = ArrayList<String>()
-        val acqs = listOf(acq("NF", "2026-11-25", "15:10", chain("NF", 24500.0, NF_EXP)))
+        val acqs = listOf(acq("BNF", "2026-11-25", "15:10", chain("BNF", 55000.0, BNF_EXP)),
+            acq("NF", "2026-11-25", "15:10", chain("NF", 24500.0, NF_EXP)))
         synchronized(lock) {
             repeat(4) { statuses.add(CloseOpenCapture.onPoll(fd, "2026-11-25", "15:10", acqs).getString("status")); Thread.sleep(50) }
         }
@@ -429,7 +430,9 @@ class CloseOpenCaptureTest {
         assertEquals("REFUSED_OVERLAP", statuses[2]); assertEquals("REFUSED_OVERLAP", statuses[3])
         Thread.sleep(500)
         val exp = CloseOpenCapture.exportSection(fd, "2026-11-25")
-        assertEquals(6, records(exp, "NF").length())   // the two accepted jobs still produced ONE set
+        assertEquals(6, records(exp, "BNF").length())   // the two accepted jobs still produced ONE set
+        assertEquals(0, records(exp, "NF").length())    // stale NF acquisition is ignored by the live hook
+        assertFalse(fd.resolve(CloseOpenCapture.DIR_NAME).resolve("2026-11-25/NF.json").exists())
         assertEquals("DISABLED", CloseOpenCapture.onPoll(tmp(), "2026-11-25", "15:10", acqs).getString("status"))
         // outside both windows nothing is read or created, enabled or not
         val fresh = tmp()

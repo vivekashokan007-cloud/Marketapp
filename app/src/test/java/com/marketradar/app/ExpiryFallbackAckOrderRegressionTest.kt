@@ -17,16 +17,16 @@ import org.junit.Test
 class ExpiryFallbackAckOrderRegressionTest {
     @Before fun quiet() { PyTimeout.logger = { } }
 
-    private fun result(): JSONObject = JSONObject().put("single_leg_by_index", JSONObject().put("NF",
-        JSONObject().put("decision_id", "idx1_n").put("reasons", JSONArray().put("EXPIRY_DAY_NO_NEXT_CHAIN")
+    private fun result(): JSONObject = JSONObject().put("single_leg_by_index", JSONObject().put("BNF",
+        JSONObject().put("decision_id", "idx1_b").put("reasons", JSONArray().put("EXPIRY_DAY_NO_NEXT_CHAIN")
             .put("EXPIRY_FALLBACK_EVIDENCE_PENDING")).put("status", "BLOCKED").put("admit", false)
-            .put("expiry_fallback", JSONObject().put("status", "EVIDENCE_REQUIRED").put("decision_id", "idx1_n")
+            .put("expiry_fallback", JSONObject().put("status", "EVIDENCE_REQUIRED").put("decision_id", "idx1_b")
                 .put("trade_expiry", "2026-11-23").put("base_reasons", JSONArray().put("EXPIRY_DAY_NO_NEXT_CHAIN"))
                 .put("base_status", "BLOCKED"))))
 
-    private fun patchFor(a: JSONObject): String = JSONObject().put("single_leg_by_index", JSONObject().put("NF",
-        JSONObject().put("decision_id", "idx1_n").put("status", "ELIGIBLE_PENDING_SNAPSHOT")
-            .put("instrument_key", "NSE_FO|NF2026120124000CE").put("reasons", JSONArray())
+    private fun patchFor(a: JSONObject): String = JSONObject().put("single_leg_by_index", JSONObject().put("BNF",
+        JSONObject().put("decision_id", "idx1_b").put("status", "ELIGIBLE_PENDING_SNAPSHOT")
+            .put("instrument_key", "NSE_FO|BNF2026122952000CE").put("reasons", JSONArray())
             .put("expiry_fallback", JSONObject().put("status", "APPLIED").put("attempt", a)))).put("attempt", a).toString()
 
     @Test fun noPublishedAcknowledgementBeforeTheFinalGate_refusedResultIsNeverAcknowledgedPublished() {

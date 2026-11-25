@@ -218,12 +218,12 @@ class M0ResearchCollectorTest {
         assertTrue(ResearchCollector.readInstrumentMap(dir, c1.imapVersion!!)!!.all { it.contains("NSE_FO|A") })
         assertTrue(ResearchCollector.readInstrumentMap(dir, c2.imapVersion!!)!!.all { it.contains("NSE_FO|B") })
         // unchanged content dedups to the same immutable version
-        val same = ResearchCollector.putInstrumentMap(dir, "BNF", ResearchCollector.instrumentMapLines("NF", chain("BNF", "2026-10-27", keyPrefix = "NSE_FO|A")), 9L)
+        val same = ResearchCollector.putInstrumentMap(dir, "BNF", ResearchCollector.instrumentMapLines("BNF", chain("BNF", "2026-10-27", keyPrefix = "NSE_FO|A")), 9L)
         assertEquals(ResearchCollector.MapRef.Ok(c1.imapVersion!!, false), same)
         // a tampered stored map is refused, not silently re-referenced
         val f = File(dir, "imap_${c1.imapVersion}.json"); val o = JSONObject(f.readText()); o.put("body", JSONObject(o.getString("body")).put("lines", "NF|x").toString()); f.writeText(o.toString())
         assertEquals(ResearchCollector.MapRef.Unavailable("IMAP_STORE_CORRUPT"),
-            ResearchCollector.putInstrumentMap(dir, "BNF", ResearchCollector.instrumentMapLines("NF", chain("BNF", "2026-10-27", keyPrefix = "NSE_FO|A")), 9L))
+            ResearchCollector.putInstrumentMap(dir, "BNF", ResearchCollector.instrumentMapLines("BNF", chain("BNF", "2026-10-27", keyPrefix = "NSE_FO|A")), 9L))
     }
 
     // ---------------------------------------------------------------- B7.6
@@ -270,7 +270,7 @@ class M0ResearchCollectorTest {
     @Test fun b7_7_index_expiry_and_unknown_identity_never_cross_map() {
         assertEquals(ResearchCollector.Begin.Unavailable("UNKNOWN_INDEX"), ResearchCollector.beginAttempt(dir, "FINNIFTY", "$S1|5", 1L))
         assertEquals(ResearchCollector.MapRef.Unavailable("CROSS_INDEX_ENTRY"),
-            ResearchCollector.putInstrumentMap(dir, "BNF", ResearchCollector.instrumentMapLines("NF", chain("BNF", "2026-10-28")), 1L))
+            ResearchCollector.putInstrumentMap(dir, "BNF", ResearchCollector.instrumentMapLines("BNF", chain("BNF", "2026-10-28")), 1L))
         val nfPlan = ResearchCalendar.plan(S1, "NF"); val bnfPlan = ResearchCalendar.plan(S1, "BNF")
         assertEquals("2026-10-27", nfPlan.ruleExpiry)
         assertEquals("LIVE_CHAIN_ONLY", bnfPlan.expiryAuthority); assertNull(bnfPlan.ruleExpiry)

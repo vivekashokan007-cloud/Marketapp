@@ -107,8 +107,8 @@ class SingleLegTradeTraceTest {
                       quoteNeeded: List<String> = listOf("NSE_FO|1"),
                       admitOut: (String) -> String = { id -> """{"status":"ADMITTED","position_id":"sl1","request_id":"$id"}""" }) =
         SingleLegAdmissionCoordinator(
-            readState = { SingleLegAdmissionCoordinator.State("{}", "NF", "idx1_a", key, "BUY_CE", 65, quoteNeeded,
-                true, true, "BOTH", "[]", 250000.0, 10.0, 1) },
+            readState = { SingleLegAdmissionCoordinator.State("{}", "BNF", "idx1_a", key, "BUY_CE", 30, quoteNeeded,
+                true, true, "BNF", "[]", 250000.0, 10.0, 1) },
             transport = { ManagedReadAdapters.Transport { _, _, _ -> ManagedReadAdapters.Response(500, "{}") } },
             clocks = ManagedReadAdapters.Clocks({ t0 }, { t0 }),
             admit = { c -> admitOut(c.requestId) },
@@ -124,17 +124,17 @@ class SingleLegTradeTraceTest {
     @Test fun refusedBeforeQuoteIsMarkedQuoteRequestedFalse() {
         val ev = Collections.synchronizedList(mutableListOf<JSONObject>())
         val c = coord(ev)
-        val out = JSONObject(c.submit("NF", null, "NSE_FO|1", "r0"))
+        val out = JSONObject(c.submit("BNF", null, "NSE_FO|1", "r0"))
         assertEquals("DISPLAYED_IDENTITY_REQUIRED", out.getString("reason")); assertFalse(out.getBoolean("quote_requested"))
         assertEquals(listOf("N_SUBMIT", "N_OUTCOME"), ev.map { it.getString("kind") })
-        assertEquals("NF", ev[1].getString("index")); assertFalse(ev[1].getBoolean("quote_requested"))
+        assertEquals("BNF", ev[1].getString("index")); assertFalse(ev[1].getBoolean("quote_requested"))
     }
 
     @Test fun quoteFailureIsAfterQuoteWithOneQuoteStartedEvent() {
         val ev = Collections.synchronizedList(mutableListOf<JSONObject>())
         // HTTP 500 on the exact-contract GET; the Python admission (stubbed) then refuses for the missing snapshot
         val c = coord(ev, admitOut = { id -> """{"status":"REJECTED","reason":"BROKER_SNAPSHOT_UNAVAILABLE","request_id":"$id"}""" })
-        c.submit("NF", "idx1_a", "NSE_FO|1", "r1")
+        c.submit("BNF", "idx1_a", "NSE_FO|1", "r1")
         val out = await(c, "r1")
         assertEquals("REJECTED", out.getString("status")); assertTrue(out.getBoolean("quote_requested"))
         Thread.sleep(20)
@@ -142,13 +142,13 @@ class SingleLegTradeTraceTest {
         assertEquals(1, kinds.count { it == "N_QUOTE_STARTED" })
         assertEquals("NSE_FO|1", ev.first { it.getString("kind") == "N_QUOTE_STARTED" }.getString("instrument_key"))
         val o = ev.last { it.getString("kind") == "N_OUTCOME" }
-        assertTrue(o.getBoolean("quote_requested")); assertEquals("r1", o.getString("request_id")); assertEquals("NF", o.getString("index"))
+        assertTrue(o.getBoolean("quote_requested")); assertEquals("r1", o.getString("request_id")); assertEquals("BNF", o.getString("index"))
     }
 
     @Test fun emptyQuoteKeyDoesNotProduceAQuoteStartedEvent() {
         val events = Collections.synchronizedList(mutableListOf<JSONObject>())
         val coordinator = coord(events, quoteNeeded = listOf(""))
-        coordinator.submit("NF", "idx1_a", "NSE_FO|1", "empty-key")
+        coordinator.submit("BNF", "idx1_a", "NSE_FO|1", "empty-key")
         assertFalse(await(coordinator, "empty-key").getBoolean("quote_requested"))
         synchronized(events) {
             assertFalse(events.any { it.getString("kind") == "N_QUOTE_STARTED" })
@@ -166,13 +166,13 @@ class SingleLegTradeTraceTest {
 
     @Test fun traceFailureNeverChangesTheOutcome() {
         val c = SingleLegAdmissionCoordinator(
-            readState = { SingleLegAdmissionCoordinator.State("{}", "NF", "idx1_a", "NSE_FO|1", "BUY_CE", 65, listOf("NSE_FO|1"),
-                true, true, "BOTH", "[]", 250000.0, 10.0, 1) },
+            readState = { SingleLegAdmissionCoordinator.State("{}", "BNF", "idx1_a", "NSE_FO|1", "BUY_CE", 30, listOf("NSE_FO|1"),
+                true, true, "BNF", "[]", 250000.0, 10.0, 1) },
             transport = { null }, clocks = ManagedReadAdapters.Clocks({ t0 }, { t0 }),
             admit = { c -> """{"status":"ADMITTED","position_id":"sl1","request_id":"${c.requestId}"}""" },
             reconcile = { null }, cancel = { null }, executor = Executors.newSingleThreadExecutor(), sleeper = { },
             trace = { throw IllegalStateException("disk full") })
-        c.submit("NF", "idx1_a", "NSE_FO|1", "r2")
+        c.submit("BNF", "idx1_a", "NSE_FO|1", "r2")
         assertTrue(await(c, "r2").has("status"))
     }
 }

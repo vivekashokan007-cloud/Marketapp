@@ -43,7 +43,7 @@ class M0Batch1CalendarTest {
         // reconcile shows it MISSING with the documented dependency - never dropped from the denominator.
         ResearchCollector.setEnabled(dir, true, ms("2026-12-08", 9, 0))
         ResearchCollector.reconcile(dir, ms("2026-12-08", 16, 30))
-        val io = ResearchCollector.readManifest(dir, "2026-12-08")!!.getJSONObject("indices").getJSONObject("NF")
+        val io = ResearchCollector.readManifest(dir, "2026-12-08")!!.getJSONObject("indices").getJSONObject("BNF")
         assertEquals(79, io.getInt("expected")); assertEquals("R2", io.getString("regime"))
         val s79 = io.getJSONObject("slots").getJSONObject("79")
         assertEquals("15:45", s79.getString("nominal"))
@@ -74,11 +74,11 @@ class M0Batch1CalendarTest {
         ResearchCollector.setEnabled(dir, true, ms(day, 9, 0))
         val ord = ResearchCalendar.plan(day, "NF").slots.first { it.hhmm == "15:35" }.ordinal
         fun rec(expiry: String): JSONObject {
-            val b = ResearchCollector.beginAttempt(dir, "NF", "$day|$ord", ms(day, 15, 35)) as ResearchCollector.Begin.Started
-            val c = ResearchCollector.captureFromChain(dir, "NF", chain("NF", expiry), ms(day, 15, 35), ms(day, 15, 35),
+            val b = ResearchCollector.beginAttempt(dir, "BNF", "$day|$ord", ms(day, 15, 35)) as ResearchCollector.Begin.Started
+            val c = ResearchCollector.captureFromChain(dir, "BNF", chain("BNF", expiry), ms(day, 15, 35), ms(day, 15, 35),
                 "ml_option_chain_snapshots", ms(day, 15, 35), "2026-12-08T15:35:00+05:30", ms(day, 15, 35), b.attemptId)
             ResearchCollector.recordCapture(dir, b.slotId, b.attemptId, c, ms(day, 15, 36))
-            val atts = ResearchCollector.readManifest(dir, day)!!.getJSONObject("indices").getJSONObject("NF").getJSONObject("slots")
+            val atts = ResearchCollector.readManifest(dir, day)!!.getJSONObject("indices").getJSONObject("BNF").getJSONObject("slots")
                 .getJSONObject(ord.toString()).getJSONArray("attempts")
             return atts.getJSONObject(atts.length() - 1).getJSONObject("capture")
         }
@@ -112,10 +112,10 @@ class M0Batch1CalendarTest {
         val day = "2026-10-21"
         ResearchCollector.setEnabled(dir, true, ms(day, 9, 0))
         ResearchCollector.reconcile(dir, ms(day, 23, 0))
-        val io = ResearchCollector.readManifest(dir, day)!!.getJSONObject("indices").getJSONObject("NF")
+        val io = ResearchCollector.readManifest(dir, day)!!.getJSONObject("indices").getJSONObject("BNF")
         assertEquals(78, io.getInt("expected")); assertEquals(78, io.getJSONObject("slots").length())
         ResearchCollector.reconcile(dir, ms(day, 23, 30))
-        assertEquals(78, ResearchCollector.readManifest(dir, day)!!.getJSONObject("indices").getJSONObject("NF").getJSONObject("slots").length())
+        assertEquals(78, ResearchCollector.readManifest(dir, day)!!.getJSONObject("indices").getJSONObject("BNF").getJSONObject("slots").length())
     }
 
     // ------------------------------------------------------------------ W3 Muhurat
