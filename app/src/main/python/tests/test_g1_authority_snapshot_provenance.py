@@ -26,7 +26,7 @@ class G1Projection(unittest.TestCase):
 
     def test_generated_candidates_keep_lineage_and_leg_freshness(self):
         gen = _ctxj(self.snap)['snapshot_generated_candidates']
-        self.assertEqual(len(gen), 4)
+        self.assertEqual(len(gen), 2)
         for c in gen:
             self.assertEqual(c['authorityPolicyVersion'], 'index_direction_v1')
             self.assertEqual(c['policySelectorVersion'], 'index_managed_v1')
@@ -39,7 +39,7 @@ class G1Projection(unittest.TestCase):
     def test_managed_summary_bounded(self):
         mps = _ctxj(self.snap)['snapshot_managed_policy']
         self.assertEqual(mps['schema'], brain.IA_MANAGED_SUMMARY_SCHEMA)
-        for ix in ('NF', 'BNF'):
+        for ix in ('BNF',):
             m = mps['by_index'][ix]
             self.assertEqual(m['reason'], 'STRUCTURE_CHOICE_RULE_UNSPECIFIED')
             self.assertEqual(m['admissible_count'], 2)
@@ -54,7 +54,7 @@ class G1Projection(unittest.TestCase):
         self.assertEqual(set(v['legs'][0]), {'action', 'strike', 'option_type', 'bid', 'ask'})
 
     def test_lot_evidence_status_compacted(self):
-        c = dict(self.r['candidates_by_index']['NF'][0])
+        c = dict(self.r['candidates_by_index']['BNF'][0])
         c['lotEvidence'] = {'schema': 'managed_construction_lot_v1', 'status': 'VERIFIED', 'source': 'upstox_v2_option_contract',
                             'session_date': '2026-11-02', 'reasons': [], 'legs': [{'instrument_key': 'a', 'lot_size': 65}] * 2}
         v = brain._candidate_view(c)

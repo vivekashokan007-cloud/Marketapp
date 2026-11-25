@@ -466,9 +466,9 @@ class BrainIntegration(unittest.TestCase):
         c = F.ctx(polls[-1]['nfSpot'], polls[-1]['bnfSpot'], indexAuthorityStateDir=sd, singleLegPaperEnabled=True,
                   executionMode='paper')
         out = F.run(brain, polls, c)
-        auth_dir = {ix: out['by_index'][ix]['direction']['value'] for ix in ('NF', 'BNF')}
+        auth_dir = {ix: out['by_index'][ix]['direction']['value'] for ix in ('BNF',)}
         sl_out = out.get('single_leg_by_index') or {}
-        self.assertEqual(set(sl_out), {'NF', 'BNF'})
+        self.assertEqual(set(sl_out), {'BNF'})
         for ix, p in sl_out.items():
             if p.get('action'):
                 self.assertEqual(sl.DIR_OF[p['action']], auth_dir[ix])

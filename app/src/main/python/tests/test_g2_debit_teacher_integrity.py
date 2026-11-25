@@ -48,7 +48,10 @@ class G2DebitTeacher(unittest.TestCase):
     def setUpClass(cls):
         cls.graded = {}
         cls.cands = {}
-        for name, polls in (('bull', G._std_polls()), ('bear', G._bear_polls())):
+        bull = G._std_polls()
+        for i, poll in enumerate(bull):
+            poll['bnf'] = poll['bnfSpot'] = 52000 + 16 * i
+        for name, polls in (('bull', bull), ('bear', G._bear_polls()), ('neutral', G._std_polls())):
             r, snap, c, _ = G._run(name, polls)
             snap['id'] = 'g2-' + name
             res = _grade(snap, G._later_chain_rows(snap, c))
@@ -83,7 +86,7 @@ class G2DebitTeacher(unittest.TestCase):
             for k in ('managed_pnl', 'r_multiple'):
                 self.assertTrue(o.get(k) is not None and math.isfinite(o[k]), (cid, k))
             self.assertEqual(o['policy_selector_version'], 'index_managed_v1')
-        self.assertEqual(n, 3)  # NF BULL_CALL (BNF is NEUTRAL on the bull path), NF+BNF BEAR_PUT
+        self.assertEqual(n, 2)  # BNF BULL_CALL and BEAR_PUT
 
     def test_credit_ic_ib_unchanged(self):
         n = 0
@@ -97,7 +100,7 @@ class G2DebitTeacher(unittest.TestCase):
             self.assertAlmostEqual(o['h2_entry_basis_points'], c['netPremium'], places=4)
             self.assertEqual(o['h2_formula'], '(entry_credit - close_cost) * lot')
             self.assertIsNotNone(o.get('managed_pnl'))
-        self.assertEqual(n, 5)  # NF BULL_PUT, BNF IC + IB, NF+BNF BEAR_CALL
+        self.assertEqual(n, 4)  # BNF BULL_PUT, BEAR_CALL, IC and IB
 
     def test_entry_premium_rule_is_scoped(self):
         base = {'netPremium': -13.93, 'isCredit': False, 'constructionVersion': 'index_construction_v1'}

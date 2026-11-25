@@ -90,7 +90,8 @@ class AnalyzeVaryOnlyCandles(unittest.TestCase):
             self.assertEqual([c.get('id') for c in a.get('watchlist') or []],
                              [c.get('id') for c in b.get('watchlist') or []])
             self.assertEqual(b['candle_paper_policy']['version'], 'sampled_candles_telemetry_only_v1')
-            self.assertEqual(b['candle_nf']['patterns'][0]['pattern'], 'BEARISH_MARUBOZU')   # telemetry kept
+            self.assertNotIn('candle_nf', b)
+            self.assertEqual(b['candle_bnf']['patterns'][0]['pattern'], 'BEARISH_ENGULFING')
             f = b['pc2_batch_f_paper_context']
             self.assertFalse(f['active'])
             self.assertEqual(f['candidates_with_candle_influence'], 0)

@@ -113,22 +113,26 @@ class Readiness(unittest.TestCase):
 
 
 class Isolation(unittest.TestCase):
-    def test_failures_and_recovery_for_each_index(self):
+    def test_bnf_failure_and_recovery_are_independent_of_retired_nifty(self):
         polls = F.polls(F.linear(24000, 8, len(F.times())), F.linear(52000, 20, len(F.times())))
-        for bad, good in (('NF', 'BNF'), ('BNF', 'NF')):
-            c = F.with_clock(F.ctx(indexAuthorityScale={'NF': {'status': 'OK', 'value': .0073}, 'BNF': {'status': 'OK', 'value': .0073}}), polls)
-            before = brain.compute_index_authority(polls, c); key = 'nfChain' if bad == 'NF' else 'bnfChain'
-            original = c[key]; c[key] = {'input_failure': 'CHAIN_FETCH_FAILED', 'strikes': {}}
-            failed = brain.compute_index_authority(polls, c)
-            self.assertEqual(failed[bad]['availability'], 'UNAVAILABLE')
-            self.assertIn('CHAIN_FETCH_FAILED', failed[bad]['reason_codes'])
-            self.assertEqual(failed[good], before[good])
-            c[key] = original
-            self.assertEqual(brain.compute_index_authority(polls, c)[bad], before[bad])
-    def test_one_sided_chain(self):
+        c = F.with_clock(F.ctx(indexAuthorityScale={'BNF': {'status': 'OK', 'value': .0073}}), polls)
+        before = brain.compute_index_authority(polls, c)
+        self.assertEqual(set(before) - {'_meta'}, {'BNF'})
+        c['nfChain'] = {'input_failure': 'CHAIN_FETCH_FAILED', 'strikes': {}}
+        self.assertEqual(brain.compute_index_authority(polls, c)['BNF'], before['BNF'])
+        original = c['bnfChain']
+        c['bnfChain'] = {'input_failure': 'CHAIN_FETCH_FAILED', 'strikes': {}}
+        failed = brain.compute_index_authority(polls, c)['BNF']
+        self.assertEqual(failed['availability'], 'UNAVAILABLE')
+        self.assertIn('CHAIN_FETCH_FAILED', failed['reason_codes'])
+        c['bnfChain'] = original
+        self.assertEqual(brain.compute_index_authority(polls, c)['BNF'], before['BNF'])
+
+    def test_one_sided_bnf_chain(self):
         polls = F.polls(F.linear(24000, 8, len(F.times())), [52000]*len(F.times()))
-        c = F.with_clock(F.ctx(), polls); c['nfChain']['strikes'] = {'24000': {'CE': {'bid': 10, 'ask': 11}}}
-        self.assertIn('CHAIN_ONE_SIDED', brain.compute_index_authority(polls, c)['NF']['reason_codes'])
+        c = F.with_clock(F.ctx(), polls)
+        c['bnfChain']['strikes'] = {'52000': {'CE': {'bid': 10, 'ask': 11}}}
+        self.assertIn('CHAIN_ONE_SIDED', brain.compute_index_authority(polls, c)['BNF']['reason_codes'])
 
 
 class Evidence(unittest.TestCase):
@@ -137,9 +141,9 @@ class Evidence(unittest.TestCase):
                              ('{"status":"error"}', 'RESPONSE_NOT_SUCCESS')]:
             with tempfile.TemporaryDirectory() as td:
                 d = os.path.join(td, 'single_leg_v1')
-                r = admissible_result()
+                r = json.loads(json.dumps(admissible_result()).replace('"NF"', '"BNF"'))
                 with mock.patch.object(store, '_wall_clock', at(5)):
-                    out = json.loads(brain.single_leg_admit(d, json.dumps(r), 'NF', '[]', True, True,
+                    out = json.loads(brain.single_leg_admit(d, json.dumps(r), 'BNF', '[]', True, True,
                         'BOTH', '["wrong-key"]', body, NOW, NOW+100, 7,
                         capital=250000, max_risk_pct=10, request_id='tap-bad-response'))
                 self.assertEqual(out['status'], 'REJECTED', out)
