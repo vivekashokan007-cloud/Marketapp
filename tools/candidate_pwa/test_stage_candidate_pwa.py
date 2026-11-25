@@ -140,9 +140,9 @@ class CommittedPinTests(unittest.TestCase):
     review-validation run, which is why a green review never caught it.
     """
 
-    ACCEPTED_MARKETVIVI_SHA = "ae1ff4e556b3d4fc7e2bfe88e8cba4659c33bb1d"
+    ACCEPTED_MARKETVIVI_SHA = "5daef9e64b4f5ccc79f63bf2e5322fd8522d9708"
     ACCEPTED_APP_JS_SHA256 = \
-        "3b36f24fd76d4fccbe35127662bd91b28bfb695478dad93a450c51ff815d7c00"
+        "66cc627564b9e48b3cb122a0c66b2fc31c2daa16316d431eb6fef81bd813fab7"
 
     def test_committed_pin_names_the_accepted_marketvivi_commit(self):
         m = json.loads(PIN.read_text())

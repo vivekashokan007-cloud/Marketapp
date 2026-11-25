@@ -53,7 +53,9 @@ def classify(dec):
     return 'POLICY_NO_TRADE', sorted(set(codes))
 
 
-def replay(doc, brain):
+def replay(doc, brain, *, indices=('BNF',)):
+    # Active replay follows the BNF-only product scope. Archived dual-index studies
+    # may explicitly request both indices without changing live analysis authority.
     out = {'schema': 'direction_replay_coverage_v1', 'bounds': {'max_sessions': MAX_SESSIONS,
            'max_decisions': MAX_DECISIONS}, 'truncated': False, 'sessions': 0, 'decisions': 0, 'by_index': {}}
     n = 0
@@ -78,10 +80,11 @@ def replay(doc, brain):
                 ctx['analysisClockMs'] = int(rec['analysis_clock_ms'])
             ctx['indexAuthorityStateDir'] = os.path.join(tmp.name, 'index_authority_v1')
             try:
-                auth = brain.compute_index_authority(rec.get('polls') or [], ctx) or {}
+                auth = brain.compute_index_authority(rec.get('polls') or [], ctx, indices=indices) or {}
             except Exception as exc:
-                auth = {'NF': None, 'BNF': None, '_error': type(exc).__name__}
-            for ix in ('NF', 'BNF'):
+                auth = {ix: None for ix in indices}
+                auth['_error'] = type(exc).__name__
+            for ix in indices:
                 b = out['by_index'].setdefault(ix, {'MISSING_EVIDENCE': 0, 'POLICY_NO_TRADE': 0,
                                                     'POLICY_CANDIDATES': 0, 'missing_codes': {}, 'policy_codes': {}})
                 bucket, codes = classify(auth.get(ix))

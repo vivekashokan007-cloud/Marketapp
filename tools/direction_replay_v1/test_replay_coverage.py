@@ -17,7 +17,7 @@ class ReplayCoverage(unittest.TestCase):
             p.pop('bnf', None)
         recs = [{'polls': polls[:i + 1], 'ctx': F.ctx(polls[i]['nfSpot'], 52000.0),
                  'analysis_clock_ms': F.clock_ms(polls[:i + 1])} for i in range(len(polls))]
-        out = R.replay({'sessions': [{'date': F.SESSION, 'decisions': recs}]}, brain)
+        out = R.replay({'sessions': [{'date': F.SESSION, 'decisions': recs}]}, brain, indices=('NF', 'BNF'))
         self.assertEqual(out['decisions'], len(polls))
         bnf, nf = out['by_index']['BNF'], out['by_index']['NF']
         self.assertEqual(bnf['MISSING_EVIDENCE'], len(polls))
@@ -33,12 +33,13 @@ class ReplayCoverage(unittest.TestCase):
         self.assertEqual(a, b)
         noclock = [dict(r, analysis_clock_ms=None) for r in recs]
         c = R.replay({'sessions': [{'decisions': noclock}]}, brain)
-        self.assertEqual(c['by_index']['NF']['MISSING_EVIDENCE'], len(recs))
-        self.assertIn('ANALYSIS_CLOCK_MISSING', c['by_index']['NF']['missing_codes'])
+        self.assertNotIn('NF', c['by_index'])
+        self.assertEqual(c['by_index']['BNF']['MISSING_EVIDENCE'], len(recs))
+        self.assertIn('ANALYSIS_CLOCK_MISSING', c['by_index']['BNF']['missing_codes'])
         # a replay clock two hours after each poll: every decision is stale
         late = [dict(r, analysis_clock_ms=r['analysis_clock_ms'] + 2 * 3600 * 1000) for r in recs]
         d = R.replay({'sessions': [{'decisions': late}]}, brain)
-        self.assertEqual(d['by_index']['NF']['POLICY_NO_TRADE'] + d['by_index']['NF']['POLICY_CANDIDATES'], 0)
+        self.assertEqual(d['by_index']['BNF']['POLICY_NO_TRADE'] + d['by_index']['BNF']['POLICY_CANDIDATES'], 0)
 
     def test_bounds(self):
         out = R.replay({'sessions': [{'decisions': []}] * (R.MAX_SESSIONS + 1)}, brain)
