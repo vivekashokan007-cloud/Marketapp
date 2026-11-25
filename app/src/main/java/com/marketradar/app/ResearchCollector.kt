@@ -212,6 +212,7 @@ object ResearchCollector {
      */
     fun beginAttempt(dir: File, index: String, pollSlotKey: String, nowMs: Long): Begin = synchronized(lock) {
         if (index !in ResearchCalendar.INDICES) return Begin.Unavailable("UNKNOWN_INDEX")
+        if (!BnfScope.permitsNew(index)) return Begin.Unavailable(BnfScope.RETIRED)
         val session = pollSlotKey.substringBefore("|")
         val ord = pollSlotKey.substringAfterLast("|", "").toIntOrNull() ?: return Begin.Unavailable("BAD_SLOT_KEY")
         when (val p = ResearchProtection.admission(dir)) { null -> {}; else -> return Begin.Unavailable(p) }

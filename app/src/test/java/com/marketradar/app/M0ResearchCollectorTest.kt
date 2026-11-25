@@ -61,32 +61,32 @@ class M0ResearchCollectorTest {
 
     // ---------------------------------------------------------------- B7.1
     @Test fun b7_1_process_death_whole_session_and_late_upload_preserve_denominators() {
-        val expected = ResearchCalendar.plan(S1, "NF").slots.size
+        val expected = ResearchCalendar.plan(S1, "BNF").slots.size
         assertEquals(78, expected) // derived from the grid 09:15..15:40/5m = 78, not a constant in the collector
         // slot 1 starts, process dies before capture
-        begin("NF", S1, 1, ms(S1, 9, 15, 5))
+        begin("BNF", S1, 1, ms(S1, 9, 15, 5))
         // slot 3 captured 7 minutes late -> LATE, linked to slot 3
-        val a3 = begin("NF", S1, 3, ms(S1, 9, 25, 5))
+        val a3 = begin("BNF", S1, 3, ms(S1, 9, 25, 5))
         assertEquals(ResearchCollector.RecordResult.RECORDED,
-            ResearchCollector.recordCapture(dir, a3.slotId, a3.attemptId, capture("NF", chain("NF", "2026-10-27"), ms(S1, 9, 32)), ms(S1, 9, 32)))
+            ResearchCollector.recordCapture(dir, a3.slotId, a3.attemptId, capture("BNF", chain("BNF", "2026-10-27"), ms(S1, 9, 32)), ms(S1, 9, 32)))
         val r = ResearchCollector.reconcile(dir, ms(S1, 10, 0))
         assertEquals("OK", r.getString("status"))
-        assertEquals("MISSING", state(S1, "NF", 1).getString("state"))
-        assertEquals("attempt_abandoned_process_death_or_timeout", state(S1, "NF", 1).getString("reason"))
-        assertEquals("no_attempt", state(S1, "NF", 2).getString("reason"))
-        assertEquals("LATE", state(S1, "NF", 3).getString("state"))
-        assertEquals(a3.slotId, state(S1, "NF", 3).getString("slot_id"))
-        assertEquals("PENDING", state(S1, "NF", 78).getString("state")) // future slot is pending, not missing
+        assertEquals("MISSING", state(S1, "BNF", 1).getString("state"))
+        assertEquals("attempt_abandoned_process_death_or_timeout", state(S1, "BNF", 1).getString("reason"))
+        assertEquals("no_attempt", state(S1, "BNF", 2).getString("reason"))
+        assertEquals("LATE", state(S1, "BNF", 3).getString("state"))
+        assertEquals(a3.slotId, state(S1, "BNF", 3).getString("slot_id"))
+        assertEquals("PENDING", state(S1, "BNF", 78).getString("state")) // future slot is pending, not missing
         // a late upload for already-MISSING slot 2 stays linked to slot 2 and keeps history
-        val a2 = begin("NF", S1, 2, ms(S1, 10, 1))
-        ResearchCollector.recordCapture(dir, a2.slotId, a2.attemptId, capture("NF", chain("NF", "2026-10-27"), ms(S1, 10, 2)), ms(S1, 10, 2))
-        assertEquals("LATE", state(S1, "NF", 2).getString("state"))
-        assertTrue(state(S1, "NF", 2).getString("previous_state").startsWith("MISSING:"))
+        val a2 = begin("BNF", S1, 2, ms(S1, 10, 1))
+        ResearchCollector.recordCapture(dir, a2.slotId, a2.attemptId, capture("BNF", chain("BNF", "2026-10-27"), ms(S1, 10, 2)), ms(S1, 10, 2))
+        assertEquals("LATE", state(S1, "BNF", 2).getString("state"))
+        assertTrue(state(S1, "BNF", 2).getString("previous_state").startsWith("MISSING:"))
         // wholly missed session S2: reconstructed from the calendar on a later launch (S3)
         ResearchCollector.reconcile(dir, ms(S3, 9, 0))
         val m2 = ResearchCollector.readManifest(dir, S2)!!
         assertEquals("reconcile_missed_session", m2.getString("created_by"))
-        for (i in listOf("NF", "BNF")) {
+        for (i in listOf("BNF")) {
             val io = m2.getJSONObject("indices").getJSONObject(i)
             assertEquals(78, io.getInt("expected"))
             assertEquals("session_not_observed_by_collector", io.getJSONObject("slots").getJSONObject("40").getString("reason"))
@@ -97,7 +97,7 @@ class M0ResearchCollectorTest {
         for (k in 0 until st.getJSONArray("sessions").length()) {
             val s = st.getJSONArray("sessions").getJSONObject(k)
             if (s.getString("session_date") == S1) {
-                val nf = s.getJSONObject("NF"); found = true
+                val nf = s.getJSONObject("BNF"); found = true
                 assertEquals(78, nf.getInt("expected"))
                 assertEquals(78, ResearchCollector.STATES.sumOf { nf.getInt(it.lowercase()) })
             }
@@ -105,8 +105,8 @@ class M0ResearchCollectorTest {
         assertTrue(found)
         // weekends are not sessions; a 2027 date is UNKNOWN coverage, not zero slots
         assertNull(ResearchCollector.readManifest(dir, "2026-10-24"))
-        assertEquals("CALENDAR_YEAR_NOT_COVERED", ResearchCalendar.plan("2027-01-04", "NF").reason)
-        assertFalse(ResearchCalendar.plan("2027-01-04", "NF").available)
+        assertEquals("CALENDAR_YEAR_NOT_COVERED", ResearchCalendar.plan("2027-01-04", "BNF").reason)
+        assertFalse(ResearchCalendar.plan("2027-01-04", "BNF").available)
     }
 
     @Test fun b7_1_slots_before_collector_start_are_labelled() {
@@ -193,11 +193,11 @@ class M0ResearchCollectorTest {
 
     // ---------------------------------------------------------------- B7.4
     @Test fun b7_4_neutral_and_missing_stay_distinct_missing_quotes_do_not_erase_neutral() {
-        val at = begin("NF", S1, 20, ms(S1, 10, 50, 5))
+        val at = begin("BNF", S1, 20, ms(S1, 10, 50, 5))
         // baseline quotes missing (no two-sided legs) -> slot PARTIAL
-        ResearchCollector.recordCapture(dir, at.slotId, at.attemptId, capture("NF", chain("NF", "2026-10-27", twoSided = false), ms(S1, 10, 50, 9)), ms(S1, 10, 51))
-        assertEquals("PARTIAL", state(S1, "NF", 20).getString("state"))
-        assertEquals("no_two_sided_quotes", state(S1, "NF", 20).getString("reason"))
+        ResearchCollector.recordCapture(dir, at.slotId, at.attemptId, capture("BNF", chain("BNF", "2026-10-27", twoSided = false), ms(S1, 10, 50, 9)), ms(S1, 10, 51))
+        assertEquals("PARTIAL", state(S1, "BNF", 20).getString("state"))
+        assertEquals("no_two_sided_quotes", state(S1, "BNF", 20).getString("reason"))
         val n = ResearchCollector.buildEnvelope("$S1|20", raw("NEUTRAL", "$S1|20", "NEUTRAL"), 1L, 2L, "2.6.85", 513, JSONObject())
         ResearchCollector.putEnvelope(dir, n, 3L)
         ResearchCollector.putEnvelope(dir, ResearchCollector.buildEnvelope("$S1|21", null, 1L, null, "2.6.85", 513, JSONObject(), "brain_timeout"), 3L)
@@ -208,39 +208,39 @@ class M0ResearchCollectorTest {
 
     // ---------------------------------------------------------------- B7.5
     @Test fun b7_5_mapping_change_keeps_old_and_new_versions() {
-        val a1 = begin("NF", S1, 30, ms(S1, 11, 40, 5))
-        val c1 = capture("NF", chain("NF", "2026-10-27", keyPrefix = "NSE_FO|A"), ms(S1, 11, 40, 9))
+        val a1 = begin("BNF", S1, 30, ms(S1, 11, 40, 5))
+        val c1 = capture("BNF", chain("BNF", "2026-10-27", keyPrefix = "NSE_FO|A"), ms(S1, 11, 40, 9))
         ResearchCollector.recordCapture(dir, a1.slotId, a1.attemptId, c1, ms(S1, 11, 41))
-        val a2 = begin("NF", S1, 31, ms(S1, 11, 45, 5))
-        val c2 = capture("NF", chain("NF", "2026-10-27", keyPrefix = "NSE_FO|B"), ms(S1, 11, 45, 9))
+        val a2 = begin("BNF", S1, 31, ms(S1, 11, 45, 5))
+        val c2 = capture("BNF", chain("BNF", "2026-10-27", keyPrefix = "NSE_FO|B"), ms(S1, 11, 45, 9))
         ResearchCollector.recordCapture(dir, a2.slotId, a2.attemptId, c2, ms(S1, 11, 46))
         assertNotNull(c1.imapVersion); assertNotNull(c2.imapVersion); assertNotEquals(c1.imapVersion, c2.imapVersion)
         assertTrue(ResearchCollector.readInstrumentMap(dir, c1.imapVersion!!)!!.all { it.contains("NSE_FO|A") })
         assertTrue(ResearchCollector.readInstrumentMap(dir, c2.imapVersion!!)!!.all { it.contains("NSE_FO|B") })
         // unchanged content dedups to the same immutable version
-        val same = ResearchCollector.putInstrumentMap(dir, "NF", ResearchCollector.instrumentMapLines("NF", chain("NF", "2026-10-27", keyPrefix = "NSE_FO|A")), 9L)
+        val same = ResearchCollector.putInstrumentMap(dir, "BNF", ResearchCollector.instrumentMapLines("NF", chain("BNF", "2026-10-27", keyPrefix = "NSE_FO|A")), 9L)
         assertEquals(ResearchCollector.MapRef.Ok(c1.imapVersion!!, false), same)
         // a tampered stored map is refused, not silently re-referenced
         val f = File(dir, "imap_${c1.imapVersion}.json"); val o = JSONObject(f.readText()); o.put("body", JSONObject(o.getString("body")).put("lines", "NF|x").toString()); f.writeText(o.toString())
         assertEquals(ResearchCollector.MapRef.Unavailable("IMAP_STORE_CORRUPT"),
-            ResearchCollector.putInstrumentMap(dir, "NF", ResearchCollector.instrumentMapLines("NF", chain("NF", "2026-10-27", keyPrefix = "NSE_FO|A")), 9L))
+            ResearchCollector.putInstrumentMap(dir, "BNF", ResearchCollector.instrumentMapLines("NF", chain("BNF", "2026-10-27", keyPrefix = "NSE_FO|A")), 9L))
     }
 
     // ---------------------------------------------------------------- B7.6
     @Test fun b7_6_protection_archive_lag_and_capacity_are_bounded_and_visible() {
         val roles = listOf("K0_CE", "K0_PE", "P2_CE", "P2_PE", "PS_WING_CE", "PS_WING_PE")
-        assertEquals("STAGED", ResearchProtection.request(dir, "c1", "offline_builder_m1", "NF", "t1", S1, roles, 1L, capacity = 2))
+        assertEquals("STAGED", ResearchProtection.request(dir, "c1", "offline_builder_m1", "BNF", "t1", S1, roles, 1L, capacity = 2))
         assertEquals("STAGED", ResearchProtection.request(dir, "c2", "offline_builder_m1", "BNF", "t1", S1, roles, 1L, capacity = 2))
-        assertEquals("CAPACITY_REJECTED", ResearchProtection.request(dir, "c3", "offline_builder_m1", "NF", "t2", S1, roles, 1L, capacity = 2))
-        assertTrue(ResearchProtection.isProtected(dir, "NF", "t1"))
+        assertEquals("CAPACITY_REJECTED", ResearchProtection.request(dir, "c3", "offline_builder_m1", "BNF", "t2", S1, roles, 1L, capacity = 2))
+        assertTrue(ResearchProtection.isProtected(dir, "BNF", "t1"))
         assertEquals(roles, (0 until 6).map { ResearchProtection.entry(dir, "c1")!!.getJSONArray("roles").getString(it) })
         // Batch 1 W4: an arbitrary-bytes ack is rejected; only a verified manifest of the requested evidence is accepted
         val bytes = "archived chain rows".toByteArray()
         val sha = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
-        val arbitrary = JSONObject().put("entry_id", "c1").put("index", "NF").put("poll_ts", "t1").put("roles", org.json.JSONArray(roles.sorted()))
+        val arbitrary = JSONObject().put("entry_id", "c1").put("index", "BNF").put("poll_ts", "t1").put("roles", org.json.JSONArray(roles.sorted()))
             .put("content_sha256", sha).put("content_bytes", bytes.size)
         assertTrue(ResearchProtection.acknowledgeArchive(dir, "c1", arbitrary, bytes, 3L).startsWith("REJECTED:"))
-        assertTrue(ResearchProtection.isProtected(dir, "NF", "t1"))
+        assertTrue(ResearchProtection.isProtected(dir, "BNF", "t1"))
         // c2 never archived: lag limit converts it to a visible final state (no indefinite pin)
         assertEquals(0, ResearchProtection.enforceLag(dir, S2, lagLimit = 2))
         assertEquals(2, ResearchProtection.enforceLag(dir, "2026-10-29", lagLimit = 2))
@@ -262,33 +262,31 @@ class M0ResearchCollectorTest {
         assertEquals(ResearchCollector.MAX_MANIFEST_SESSIONS, dir.listFiles { f -> f.name.startsWith("manifest_") && f.name.endsWith(".json") }!!.size)
         assertEquals(5, refused)
         dir.listFiles { f -> f.name.startsWith("manifest_") }!!.forEach { it.delete() }
-        repeat(ResearchCollector.MAX_ATTEMPTS_PER_SLOT) { begin("NF", S1, 40, ms(S1, 12, 30)) }
-        assertEquals(ResearchCollector.Begin.Unavailable("ATTEMPT_CAP"), ResearchCollector.beginAttempt(dir, "NF", "$S1|40", ms(S1, 12, 31)))
+        repeat(ResearchCollector.MAX_ATTEMPTS_PER_SLOT) { begin("BNF", S1, 40, ms(S1, 12, 30)) }
+        assertEquals(ResearchCollector.Begin.Unavailable("ATTEMPT_CAP"), ResearchCollector.beginAttempt(dir, "BNF", "$S1|40", ms(S1, 12, 31)))
     }
 
     // ---------------------------------------------------------------- B7.7
     @Test fun b7_7_index_expiry_and_unknown_identity_never_cross_map() {
         assertEquals(ResearchCollector.Begin.Unavailable("UNKNOWN_INDEX"), ResearchCollector.beginAttempt(dir, "FINNIFTY", "$S1|5", 1L))
         assertEquals(ResearchCollector.MapRef.Unavailable("CROSS_INDEX_ENTRY"),
-            ResearchCollector.putInstrumentMap(dir, "NF", ResearchCollector.instrumentMapLines("BNF", chain("BNF", "2026-10-28")), 1L))
+            ResearchCollector.putInstrumentMap(dir, "BNF", ResearchCollector.instrumentMapLines("NF", chain("BNF", "2026-10-28")), 1L))
         val nfPlan = ResearchCalendar.plan(S1, "NF"); val bnfPlan = ResearchCalendar.plan(S1, "BNF")
         assertEquals("2026-10-27", nfPlan.ruleExpiry)
         assertEquals("LIVE_CHAIN_ONLY", bnfPlan.expiryAuthority); assertNull(bnfPlan.ruleExpiry)
         assertEquals("2026-10-19", ResearchCalendar.nfRuleExpiry(LocalDate.parse("2026-10-14").plusDays(1))!!.toString()) // Tue 20 Oct holiday -> Mon 19
-        // NF chain whose expiry disagrees with the dated rule -> PARTIAL, not silently accepted
-        val a = begin("NF", S1, 50, ms(S1, 13, 20, 5))
-        ResearchCollector.recordCapture(dir, a.slotId, a.attemptId, capture("NF", chain("NF", "2026-10-28"), ms(S1, 13, 20, 9)), ms(S1, 13, 21))
-        assertEquals("expiry_calendar_mismatch", state(S1, "NF", 50).getString("reason"))
+        assertEquals(ResearchCollector.Begin.Unavailable(BnfScope.RETIRED),
+            ResearchCollector.beginAttempt(dir, "NF", "$S1|50", ms(S1, 13, 20, 5)))
+        assertFalse(ResearchCollector.readManifest(dir, S1)?.optJSONObject("indices")?.has("NF") == true)
         // a second expiry inside one chain response -> PARTIAL
-        val two = chain("NF", "2026-10-27"); two.getJSONArray("data").getJSONObject(1).put("expiry", "2026-11-03")
-        val b = begin("NF", S1, 51, ms(S1, 13, 25, 5))
-        ResearchCollector.recordCapture(dir, b.slotId, b.attemptId, capture("NF", two, ms(S1, 13, 25, 9)), ms(S1, 13, 26))
-        assertEquals("multiple_expiries_in_chain", state(S1, "NF", 51).getString("reason"))
-        // BNF accepts its own live expiry; NF and BNF slot identities are distinct
+        val two = chain("BNF", "2026-10-27"); two.getJSONArray("data").getJSONObject(1).put("expiry", "2026-11-03")
+        val b = begin("BNF", S1, 51, ms(S1, 13, 25, 5))
+        ResearchCollector.recordCapture(dir, b.slotId, b.attemptId, capture("BNF", two, ms(S1, 13, 25, 9)), ms(S1, 13, 26))
+        assertEquals("multiple_expiries_in_chain", state(S1, "BNF", 51).getString("reason"))
+        // BNF accepts its own live expiry.
         val c = begin("BNF", S1, 50, ms(S1, 13, 20, 5))
         ResearchCollector.recordCapture(dir, c.slotId, c.attemptId, capture("BNF", chain("BNF", "2026-10-28"), ms(S1, 13, 20, 9)), ms(S1, 13, 21))
         assertEquals("CAPTURED", state(S1, "BNF", 50).getString("state"))
-        assertNotEquals(a.slotId, c.slotId)
         // a non-primary-table save is not durable evidence
         val d = begin("BNF", S1, 52, ms(S1, 13, 30, 5))
         ResearchCollector.recordCapture(dir, d.slotId, d.attemptId, capture("BNF", chain("BNF", "2026-10-28"), ms(S1, 13, 30, 9), table = "chain_snapshots"), ms(S1, 13, 31))
@@ -332,16 +330,16 @@ class M0ResearchCollectorTest {
 
     @Test fun b6_label_requires_recent_durable_capture() {
         assertEquals("ENABLED_NOT_CAPTURING", ResearchCollector.status(dir, ms(S1, 10, 0)).getString("label"))
-        val a = begin("NF", S1, 10, ms(S1, 10, 0, 5))
-        ResearchCollector.recordCapture(dir, a.slotId, a.attemptId, capture("NF", chain("NF", "2026-10-27"), ms(S1, 10, 0, 9)), ms(S1, 10, 1))
+        val a = begin("BNF", S1, 10, ms(S1, 10, 0, 5))
+        ResearchCollector.recordCapture(dir, a.slotId, a.attemptId, capture("BNF", chain("BNF", "2026-10-27"), ms(S1, 10, 0, 9)), ms(S1, 10, 1))
         val st = ResearchCollector.status(dir, ms(S1, 10, 2))
         assertEquals("COLLECTING", st.getString("label"))
         assertEquals("Full-day research — collecting", st.getString("label_text"))
         assertTrue(st.getString("claims").startsWith("COLLECTION_ONLY"))
         assertEquals("ENABLED_NOT_CAPTURING", ResearchCollector.status(dir, ms(S1, 11, 0)).getString("label"))
         // local-only (fallback-table) save does not make it "collecting"
-        val b = begin("NF", S1, 25, ms(S1, 11, 15, 5))
-        ResearchCollector.recordCapture(dir, b.slotId, b.attemptId, capture("NF", chain("NF", "2026-10-27"), ms(S1, 11, 15, 9), table = null), ms(S1, 11, 16))
+        val b = begin("BNF", S1, 25, ms(S1, 11, 15, 5))
+        ResearchCollector.recordCapture(dir, b.slotId, b.attemptId, capture("BNF", chain("BNF", "2026-10-27"), ms(S1, 11, 15, 9), table = null), ms(S1, 11, 16))
         assertEquals("ENABLED_NOT_CAPTURING", ResearchCollector.status(dir, ms(S1, 11, 16)).getString("label"))
     }
 }
