@@ -976,7 +976,7 @@ def plan(d, results, now_ms, *, enabled=False, sl_dir=None, native_dropped=0, di
     items = results if isinstance(results, list) else [results]
     out = {'status': 'OK', 'session_date': session, 'fetches': [], 'budget_exhausted': [], 'registered': {}}
     with _lock(d):
-        for ix in INDICES:
+        for ix in ('BNF',):
             lg = _read_ledger(d, session, ix)
             ev = _read_evidence(d, session, ix)
             if lg is None:

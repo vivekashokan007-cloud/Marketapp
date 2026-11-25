@@ -1,3 +1,4 @@
+import market_scope_v1 as _scope
 import json, math, os as _os, statistics, hashlib, time
 import research_forecast_capture as _m0_forecast
 from datetime import datetime, timezone, timedelta
@@ -449,7 +450,7 @@ def detect_regime(polls, baseline):
         return {"sigma": range_sigma, "direction": direction_votes, "trend_pct": trend_pct}
 
     bnf_stats = series_stats('bnf', 'bnfSpot')
-    nf_stats = series_stats('nf', 'nfSpot')
+    nf_stats = None  # Retired index cannot supply a fallback or divergence vote.
     if not bnf_stats and not nf_stats:
         return {"type": "unknown", "sigma": 0, "direction": 0, "trend_pct": 0}
     primary = bnf_stats or nf_stats
@@ -12012,7 +12013,7 @@ def _build_context_percentiles(ctx, polls, candidates, rejected_candidates, resu
         return tuple(tiers)
 
     _pcr_oi_lineage = {'contract': PCR_OI_LINEAGE_VERSION}
-    for _ix in ('BNF', 'NF'):
+    for _ix in _scope.ACTIVE_INDICES:
         _lx = _ix.lower()
         _c_val, _c_src, _c_key, _ = _traced_row_value(*_oi_tiers(_ix))
         _p_val, _p_src, _p_key, _ = _traced_row_value(*_oi_put_tiers(_ix))
@@ -14738,6 +14739,7 @@ def check_execution_readiness(candidate, current_result, ctx):
 # ─── MAIN: GENERATE ALL CANDIDATES FOR ONE INDEX ───
 
 def generate_candidates(chain, spot, index_key, expiry, vix, bias, iv_pctl, ctx, regime=None):
+    # Historical replay/position math remains multi-index; active callers supply BNF only.
     if not chain or not chain.get('strikes') or not chain.get('atm'):
         return [], []
     is_bnf = index_key == 'BNF'
@@ -16667,7 +16669,7 @@ def _build_watchlist_from_ranked(ranked, per_index_diverse=3, head_count=6):
     """Top-ranked executable list plus per-index diversity picks."""
     watchlist = list(ranked[:head_count])
     seen_ids = set(c.get('id') for c in watchlist)
-    for idx_pick in ('BNF', 'NF'):
+    for idx_pick in _scope.ACTIVE_INDICES:
         seen_types = set()
         idx_added = 0
         for c in ranked:
@@ -17307,26 +17309,13 @@ IA_CONTEXT_KEYS = ('indexAuthorityStateDir', 'pollReceiptMs', 'analysisClockMs',
 
 
 def _attach_paper_buying_research(result, ctx):
-    """b510 Batch C: independent prospective X1 quote simulation (Paper research only).
-
-    Runs before the three-poll entry warm-up so 09:20 can be observed; it reads
-    only ctx quotes/timestamps, never brain signals, and writes only its own
-    journal. Native-owned keys are removed from ctx afterwards so they cannot
-    reach snapshots, replays or later calls.
-    """
-    try:
-        import paper_buying_research as buying
-        payload = buying.run(ctx, brain_version=BRAIN_VERSION)
-        if payload is not None:
-            result['paper_buying_research'] = payload
-    except Exception:
-        if isinstance(ctx, dict) and ctx.get('x1CaptureSource') == 'LIVE_PHONE_POLL':
-            result['paper_buying_research'] = {'status': 'ENGINE_ERROR', 'paper_research_only': True,
-                                               'quote_simulation_only': True, 'recommendation_authority': False}
-    finally:
-        if isinstance(ctx, dict):
-            for key in X1_CONTEXT_KEYS:
-                ctx.pop(key, None)
+    """Frozen dual-index X1 journal is historical; new BNF collection uses premium capture."""
+    result['paper_buying_research'] = {
+        'status': 'RETIRED_BNF_ONLY', 'paper_research_only': True,
+        'recommendation_authority': False,
+        'reason': 'Legacy dual-index experiment retained read-only; BNF premium capture remains available.'}
+    for key in X1_CONTEXT_KEYS:
+        ctx.pop(key, None)
 
 
 def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_json, strike_oi_json, context_json='{}'):
@@ -17337,6 +17326,9 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
     candidates = json.loads(candidates_json) if candidates_json else []
     strike_oi = json.loads(strike_oi_json) if strike_oi_json else {}
     ctx = json.loads(context_json) if context_json else {}
+    polls, baseline, ctx = _scope.isolate_inputs(polls, baseline, ctx)
+    candidates = _scope.new_candidates(candidates)
+    closed_trades = _scope.new_candidates(closed_trades)
     # Evidence batch 1 (Item B): ranked population the Paper primary is selected from; None means the
     # population was never produced (distinct from an empty menu). Read only by the bounded menu capture.
     _pmc_ranked_population = None
@@ -17419,7 +17411,7 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
         # Even on early return, embed trace so consumer knows it ran
         if ctx.get('_trace'):
             result['_trace'] = ctx['_trace']
-        return json.dumps(result)
+        return json.dumps(_scope.active_result(result))
 
     # Set capital from JS context (single source of truth: C.CAPITAL)
     global _capital
@@ -17484,7 +17476,7 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
         except Exception as e:
             print(f"DEBUG: Market insight {fn.__name__} failed: {e}")
     # New context-aware market functions
-    for fn in [signal_coherence, max_pain_gravity, fii_trend, nf_bnf_divergence,
+    for fn in [signal_coherence, max_pain_gravity, fii_trend,
                day_range_position, wall_freshness]:
         try:
             r = fn(polls, ctx)
@@ -17846,7 +17838,7 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
                 'detail': detail,
             })
 
-        for chain_key, idx_key in [('bnfChain', 'BNF'), ('nfChain', 'NF')]:
+        for chain_key, idx_key in [('bnfChain', 'BNF')]:
             chain_data = ctx.get(chain_key)
             # BR125: Explicit logging when chain missing — catches Kotlin wiring silent failures
             if not chain_data:
@@ -18632,6 +18624,7 @@ def analyze(poll_json, trades_json, baseline_json, open_trades_json, candidates_
     if _ia_on and isinstance(result.get('verdict'), dict) \
             and result['verdict'].get('policy_version') == _ia.POLICY_VERSION:
         _ia_retire_combined_view(result['verdict'])
+    _scope.active_result(result)
     out_str, _ = _safe_json(result)
     return out_str
 
@@ -18970,7 +18963,7 @@ def _ia_managed_policy_summary(managed):
     if not isinstance(managed, dict):
         return None
     out = {'schema': IA_MANAGED_SUMMARY_SCHEMA, 'by_index': {}}
-    for ix in ('NF', 'BNF'):
+    for ix in _scope.ACTIVE_INDICES:
         mp = managed.get(ix) if isinstance(managed.get(ix), dict) else {}
         gates = [g for g in (mp.get('gates') or []) if isinstance(g, dict)]
         rows = []
@@ -20233,7 +20226,7 @@ def _compact_candidate_trace(trace_root):
         'accepted_count': 0,
     }
     candidates = trace_root.get('candidates') or {}
-    for index_key in ('BNF', 'NF'):
+    for index_key in _scope.ACTIVE_INDICES:
         row = candidates.get(index_key)
         if not isinstance(row, dict):
             continue
@@ -21922,7 +21915,7 @@ def take_poll_snapshot(result, ctx, polls, persistence_mode='full'):
     ia_record = None
     if ia_auth.get('active') == 'index_direction_v1':
         mp = result.get('managed_policy') if isinstance(result.get('managed_policy'), dict) else {}
-        sel_ids = [((mp.get(ix) or {}).get('selected') or {}).get('candidate_id') for ix in ('NF', 'BNF')]
+        sel_ids = [((mp.get(ix) or {}).get('selected') or {}).get('candidate_id') for ix in _scope.ACTIVE_INDICES]
         sel_ids = [i for i in sel_ids if i]
         top_cand = next((c for c in watchlist if isinstance(c, dict) and c.get('id') in sel_ids), None) \
             if len(sel_ids) == 1 else None
@@ -21944,7 +21937,7 @@ def take_poll_snapshot(result, ctx, polls, persistence_mode='full'):
                               'managed_reason': (mp.get(ix) or {}).get('reason'),
                               'admissible_count': sum(1 for g in ((mp.get(ix) or {}).get('gates') or [])
                                                       if isinstance(g, dict) and g.get('admit'))}
-                         for ix in ('NF', 'BNF')},
+                         for ix in _scope.ACTIVE_INDICES},
             'selected_candidate_ids': sel_ids,
             'coverage_note': IA_SNAPSHOT_COVERAGE_NOTE,
         }
@@ -21985,7 +21978,7 @@ def take_poll_snapshot(result, ctx, polls, persistence_mode='full'):
     band = f"{((verdict.get('confidence') or 0) // 10) * 10}"
     key = f"{verdict.get('action')}|{verdict.get('strategy')}|{top_cand.get('sellStrike') if top_cand else ''}|{verdict.get('direction')}|{band}"
     if ia_record is not None:
-        key = 'idx1|' + '|'.join(str((ia_record['by_index'][ix] or {}).get('decision_id')) for ix in ('NF', 'BNF')) \
+        key = 'idx1|' + '|'.join(str((ia_record['by_index'][ix] or {}).get('decision_id')) for ix in _scope.ACTIVE_INDICES) \
               + '|' + str((top_cand or {}).get('id'))
     rec_id = hashlib.md5(key.encode()).hexdigest()[:8]
 
@@ -27390,7 +27383,7 @@ def compute_index_authority(polls, ctx):
     out = {}
     persisted = False
     delta = {'scales': {}, 'history': {}}
-    for ix in _ia.INDICES:
+    for ix in _scope.ACTIVE_INDICES:
         chain = ctx.get('nfChain' if ix == 'NF' else 'bnfChain') or {}
         expiry = ctx.get('nfExpiry' if ix == 'NF' else 'bnfExpiry')
         available, why = True, None
@@ -27699,15 +27692,14 @@ def _ia_single_leg_plan(ix, dec, chain, spot, ctx, session, decision_dt, open_tr
 
 
 def _ia_selector(ctx):
-    sel = str((ctx or {}).get('indexSelector') or 'BOTH').upper()
-    return sel if sel in ('NF', 'BNF', 'BOTH') else 'BOTH'
+    return 'BNF'
 
 
 def _ia_flatten_candidates(candidates_by_index, by_index):
     """Authority candidates in a FIXED presentation order (NF then BNF, each in the policy's allowed-structure
     order).  This order is not a rank; nothing downstream may treat position 0 as a recommendation."""
     out = []
-    for ix in _ia.INDICES:
+    for ix in _scope.ACTIVE_INDICES:
         allowed = list(((by_index.get(ix) or {}).get('structure_policy') or {}).get('allowed') or [])
         cands = list((candidates_by_index or {}).get(ix) or [])
         cands.sort(key=lambda c: allowed.index(c.get('type')) if c.get('type') in allowed else len(allowed))
@@ -27746,8 +27738,8 @@ def _ia_apply_cutover(result, ctx, polls, open_trades, authority, single_leg_pos
     if not isinstance(authority, dict):
         raise ValueError('AUTHORITY_MISSING')
     meta = authority.get('_meta') or {}
-    by_index = {ix: authority[ix] for ix in _ia.INDICES if ix in authority}
-    if set(by_index) != set(_ia.INDICES):
+    by_index = {ix: authority[ix] for ix in _scope.ACTIVE_INDICES if ix in authority}
+    if set(by_index) != set(_scope.ACTIVE_INDICES):
         raise ValueError('AUTHORITY_INCOMPLETE')
     session = meta.get('session_date')
     decision_dt = _ia.parse_ts(meta.get('analysis_ts'))      # trusted analysis clock (R1)
@@ -27825,7 +27817,7 @@ def _ia_apply_cutover(result, ctx, polls, open_trades, authority, single_leg_pos
         'construction': _icn.CONSTRUCTION_VERSION, 'freshness': _ia.FRESHNESS_VERSION,
         'calendar_rule_version': _IA_CALENDAR.version, 'combined_direction_retired': True,
         'real_display_follows_authority': True, 'real_orders_unchanged': True,
-        'freshness_coverage': _ia.freshness_coverage({'NF': ctx.get('nfChain') or {}, 'BNF': ctx.get('bnfChain') or {}}),
+        'freshness_coverage': _ia.freshness_coverage({'BNF': ctx.get('bnfChain') or {}}),
         'state': {k: v for k, v in meta.items() if k not in ('history', 'state_delta', 'new_record_ids')},
     }
     # PM1-3: write-once post-cutover diagnostic for NEW retained authority observations only (see
@@ -27838,7 +27830,7 @@ def _ia_apply_cutover(result, ctx, polls, open_trades, authority, single_leg_pos
         result['index_authority_persist'] = {'session_date': session, 'delta': meta['state_delta']}
     result['pc2_paper_primary'] = {'replaced_by': _ia.POLICY_VERSION, 'pc2_primary_candidate_id': None,
                                    'reason': 'per_index_authority_no_cross_index_ranking'}
-    shown = [selector] if selector in ('NF', 'BNF') else list(_ia.INDICES)
+    shown = [selector] if selector in ('NF', 'BNF') else list(_scope.ACTIVE_INDICES)
     result['verdict'] = {
         'action': 'WAIT', 'strategy': None, 'direction': None, 'confidence': None,
         'urgency': 'PER_INDEX', 'reasoning': ' | '.join(by_index[ix].get('display', '') for ix in shown if ix in by_index),
@@ -27879,7 +27871,7 @@ def _ia_fail_closed(result, ctx, open_trades, stage, exc, polls=None):
     session = _ia_session_date(ctx, polls or [])
     clock = _ia_analysis_dt(ctx)
     by_index = {}
-    for ix in _ia.INDICES:
+    for ix in _scope.ACTIVE_INDICES:
         dec = _ia.build_index_decision(ix, [], session, clock, None, index_available=False,
                                        availability_reason=reason)
         dec['display'] = _ia.plain_words(dec)
@@ -27892,10 +27884,10 @@ def _ia_fail_closed(result, ctx, open_trades, stage, exc, polls=None):
     for k in ('single_leg_by_index', 'index_authority_persist', 'position_exit_contracts'):
         result.pop(k, None)
     result['by_index'] = by_index
-    result['candidates_by_index'] = {ix: [] for ix in _ia.INDICES}
+    result['candidates_by_index'] = {ix: [] for ix in _scope.ACTIVE_INDICES}
     result['managed_policy'] = {ix: {'policy_id': _ia.MANAGED_POLICY_ID, 'gates': [], 'selected': None,
                                      'reason': 'AUTHORITY_UNAVAILABLE', 'manual_paper_locked': False,
-                                     'managed_entries_disabled': True} for ix in _ia.INDICES}
+                                     'managed_entries_disabled': True} for ix in _scope.ACTIVE_INDICES}
     result['index_selector'] = _ia_selector(ctx)
     result['generated_candidates'] = []
     result['watchlist'] = []
@@ -27949,7 +27941,7 @@ def _ia_single_leg_positions(ctx):
         rows = None
     if rows is None:
         return [{'index': ix, 'policy_id': 'index_single_leg_v1', 'status': 'UNKNOWN_STORE_UNREADABLE'}
-                for ix in _ia.INDICES]
+                for ix in _scope.ACTIVE_INDICES]
     return rows
 
 
@@ -27963,9 +27955,9 @@ def _ia_index_alerts(result, ctx):
         if a.get('category') == 'ROUTINE' and isinstance(a.get('body'), str) and ' | Top: ' in a['body']:
             a['body'] = a['body'].split(' | Top: ')[0]
             a['body'] += ' | ' + ' · '.join(f"{ix} {((by_index.get(ix) or {}).get('direction') or {}).get('value') or 'UNAVAILABLE'}"
-                                            for ix in _ia.INDICES)
+                                            for ix in _scope.ACTIVE_INDICES)
     sel = result.get('index_selector') or 'BOTH'
-    for ix in _ia.INDICES:
+    for ix in _scope.ACTIVE_INDICES:
         dec = by_index.get(ix) or {}
         if sel in ('NF', 'BNF') and sel != ix:
             continue
@@ -28181,14 +28173,14 @@ STRUCTURE_CHOICES_MAX = 200
 def index_authority_record_choice(state_dir, result_json, index, decision_id, candidate_id, now_ms):
     """Validate an explicit user choice against the CURRENT published result for that index (allowed,
     executable, same decision) and persist it.  Never picks for the user; never defaults to list order."""
+    if not _scope.active_index(index):
+        return json.dumps({'status': 'REJECTED', 'reason': _scope.RETIRED_REASON})
     try:
         sdir = _ias.state_dir({'indexAuthorityStateDir': state_dir})
         if not sdir:
             return json.dumps({'status': 'NO_STATE_DIR'})
         res = json.loads(result_json or '{}')
-        ix = str(index or '').upper()
-        if ix not in _ia.INDICES:
-            return json.dumps({'status': 'REJECTED', 'reason': 'INDEX_INVALID'})
+        ix = str(index or '').strip().upper()
         auth = res.get('direction_authority') or {}
         if auth.get('active') != _ia.POLICY_VERSION or auth.get('status') != 'OK':
             return json.dumps({'status': 'REJECTED', 'reason': 'AUTHORITY_NOT_ACTIVE'})
@@ -28262,6 +28254,8 @@ def single_leg_admit(sl_dir, result_json, index, open_trades_json='[]', enabled=
         res = json.loads(result_json or '{}')
         ot = json.loads(open_trades_json or '[]')
         ix = str(index or '').upper()
+        if not _scope.active_index(ix):
+            return json.dumps({'status': 'REJECTED', 'reason': _scope.RETIRED_REASON})
         snaps, rej = _sl_snapshot_from(requested_json, quote_json, request_start_ms, receipt_ms, receipt_mono_ms)
         plan = (res.get('single_leg_by_index') or {}).get(ix) or {}
         snap = snaps.get(plan.get('instrument_key')) if snaps else None
@@ -28363,7 +28357,7 @@ def single_leg_expiry_fallback_apply(sl_dir, result_json, ctx_json, evidence_jso
             cap, cap_src = float(_CONST['CAPITAL']), 'ANALYSIS_DEFAULT'
         out = {'cutoff_ms': cutoff, 'single_leg_by_index': {}, 'why': {}, 'retention': {}, 'skipped': {}}
         pending = []
-        for ix in ('NF', 'BNF'):
+        for ix in _scope.ACTIVE_INDICES:
             if ix not in evn:
                 continue
             base = (res.get('single_leg_by_index') or {}).get(ix) or {}
@@ -28474,7 +28468,7 @@ def single_leg_quote_targets(sl_dir, result_json='null', max_keys=4):
         opens = _sls.open_instruments(sl_dir) or []
         research = _sls.hold_observation_targets(sl_dir)
         cands = []
-        for ix in ('NF', 'BNF'):
+        for ix in _scope.ACTIVE_INDICES:
             p = (res.get('single_leg_by_index') or {}).get(ix) or {}
             if p.get('status') in ('ADMISSIBLE', 'ELIGIBLE_PENDING_SNAPSHOT'):
                 cands += [k for k in p.get('quote_needed') or [] if k not in opens]

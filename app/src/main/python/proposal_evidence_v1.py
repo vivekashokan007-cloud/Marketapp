@@ -30,6 +30,8 @@ def _fields(obj, names):
 
 def record(files_dir, result_json, chains_json, clocks_json):
     result, chains, clocks = map(json.loads, (result_json, chains_json, clocks_json))
+    scope = result.get('market_scope') or {}
+    active_indices = ('BNF',) if scope.get('version') == 'bnf_only_v1' else ('NF', 'BNF')
     session = ((result.get('direction_authority') or {}).get('state') or {}).get('session_date')
     if not isinstance(session, str) or not re.fullmatch(r'\d{4}-\d{2}-\d{2}', session):
         return json.dumps({'status': 'SESSION_UNAVAILABLE'})
@@ -50,7 +52,7 @@ def record(files_dir, result_json, chains_json, clocks_json):
                    'price_source': 'RAW_CHAIN_RESEARCH_PROXY_NOT_FILL'}
         except (ValueError, OSError):
             return json.dumps({'status': 'EXISTING_UNREADABLE'})
-        for index in ('NF', 'BNF'):
+        for index in active_indices:
             plan = (result.get('single_leg_by_index') or {}).get(index) or {}
             contract = plan.get('contract') or {}
             key = plan.get('instrument_key')
@@ -68,6 +70,8 @@ def record(files_dir, result_json, chains_json, clocks_json):
                     original_action=plan.get('action'), holding_contract=plan.get('holding_contract'))
         for ident, target in doc['tracked'].items():
             index = target['index']
+            if index not in active_indices:
+                continue
             source = (chains.get(index) or {}).get('data') or []
             match = None
             for row in source:
@@ -99,7 +103,7 @@ def record(files_dir, result_json, chains_json, clocks_json):
                 doc['dropped'] += 1
                 doc['truncated'] = True
         for ix, p in (result.get('single_leg_by_index') or {}).items():
-            if str(p.get('action') or '').startswith('SELL'):
+            if ix in active_indices and str(p.get('action') or '').startswith('SELL'):
                 doc['coverage'].setdefault(ix, {'present': 0, 'missing': 0, 'policy_blocked': 0})['policy_blocked'] += 1
         raw = json.dumps(doc, allow_nan=False).encode()
         if len(raw) > MAX_BYTES:

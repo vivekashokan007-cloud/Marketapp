@@ -116,6 +116,7 @@ class SingleLegAdmissionCoordinator(
     fun submit(index: String, displayedDecisionId: String?, displayedInstrumentKey: String?,
                requestId: String = UUID.randomUUID().toString()): String {
         val ix = index.trim().uppercase()
+        if (!BnfScope.permitsNew(ix)) return rej(BnfScope.RETIRED).toString()
         val shown = Displayed(displayedDecisionId?.trim()?.takeIf { it.isNotEmpty() },
                               displayedInstrumentKey?.trim()?.takeIf { it.isNotEmpty() })
         synchronized(statuses) { indexOf[requestId] = ix }

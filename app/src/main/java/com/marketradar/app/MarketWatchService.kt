@@ -226,9 +226,6 @@ class MarketWatchService : Service() {
         private const val APPROVED_BRANCH_PROPOSALS_KEY = "approved_branch_proposals"
         private const val APPROVED_BRANCH_PROPOSALS_SYNC_MS_KEY = "approved_branch_proposals_sync_ms"
         private const val APPROVED_BRANCH_PROPOSALS_TTL_MS = 15 * 60 * 1000L
-        private const val NF50_REMOTE_CACHE_KEY = "nf50_remote_constituents_json"
-        private const val NF50_REMOTE_CACHE_MS_KEY = "nf50_remote_constituents_sync_ms"
-        private const val NF50_REMOTE_TTL_MS = 12 * 60 * 60 * 1000L
         private const val SIGNAL_RELIABILITY_CACHE_KEY = "signal_reliability_rows_json"
         private const val SIGNAL_RELIABILITY_CACHE_MONTH_KEY = "signal_reliability_cache_month"
         private const val EXPIRY_REFRESH_DATE_KEY = "expiry_refresh_date"
@@ -264,21 +261,6 @@ class MarketWatchService : Service() {
             BreadthStock("SBIN", "NSE_EQ|INE062A01020", "NSE_EQ:SBIN", 0.2042),
             BreadthStock("ICICIBANK", "NSE_EQ|INE009A01021", "NSE_EQ:ICICIBANK", 0.1977),
             BreadthStock("AXISBANK", "NSE_EQ|INE238A01034", "NSE_EQ:AXISBANK", 0.0865)
-        )
-        private val NF50_CONSTITUENTS_BASE = listOf(
-            "NSE_EQ|INE423A01024", "NSE_EQ|INE742F01042", "NSE_EQ|INE437A01024", "NSE_EQ|INE021A01026",
-            "NSE_EQ|INE238A01034", "NSE_EQ|INE917I01010", "NSE_EQ|INE918I01026", "NSE_EQ|INE296A01032",
-            "NSE_EQ|INE263A01024", "NSE_EQ|INE397D01024", "NSE_EQ|INE059A01026", "NSE_EQ|INE522F01014",
-            "NSE_EQ|INE089A01031", "NSE_EQ|INE066A01021", "NSE_EQ|INE758T01015", "NSE_EQ|INE047A01021",
-            "NSE_EQ|INE860A01027", "NSE_EQ|INE040A01034", "NSE_EQ|INE795G01014", "NSE_EQ|INE038A01020",
-            "NSE_EQ|INE030A01027", "NSE_EQ|INE090A01021", "NSE_EQ|INE646L01027", "NSE_EQ|INE009A01021",
-            "NSE_EQ|INE154A01025", "NSE_EQ|INE758E01017", "NSE_EQ|INE019A01038", "NSE_EQ|INE018A01030",
-            "NSE_EQ|INE101A01026", "NSE_EQ|INE585B01010", "NSE_EQ|INE027H01010", "NSE_EQ|INE239A01024",
-            "NSE_EQ|INE733E01010", "NSE_EQ|INE213A01029", "NSE_EQ|INE752E01010", "NSE_EQ|INE002A01018",
-            "NSE_EQ|INE123W01016", "NSE_EQ|INE062A01020", "NSE_EQ|INE721A01047", "NSE_EQ|INE044A01036",
-            "NSE_EQ|INE192A01025", "NSE_EQ|INE081A01020", "NSE_EQ|INE467B01029", "NSE_EQ|INE669C01036",
-            "NSE_EQ|INE280A01028", "NSE_EQ|INE155A01022", "NSE_EQ|INE849A01020", "NSE_EQ|INE481G01011",
-            "NSE_EQ|INE075A01022"
         )
     }
 
@@ -332,86 +314,6 @@ class MarketWatchService : Service() {
 
     private fun getBnfStocks(kotakKey: String = getCachedKotakKey()): List<BreadthStock> {
         return listOf(BreadthStock("KOTAKBANK", kotakKey, "NSE_EQ:KOTAKBANK", 0.0781)) + BNF_STOCKS_BASE
-    }
-
-    private fun getNf50Constituents(kotakKey: String = getCachedKotakKey()): List<String> {
-        return NF50_CONSTITUENTS_BASE + listOf(kotakKey)
-    }
-
-    private fun parseRemoteNf50Constituents(rows: JSONArray, kotakKey: String = getCachedKotakKey()): List<String> {
-        var latestEffectiveDate: String? = null
-        for (i in 0 until rows.length()) {
-            val row = rows.optJSONObject(i) ?: continue
-            val active = row.optBoolean("active", true)
-            if (!active) continue
-            val effectiveDate = row.optString("effective_date")
-            if (effectiveDate.isBlank()) continue
-            if (latestEffectiveDate == null || effectiveDate > latestEffectiveDate) {
-                latestEffectiveDate = effectiveDate
-            }
-        }
-        val out = mutableListOf<String>()
-        for (i in 0 until rows.length()) {
-            val row = rows.optJSONObject(i) ?: continue
-            val active = row.optBoolean("active", true)
-            if (!active) continue
-            if (!latestEffectiveDate.isNullOrBlank()) {
-                val effectiveDate = row.optString("effective_date")
-                if (effectiveDate != latestEffectiveDate) continue
-            }
-            val rawKey = listOf(
-                row.optString("instrument_key"),
-                row.optString("request_key"),
-                row.optString("symbol")
-            ).firstOrNull { it.isNotBlank() } ?: continue
-            val normalized = when {
-                rawKey.startsWith("NSE_EQ|") -> rawKey
-                rawKey.equals("KOTAKBANK", ignoreCase = true) -> kotakKey
-                else -> ""
-            }
-            if (normalized.isNotBlank()) out.add(normalized)
-        }
-        val unique = LinkedHashSet(out)
-        if (!unique.contains(kotakKey)) unique.add(kotakKey)
-        return unique.toList()
-    }
-
-    private fun getRemoteNf50Constituents(kotakKey: String = getCachedKotakKey()): List<String>? {
-        val now = System.currentTimeMillis()
-        val cachedAt = prefs.getLong(NF50_REMOTE_CACHE_MS_KEY, 0L)
-        val cachedJson = prefs.getString(NF50_REMOTE_CACHE_KEY, "") ?: ""
-        if (cachedJson.isNotBlank() && now - cachedAt < NF50_REMOTE_TTL_MS) {
-            return try {
-                val cached = JSONArray(cachedJson)
-                val parsed = parseRemoteNf50Constituents(cached, kotakKey)
-                if (parsed.isNotEmpty()) parsed else null
-            } catch (_: Exception) {
-                null
-            }
-        }
-
-        return try {
-            val rows = SupabaseClient.fetchNf50ConstituentRows()
-            if (rows.length() <= 0) return null
-            val parsed = parseRemoteNf50Constituents(rows, kotakKey)
-            if (parsed.isEmpty()) return null
-            prefs.edit()
-                .putString(NF50_REMOTE_CACHE_KEY, rows.toString())
-                .putLong(NF50_REMOTE_CACHE_MS_KEY, now)
-                .apply()
-            parsed
-        } catch (e: Exception) {
-            LogBuffer.add('W', TAG, "NF50_REMOTE_CONFIG_FAIL: ${e.message}")
-            if (cachedJson.isNotBlank()) {
-                try {
-                    val cached = JSONArray(cachedJson)
-                    val parsed = parseRemoteNf50Constituents(cached, kotakKey)
-                    if (parsed.isNotEmpty()) return parsed
-                } catch (_: Exception) {
-                }
-            }
-            null
-        }
     }
 
     private suspend fun resolveKotakKey(token: String): String {
@@ -810,11 +712,11 @@ class MarketWatchService : Service() {
             fetchYesterdayOHLC(token)
             // WS1: Ensure we have the near-month keys for both indices for breadth/fp
             val bnfFutKey = getFuturesKey("BNF")
-            val nfFutKey = getFuturesKey("NF")
+            val nfFutKey = "" // retired; no NF futures request
             Log.d(TAG, "BOOTSTRAP_FUTURES: BNF=$bnfFutKey, NF=$nfFutKey")
             
             // Fetch initial futures quotes to prime the system
-            val url = "https://api.upstox.com/v2/market-quote/quotes?instrument_key=$bnfFutKey,$nfFutKey"
+            val url = "https://api.upstox.com/v2/market-quote/quotes?instrument_key=$bnfFutKey"
             fetchSync(url, token)
         } catch (e: Exception) {
             Log.e(TAG, "Bootstrap from Upstox failed: ${e.message}")
@@ -826,7 +728,7 @@ class MarketWatchService : Service() {
         if (prefs.getString("ohlc_date", "") == today) return
 
         Log.d(TAG, "Fetching yesterday's OHLC...")
-        val url = "https://api.upstox.com/v2/market-quote/ohlc?instrument_key=NSE_INDEX|Nifty Bank,NSE_INDEX|Nifty 50&interval=1d"
+        val url = "https://api.upstox.com/v2/market-quote/ohlc?instrument_key=NSE_INDEX|Nifty Bank&interval=1d"
         val json = fetchSync(url, token)
         if (json != null) {
             prefs.edit().putString("yesterday_ohlc", json.toString())
@@ -1126,7 +1028,7 @@ class MarketWatchService : Service() {
 
             val (bnfExpiry, nfExpiry) = refreshActiveExpiries(token)
             val today = todayIstDate()
-            if (!isUsableExpiry(bnfExpiry, today) || !isUsableExpiry(nfExpiry, today)) {
+            if (!isUsableExpiry(bnfExpiry, today)) {
                 invalidateExpiryAuthority("poll_invalid_live_expiry", bnfExpiry, nfExpiry)
                 Log.w(TAG, "POLL_SKIP_INVALID_EXPIRY: bnf='$bnfExpiry' nf='$nfExpiry' session=$today")
                 LogBuffer.add('E', TAG, "POLL_SKIP_INVALID_EXPIRY: bnf='$bnfExpiry' nf='$nfExpiry' session=$today")
@@ -1154,10 +1056,9 @@ class MarketWatchService : Service() {
             // A8: Parallelize independent HTTP calls
             val kotakKey = resolveKotakKey(token)
             val bnfStocks = getBnfStocks(kotakKey).joinToString(",") { it.requestKey }
-            val quotesUrl = "https://api.upstox.com/v2/market-quote/quotes?instrument_key=NSE_INDEX|Nifty Bank,NSE_INDEX|Nifty 50,NSE_INDEX|India VIX"
+            val quotesUrl = "https://api.upstox.com/v2/market-quote/quotes?instrument_key=NSE_INDEX|Nifty Bank,NSE_INDEX|India VIX"
             val bnfUrl = "https://api.upstox.com/v2/option/chain?instrument_key=NSE_INDEX|Nifty Bank&expiry_date=$bnfExpiry"
             val bnfStocksUrl = "https://api.upstox.com/v2/market-quote/quotes?instrument_key=$bnfStocks"
-            val nfUrl = "https://api.upstox.com/v2/option/chain?instrument_key=NSE_INDEX|Nifty 50&expiry_date=$nfExpiry"
 
             // Evidence batch 1 (Item C): device-local clock around the index quotes fetch only.
             var quotesFetchStartedAtMs = 0L
@@ -1175,37 +1076,26 @@ class MarketWatchService : Service() {
             // MISSING_REQUEST_FAILED records could never be written — the gap capture exists to
             // record was itself unrecordable. This is a completion time, not a vendor quote time.
             var capBnfCompletedAtMs = 0L
-            var capNfCompletedAtMs = 0L
             val acquisition = MarketSnapshotIdentity.acquire(today) { coroutineScope {
-                listOf(
-                    async(Dispatchers.IO) { fetchNf50Breadth(token) },
-                    async(Dispatchers.IO) {
-                        quotesFetchStartedAtMs = System.currentTimeMillis()
-                        fetchSync(quotesUrl, token).also { quotesFetchCompletedAtMs = System.currentTimeMillis() }
-                    },
-                    async(Dispatchers.IO) { m0BnfFetchStartMs = System.currentTimeMillis(); fetchSync(bnfUrl, token).also {
+                val quotes = async(Dispatchers.IO) {
+                    quotesFetchStartedAtMs = System.currentTimeMillis()
+                    fetchSync(quotesUrl, token).also { quotesFetchCompletedAtMs = System.currentTimeMillis() }
+                }
+                val chain = async(Dispatchers.IO) {
+                    m0BnfFetchStartMs = System.currentTimeMillis()
+                    fetchSync(bnfUrl, token).also {
                         capBnfCompletedAtMs = System.currentTimeMillis()
                         if (it != null) x1BnfChainFetchedAtMs = capBnfCompletedAtMs
-                    } },
-                    async(Dispatchers.IO) { fetchSync(bnfStocksUrl, token) },
-                    async(Dispatchers.IO) { m0NfFetchStartMs = System.currentTimeMillis(); fetchSync(nfUrl, token).also {
-                        evNfChainFetchedAtMs = System.currentTimeMillis()
-                        capNfCompletedAtMs = evNfChainFetchedAtMs
-                        if (it != null) x1NfChainFetchedAtMs = evNfChainFetchedAtMs
-                    } }
-                ).map { it.await() }
+                    }
+                }
+                val stocks = async(Dispatchers.IO) { fetchSync(bnfStocksUrl, token) }
+                Triple(quotes.await(), chain.await(), stocks.await())
             } }
-            val parallel = acquisition.value
-            val nf50Breadth = parallel[0] ?: JSONObject()
-            val hasNf50Breadth = parallel[0] != null
-            if (!hasNf50Breadth) {
-                Log.w(TAG, "POLL_WARN: NF50 breadth fetch failed; continuing with empty breadth context")
-                LogBuffer.add('W', TAG, "POLL_WARN: NF50 breadth missing; using empty context")
-            }
-            val quotesJson = parallel[1]
-            val bnfChainJson = parallel[2] ?: JSONObject().put("data", JSONArray()).put("input_failure", "CHAIN_FETCH_FAILED")
-            val bnfStocksJson = parallel[3] ?: JSONObject().put("data", JSONObject()).put("input_failure", "BNF_BREADTH_FETCH_FAILED")
-            val nfChainJson = parallel[4] ?: JSONObject().put("data", JSONArray()).put("input_failure", "CHAIN_FETCH_FAILED")
+            val (quotesJson, chainResponse, stocksResponse) = acquisition.value
+            val nf50Breadth = JSONObject()
+            val bnfChainJson = chainResponse ?: JSONObject().put("data", JSONArray()).put("input_failure", "CHAIN_FETCH_FAILED")
+            val bnfStocksJson = stocksResponse ?: JSONObject().put("data", JSONObject()).put("input_failure", "BNF_BREADTH_FETCH_FAILED")
+            val nfChainJson = JSONObject().put("data", JSONArray()).put("retired", BnfScope.RETIRED)
 
             // Premium evidence capture, DEFAULT OFF. Placed deliberately here: immediately after
             // the already-fetched chain results are available, and BEFORE every early return
@@ -1228,15 +1118,11 @@ class MarketWatchService : Service() {
                     PremiumCapturePollAdapter.declaredSlotFromSlotKey(slotKey),
                     PremiumCapturePollAdapter.acquisitions(listOf(
                         PremiumCapturePollAdapter.IndexResult(
-                            index = "BNF", chain = parallel[2],
+                            index = "BNF", chain = chainResponse,
                             requestStartedMs = m0BnfFetchStartMs,
                             completedAtMs = capBnfCompletedAtMs,
                             underlyingKey = "NSE_INDEX|Nifty Bank", expiry = bnfExpiry),
-                        PremiumCapturePollAdapter.IndexResult(
-                            index = "NF", chain = parallel[4],
-                            requestStartedMs = m0NfFetchStartMs,
-                            completedAtMs = capNfCompletedAtMs,
-                            underlyingKey = "NSE_INDEX|Nifty 50", expiry = nfExpiry),
+
                     )))
                 if (status.optString("status") != PremiumCaptureCoordinator.DISABLED)
                     LogBuffer.add('I', TAG, "PREMIUM_CAPTURE: ${status.optString("status")}" +
@@ -1252,8 +1138,7 @@ class MarketWatchService : Service() {
                 val coStatus = CloseOpenCapture.onPoll(filesDir, today,
                     PremiumCapturePollAdapter.declaredSlotFromSlotKey(slotKey),
                     listOf(
-                        CloseOpenCapture.Acquisition("BNF", parallel[2], m0BnfFetchStartMs, capBnfCompletedAtMs),
-                        CloseOpenCapture.Acquisition("NF", parallel[4], m0NfFetchStartMs, capNfCompletedAtMs)))
+                        CloseOpenCapture.Acquisition("BNF", chainResponse, m0BnfFetchStartMs, capBnfCompletedAtMs)))
                 val coS = coStatus.optString("status")
                 if (coS != "DISABLED" && coS != "OUTSIDE_WINDOWS")
                     LogBuffer.add('I', TAG, "CLOSE_OPEN_CAPTURE: $coS kind=${coStatus.optString("kind")}")
@@ -1262,8 +1147,7 @@ class MarketWatchService : Service() {
             // Persist each successful raw chain before unrelated shared-quote or breadth returns.
             val (chainEvidenceRef, chainEvidenceCoverage) = persistFetchedChainEvidenceBeforeBrain(bnfChainJson, nfChainJson)
             m0RecordCaptures(mapOf(
-                "BNF" to Triple(parallel[2], m0BnfFetchStartMs, x1BnfChainFetchedAtMs),
-                "NF" to Triple(parallel[4], m0NfFetchStartMs, x1NfChainFetchedAtMs)
+                "BNF" to Triple(chainResponse, m0BnfFetchStartMs, x1BnfChainFetchedAtMs)
             ), chainEvidenceRef)
             if (quotesJson == null) {
                 prefs.edit().putBoolean("paper_shared_inputs_unavailable", true).apply()
@@ -1272,7 +1156,7 @@ class MarketWatchService : Service() {
                 return
             }
 
-            Log.d(TAG, "A8_PARALLEL_FETCH: quotes=${quotesJson != null} bnfChain=${bnfChainJson != null} bnfStocks=${bnfStocksJson != null} nfChain=${nfChainJson != null} nf50=$hasNf50Breadth")
+            Log.d(TAG, "A8_PARALLEL_FETCH: quotes=${quotesJson != null} bnfChain=${bnfChainJson != null} bnfStocks=${bnfStocksJson != null}")
             LogBuffer.add('D', TAG, "BREADTH_HTTP_URL: $bnfStocksUrl")
 
             if (bnfStocksJson != null) {
@@ -1333,7 +1217,8 @@ class MarketWatchService : Service() {
                     quotesFetchStartedAtMs,
                     quotesFetchCompletedAtMs,
                     session,
-                    lastSpotProvenance?.takeIf { it.optString("session_date") == session }
+                    lastSpotProvenance?.takeIf { it.optString("session_date") == session },
+                    indices = BnfScope.indices
                 ).also { prov ->
                     lastSpotProvenance = prov
                     LogBuffer.add(
@@ -1348,7 +1233,7 @@ class MarketWatchService : Service() {
             }
 
             val data = quotesJson.optJSONObject("data")
-            val missingShared = listOf("NSE_INDEX:Nifty Bank", "NSE_INDEX:Nifty 50", "NSE_INDEX:India VIX")
+            val missingShared = listOf("NSE_INDEX:Nifty Bank", "NSE_INDEX:India VIX")
                 .filter { key -> val value = data?.optJSONObject(key)?.optDouble("last_price", Double.NaN)
                     value == null || !value.isFinite() || value <= 0.0 }
             if (data == null || missingShared.isNotEmpty()) {
@@ -1358,7 +1243,7 @@ class MarketWatchService : Service() {
                 return
             }
             val bnfSpot = data.getJSONObject("NSE_INDEX:Nifty Bank").getDouble("last_price")
-            val nfSpot = data.getJSONObject("NSE_INDEX:Nifty 50").getDouble("last_price")
+            val nfSpot = 0.0 // compatibility argument; never published as a live NF quote
             val vix = data.getJSONObject("NSE_INDEX:India VIX").getDouble("last_price")
             Log.d(TAG, "POLL_DATA_RECEIVED: BNF=$bnfSpot NF=$nfSpot VIX=$vix")
 
@@ -1389,8 +1274,6 @@ class MarketWatchService : Service() {
             val scaleChains = mutableMapOf<String, ScaleChainFetch>()
             fetchDirectionScaleChain("BNF", "NSE_INDEX|Nifty Bank", token, today, bnfExpiry)
                 ?.let { scaleChains["BNF"] = it }
-            fetchDirectionScaleChain("NF", "NSE_INDEX|Nifty 50", token, today, nfExpiry)
-                ?.let { scaleChains["NF"] = it }
 
             // Step 6: Run Python Brain (nf50Breadth already fetched in parallel above)
             Log.d(TAG, "POLL_STEP6: Launching brain analysis")
@@ -1487,7 +1370,7 @@ class MarketWatchService : Service() {
         val dir = m0Dir()
         if (slotKey.isNullOrBlank() || !ResearchCollector.isEnabled(dir)) return@m0Safely emptyMap()
         val now = System.currentTimeMillis()
-        ResearchCollector.INDICES_FOR_POLL.mapNotNull { idx ->
+        BnfScope.indices.mapNotNull { idx ->
             (ResearchCollector.beginAttempt(dir, idx, slotKey, now) as? ResearchCollector.Begin.Started)?.let { idx to it }
         }.toMap()
     }
@@ -1640,7 +1523,7 @@ class MarketWatchService : Service() {
         val data = quotes.getJSONObject("data")
         val sData = stocks.getJSONObject("data")
         val bnf = data.getJSONObject("NSE_INDEX:Nifty Bank").getDouble("last_price")
-        val nf = data.getJSONObject("NSE_INDEX:Nifty 50").getDouble("last_price")
+        val nf = 0.0 // retired input; stripped from the newly built poll
         val vix = data.getJSONObject("NSE_INDEX:India VIX").getDouble("last_price")
         
         val time = SimpleDateFormat("HH:mm", Locale.getDefault()).apply { timeZone = TimeZone.getTimeZone("Asia/Kolkata") }.format(Date())
@@ -1892,7 +1775,7 @@ class MarketWatchService : Service() {
         poll.put("minute", cal.get(Calendar.MINUTE))
 
         Log.d("AUDIT_POLL", poll.toString())
-        return poll
+        return BnfScope.stripNiftyFields(poll)
     }
 
     private fun savePoll(poll: JSONObject, assignedPollNumber: Int, slotKey: String?) {
@@ -2134,91 +2017,6 @@ class MarketWatchService : Service() {
                 .put("results", JSONArray())
         }
         return result
-    }
-
-    private suspend fun fetchNf50Breadth(token: String): JSONObject {
-        return try {
-            val kotakKey = getCachedKotakKey()
-            val remoteConstituents = getRemoteNf50Constituents(kotakKey)
-            val nf50Constituents = remoteConstituents ?: getNf50Constituents(kotakKey)
-            val keys = nf50Constituents.joinToString(",") { java.net.URLEncoder.encode(it, "UTF-8") }
-            val url = "https://api.upstox.com/v2/market-quote/quotes?instrument_key=$keys"
-            val response = fetchSync(url, token) ?: return defaultNf50Breadth()
-            val data = response.optJSONObject("data") ?: return defaultNf50Breadth()
-
-            var advancing = 0
-            var declining = 0
-            var neutral = 0
-            var considered = 0
-            val missingKeys = mutableListOf<String>()
-            val configuredTotal = nf50Constituents.size
-
-            for (key in nf50Constituents) {
-                val quote = findQuoteByInstrument(data, key)
-                val ltp = quoteLtp(quote)
-                val netChange = quote?.optDouble("net_change", Double.MIN_VALUE) ?: Double.MIN_VALUE
-                if (ltp <= 0.0 || netChange == Double.MIN_VALUE) {
-                    missingKeys.add(key)
-                    continue
-                }
-                considered++
-                when {
-                    netChange > 0.05 -> advancing++
-                    netChange < -0.05 -> declining++
-                    else -> neutral++
-                }
-            }
-
-            val score = advancing * 100.0 + neutral * 50.0
-            val pct = if (considered > 0) (score / considered).coerceIn(0.0, 100.0) else 50.0
-            val advPct = if (configuredTotal > 0) {
-                (advancing * 100.0 / configuredTotal).coerceIn(0.0, 100.0)
-            } else 0.0
-            val coverage = if (nf50Constituents.isNotEmpty()) {
-                considered.toDouble() / nf50Constituents.size.toDouble()
-            } else 0.0
-
-            LogBuffer.add(
-                'I',
-                TAG,
-                "NF50_BREADTH_RESULT: pct=${Math.round(pct * 10.0) / 10.0} adv=$advancing dec=$declining neu=$neutral considered=$considered coverage=${String.format(Locale.US, "%.3f", coverage)} missing=${missingKeys.size} source=${if (remoteConstituents != null) "remote_or_cached" else "bundled"} sample=${missingKeys.take(3).joinToString("|")}"
-            )
-            JSONObject().apply {
-                val pctRounded = Math.round(pct * 10.0) / 10.0
-                put("pct", pctRounded)
-                put("advancing", advancing)
-                put("declining", declining)
-                put("neutral", neutral)
-                put("considered", considered)
-                put("total", configuredTotal)
-                put("coverage", coverage)
-                put("advPct", Math.round(advPct * 10.0) / 10.0)
-                put("scaled", pctRounded)
-                put("source", if (remoteConstituents != null) "remote_or_cached" else "bundled")
-                put("missingCount", missingKeys.size)
-                put("missingKeys", JSONArray(missingKeys.take(10)))
-            }
-        } catch (e: Exception) {
-            LogBuffer.add('E', TAG, "NF50_BREADTH_ERROR: ${e.message}")
-            defaultNf50Breadth()
-        }
-    }
-
-    private fun defaultNf50Breadth(): JSONObject {
-        return JSONObject().apply {
-            put("pct", 50.0)
-            put("advancing", 0)
-            put("declining", 0)
-            put("neutral", 0)
-            put("considered", 0)
-            put("total", getNf50Constituents().size)
-            put("coverage", 0.0)
-            put("advPct", 0.0)
-            put("scaled", 50.0)
-            put("source", "bundled")
-            put("missingCount", 0)
-            put("missingKeys", JSONArray())
-        }
     }
 
     /**
@@ -2536,7 +2334,7 @@ class MarketWatchService : Service() {
 
             val resolvedBnfExpiry = liveBnfExpiry.trim()
             val resolvedNfExpiry = liveNfExpiry.trim()
-            if (!isUsableExpiry(resolvedBnfExpiry, sessionDate) || !isUsableExpiry(resolvedNfExpiry, sessionDate)) {
+            if (!isUsableExpiry(resolvedBnfExpiry, sessionDate)) {
                 invalidateExpiryAuthority("brain_invalid_live_expiry", resolvedBnfExpiry, resolvedNfExpiry)
                 Log.w(
                     TAG,
@@ -2550,7 +2348,7 @@ class MarketWatchService : Service() {
                 return AnalysisAuthority.Outcome.FAILED
             }
             val bnfExpDate = parseExpiryDate(resolvedBnfExpiry)
-            val nfExpDate = parseExpiryDate(resolvedNfExpiry)
+            val nfExpDate: java.util.Date? = null
 
             fun writeDteContext(prefix: String, rawExpiry: String, expDate: java.util.Date?): Long? {
                 val dte = expDate?.let { (it.time - todayDate.time) / (24 * 60 * 60 * 1000L) }
@@ -2569,7 +2367,7 @@ class MarketWatchService : Service() {
             }
 
             val bnfDTE = writeDteContext("bnf", resolvedBnfExpiry, bnfExpDate)
-            val nfDTE = writeDteContext("nf", resolvedNfExpiry, nfExpDate)
+            val nfDTE: Long? = null // retired; no active NF DTE state
 
             Log.d(TAG, "BRAIN_START: Loading Chaquopy brain module")
             val py = Python.getInstance()
@@ -2659,8 +2457,7 @@ class MarketWatchService : Service() {
             mergeChain("bnfChain", bnfChain, bnfSpot, poll.optDouble("cw", 0.0), poll.optDouble("pw", 0.0), poll.optDouble("pcr", 0.0), resolvedBnfExpiry,
                 "NSE_INDEX|Nifty Bank")
             ctxObj.optJSONObject("bnfChain")?.put("bnf_spot", bnfSpot)
-            mergeChain("nfChain",  nfChain,  nfSpot,  nfCw, nfPw, 0.0, resolvedNfExpiry, "NSE_INDEX|Nifty 50")
-            ctxObj.optJSONObject("nfChain")?.put("nf_spot", nfSpot)
+            ctxObj.remove("nfChain")
 
             // D9 repair: the direction scale's own chain, in a SEPARATE ctx object. Deliberately not
             // routed through mergeChain - it must not inherit WebView-enriched trading fields, attach
@@ -2718,7 +2515,6 @@ class MarketWatchService : Service() {
             ctxObj.put("bnfBreadth", breadth)
             ctxObj.put("nf50Breadth", nf50Breadth)
             ctxObj.put("pollInputStatus", JSONObject()
-                .put("NF", nfChain.optString("input_failure", "AVAILABLE"))
                 .put("BNF", bnfChain.optString("input_failure", "AVAILABLE"))
                 .put("bnf_breadth", stocksJson.optString("input_failure", "AVAILABLE"))
                 .put("breadth_used_in_direction", false))
@@ -3088,7 +2884,7 @@ class MarketWatchService : Service() {
                         val clocks = ManagedReadAdapters.Clocks({ System.currentTimeMillis() }, { android.os.SystemClock.elapsedRealtime() })
                         val sess = IndexAuthorityContext.istSession(System.currentTimeMillis())
                         val slDir = IndexAuthorityContext.singleLegDir(filesDir)
-                        for ((ix, exKey) in listOf("NF" to "nfExpiry", "BNF" to "bnfExpiry")) {
+                        for ((ix, exKey) in listOf("BNF" to "bnfExpiry")) {
                             val ex = ctxObj.optString(exKey, "")
                             ManagedReadAdapters.ensureContracts(slDir, ix, ex, sess, tr, clocks)?.let { e ->
                                 ManagedEvidenceFormatter.attachContracts(ctxObj, ix, e.getJSONObject("response"), e.optLong("fetched_at_ms"))
@@ -3526,15 +3322,15 @@ class MarketWatchService : Service() {
                 if (publishNow && sideEffects) {
                     prefs.edit().putBoolean("paper_shared_inputs_unavailable", false).apply()
                     // Research owns a bounded independent ledger; no admission/capture clock substitution.
-                    val evidenceResult = JSONObject().put("single_leg_by_index", resultObj.optJSONObject("single_leg_by_index"))
+                    val evidenceResult = JSONObject().put("market_scope", resultObj.optJSONObject("market_scope"))
+                        .put("single_leg_by_index", resultObj.optJSONObject("single_leg_by_index"))
                         .put("input_identity", resultObj.optJSONObject("input_identity"))
                         .put("direction_authority", resultObj.optJSONObject("direction_authority"))
                         .put("brain_version", resultObj.opt("brain_version"))
                         .put("producer_versions", JSONObject().put("app", "${BuildConfig.VERSION_NAME}/${BuildConfig.VERSION_CODE}")
                             .put("native_source", BuildConfig.SOURCE_HEAD).put("bundled_pwa_source", BuildConfig.PWA_SOURCE_HEAD))
-                    val evidenceChains = JSONObject().put("NF", nfChain).put("BNF", bnfChain).toString()
+                    val evidenceChains = JSONObject().put("BNF", bnfChain).toString()
                     val evidenceClocks = JSONObject()
-                        .put("NF", JSONObject().put("receipt_ms", x1NfChainFetchedAtMs))
                         .put("BNF", JSONObject().put("receipt_ms", x1BnfChainFetchedAtMs)).toString()
                     IndexAuthorityIo.executor.execute {
                         try {
@@ -4115,7 +3911,6 @@ class MarketWatchService : Service() {
         val istTimeZone = TimeZone.getTimeZone("Asia/Kolkata")
         val sessionDate = SimpleDateFormat("yyyy-MM-dd", Locale.US).apply { timeZone = istTimeZone }.format(Date())
         appendFullChainSlice(rows, bnfChain, "BNF", sessionDate, pollTs)
-        appendFullChainSlice(rows, nfChain, "NF", sessionDate, pollTs)
         LogBuffer.add(
             'I',
             TAG,
@@ -4820,35 +4615,16 @@ class MarketWatchService : Service() {
 
     private fun refreshActiveExpiries(token: String): Pair<String, String> {
         val today = todayIstDate()
-        val storedBnf = (prefs.getString("expiry_bnf", "") ?: "").trim()
-        val storedNf = (prefs.getString("expiry_nf", "") ?: "").trim()
-        val lastRefreshDate = prefs.getString(EXPIRY_REFRESH_DATE_KEY, "") ?: ""
-
-        if (
-            lastRefreshDate == today &&
-            isUsableExpiry(storedBnf, today) &&
-            isUsableExpiry(storedNf, today)
-        ) {
-            return Pair(storedBnf, storedNf)
-        }
-
-        val resolvedBnf = resolveNearestExpiryLive("NSE_INDEX|Nifty Bank", token)
-        val resolvedNf = resolveNearestExpiryLive("NSE_INDEX|Nifty 50", token)
-
-        if (!isUsableExpiry(resolvedBnf, today) || !isUsableExpiry(resolvedNf, today)) {
-            invalidateExpiryAuthority("expiry_refresh_failed", resolvedBnf, resolvedNf)
+        val stored = prefs.getString("expiry_bnf", "") ?: ""
+        if (prefs.getString(EXPIRY_REFRESH_DATE_KEY, "") == today && isUsableExpiry(stored, today))
+            return Pair(stored, "")
+        val resolved = resolveNearestExpiryLive("NSE_INDEX|Nifty Bank", token)
+        if (!isUsableExpiry(resolved, today)) {
+            invalidateExpiryAuthority("expiry_refresh_failed", resolved, "")
             return Pair("", "")
         }
-
-        prefs.edit()
-            .putString("expiry_bnf", resolvedBnf)
-            .putString("expiry_nf", resolvedNf)
-            .putString(EXPIRY_REFRESH_DATE_KEY, today)
-            .commit()
-
-        Log.i(TAG, "EXPIRY_REFRESH: bnf=$resolvedBnf nf=$resolvedNf")
-        LogBuffer.add('I', TAG, "EXPIRY_REFRESH: bnf=$resolvedBnf nf=$resolvedNf")
-        return Pair(resolvedBnf, resolvedNf)
+        prefs.edit().putString("expiry_bnf", resolved).putString(EXPIRY_REFRESH_DATE_KEY, today).commit()
+        return Pair(resolved, "")
     }
 
     /**

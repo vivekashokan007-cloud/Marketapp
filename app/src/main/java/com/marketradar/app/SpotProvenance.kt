@@ -88,7 +88,8 @@ object SpotProvenance {
         fetchStartedAtMs: Long,
         fetchCompletedAtMs: Long,
         sessionDate: String,
-        previous: JSONObject? = null
+        previous: JSONObject? = null,
+        indices: Collection<String> = INDEX_KEYS.keys
     ): JSONObject {
         val out = JSONObject()
             .put("version", VERSION)
@@ -104,10 +105,11 @@ object SpotProvenance {
             .put("session_phase", sessionPhase(fetchCompletedAtMs, sessionDate))
             .put("session_phase_clock", "device_fetch_completed")
             .put("stale_feed_age_ms_threshold", STALE_FEED_AGE_MS)
-        for ((label, key) in INDEX_KEYS) {
+        val selected = INDEX_KEYS.filterKeys { it in indices }
+        for ((label, key) in selected) {
             out.put(label, buildOne(label, key, data, fetchCompletedAtMs, previous?.optJSONObject(label), sessionDate))
         }
-        val statuses = INDEX_KEYS.keys.map { out.getJSONObject(it).optString("status") }
+        val statuses = selected.keys.map { out.getJSONObject(it).optString("status") }
         out.put("all_identities_present", statuses.none { it == "IDENTITY_MISSING" })
         return out
     }

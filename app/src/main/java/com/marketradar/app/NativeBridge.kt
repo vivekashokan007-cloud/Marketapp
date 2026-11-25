@@ -923,22 +923,21 @@ class NativeBridge(private val context: Context) {
             }
 
             val bnfExpiry = resolveNearestExpiry("NSE_INDEX|Nifty Bank", token)
-            val nfExpiry = resolveNearestExpiry("NSE_INDEX|Nifty 50", token)
-            if (bnfExpiry == null || nfExpiry == null) {
+            if (bnfExpiry == null) {
                 return bridgeFail("Failed to discover valid expiries from Upstox. Check token/connectivity.")
             }
 
             val live = fetchLiveIndexQuotes(token)
                 ?: return bridgeFail("Failed to fetch live quotes from Upstox.")
-            if (live.bnfSpot <= 0.0 || live.nfSpot <= 0.0 || live.vix <= 0.0) {
+            if (live.bnfSpot <= 0.0 || live.vix <= 0.0) {
                 return bridgeFail("Invalid live quotes from Upstox.")
             }
 
             obj.put("bnfSpot", live.bnfSpot)
-            obj.put("nfSpot", live.nfSpot)
+            obj.remove("nfSpot")
             obj.put("vix", live.vix)
             obj.put("bnfExpiry", bnfExpiry)
-            obj.put("nfExpiry", nfExpiry)
+            obj.remove("nfExpiry")
             val today = todayIstDate()
             val nowMs = System.currentTimeMillis()
             obj.put("date", today)
@@ -965,7 +964,6 @@ class NativeBridge(private val context: Context) {
                 .putString("global_direction", globalDirection.toString())
                 .putString(SessionInputs.PREF_KEY, built.state!!.toString())
                 .putString("expiry_bnf", bnfExpiry)
-                .putString("expiry_nf", nfExpiry)
                 .putString("last_poll_date", today)
                 .also { BrainResultStore.clear(context, it) }
                 .commit() }
@@ -1076,21 +1074,14 @@ class NativeBridge(private val context: Context) {
     }
 
     @JavascriptInterface
-    fun setExpiries(bnf: String, nf: String) {
+    fun setExpiries(bnf: String, @Suppress("UNUSED_PARAMETER") nf: String) {
         val today = todayIstDate()
-        val trimmedBnf = bnf.trim()
-        val trimmedNf = nf.trim()
-        if (!isUsableExpiry(trimmedBnf, today) || !isUsableExpiry(trimmedNf, today)) {
-            Log.w(
-                "NativeBridge",
-                "IGNORING_INVALID_EXPIRIES: bnf='$trimmedBnf' nf='$trimmedNf' today=$today"
-            )
+        val expiry = bnf.trim()
+        if (!isUsableExpiry(expiry, today)) {
+            Log.w("NativeBridge", "IGNORING_INVALID_BNF_EXPIRY: bnf='$expiry' today=$today")
             return
         }
-        prefs.edit().apply {
-            putString("expiry_bnf", trimmedBnf)
-            putString("expiry_nf", trimmedNf)
-        }.commit()
+        prefs.edit().putString("expiry_bnf", expiry).commit()
     }
 
     @JavascriptInterface
@@ -1899,8 +1890,7 @@ class NativeBridge(private val context: Context) {
         }
     }
 
-    // R5 s2: the user's index selector (NF / BNF / BOTH) gates NEW managed admission only; open positions on
-    // both indices stay monitored.  Stored locally; read into the analysis context before every analyze.
+    // Keep the bridge methods for cached WebViews. Only BNF is selectable for new activity.
     @JavascriptInterface
     fun setIndexSelector(selector: String): String {
         val v = IndexAuthorityContext.normalizeSelector(selector)
@@ -1916,6 +1906,7 @@ class NativeBridge(private val context: Context) {
     // CURRENT published brain result (same decision, allowed, executable) and persisted locally.
     @JavascriptInterface
     fun indexAuthorityChoose(index: String, decisionId: String, candidateId: String): String {
+        if (!BnfScope.permitsNew(index)) return "{\"status\":\"REJECTED\",\"reason\":\"INDEX_RETIRED_BNF_ONLY\"}"
         return try {
             val current = getBrainResult()
             if (current == "null") return "{\"status\":\"REJECTED\",\"reason\":\"NO_CURRENT_RESULT\"}"
@@ -2036,14 +2027,16 @@ class NativeBridge(private val context: Context) {
     // (e.g. an older page) gets DISPLAYED_IDENTITY_REQUIRED and must be re-tapped from a page that sends identity.
     @JavascriptInterface
     fun singleLegAdmitDisplayed(index: String, decisionId: String, instrumentKey: String): String = try {
-        singleLegCoordinator.submit(index, decisionId, instrumentKey)
+        if (!BnfScope.permitsNew(index)) "{\"status\":\"REJECTED\",\"reason\":\"INDEX_RETIRED_BNF_ONLY\"}"
+        else singleLegCoordinator.submit(index, decisionId, instrumentKey)
     } catch (e: Exception) {
         "{\"status\":\"ERROR\"}"
     }
 
     @JavascriptInterface
     fun singleLegAdmit(index: String): String = try {
-        singleLegCoordinator.submit(index, null, null)
+        if (!BnfScope.permitsNew(index)) "{\"status\":\"REJECTED\",\"reason\":\"INDEX_RETIRED_BNF_ONLY\"}"
+        else singleLegCoordinator.submit(index, null, null)
     } catch (e: Exception) {
         "{\"status\":\"ERROR\"}"
     }
@@ -2513,7 +2506,7 @@ class NativeBridge(private val context: Context) {
     private fun baselineHasCoreFields(rawBaseline: String = prefs.getString("morning_baseline", "{}") ?: "{}"): Boolean {
         return try {
             val baseline = JSONObject(rawBaseline)
-            baseline.has("bnfSpot") && baseline.has("nfSpot") && baseline.has("vix")
+            baseline.has("bnfSpot") && baseline.has("vix")
         } catch (_: Exception) {
             false
         }
@@ -3039,12 +3032,12 @@ class NativeBridge(private val context: Context) {
     }
 
     private fun fetchLiveIndexQuotes(token: String): LiveQuotes? {
-        val url = "https://api.upstox.com/v2/market-quote/quotes?instrument_key=NSE_INDEX|Nifty Bank,NSE_INDEX|Nifty 50,NSE_INDEX|India VIX"
+        val url = "https://api.upstox.com/v2/market-quote/quotes?instrument_key=NSE_INDEX|Nifty Bank,NSE_INDEX|India VIX"
         val json = fetchJson(url, token) ?: return null
         val data = json.optJSONObject("data") ?: return null
 
         val bnf = data.optJSONObject("NSE_INDEX:Nifty Bank")?.optDouble("last_price", 0.0) ?: 0.0
-        val nf = data.optJSONObject("NSE_INDEX:Nifty 50")?.optDouble("last_price", 0.0) ?: 0.0
+        val nf = 0.0 // legacy signature only, not a fetched input
         val vix = data.optJSONObject("NSE_INDEX:India VIX")?.optDouble("last_price", 0.0) ?: 0.0
         return LiveQuotes(bnf, nf, vix)
     }

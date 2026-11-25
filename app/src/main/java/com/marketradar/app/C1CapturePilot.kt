@@ -223,7 +223,7 @@ object C1PilotIo {
     fun slice(resultObj: JSONObject, publishedMs: Long): String {
         val byIx = JSONObject()
         val src = resultObj.optJSONObject("by_index")
-        for (ix in listOf("NF", "BNF")) {
+        for (ix in BnfScope.indices) {
             val d = src?.optJSONObject(ix) ?: continue
             byIx.put(ix, JSONObject().put("decision_id", d.opt("decision_id") ?: JSONObject.NULL)
                 .put("analysis_ts", d.opt("analysis_ts") ?: JSONObject.NULL)

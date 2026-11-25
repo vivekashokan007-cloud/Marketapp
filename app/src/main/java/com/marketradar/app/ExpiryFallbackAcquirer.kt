@@ -123,7 +123,7 @@ object ExpiryFallbackAcquirer {
         val sl = result.optJSONObject("single_leg_by_index") ?: return emptyList()
         val byIndex = result.optJSONObject("by_index")
         val out = mutableListOf<Need>()
-        for (ix in listOf("NF", "BNF")) {
+        for (ix in BnfScope.indices) {
             val p = sl.optJSONObject(ix) ?: continue
             val fb = p.optJSONObject("expiry_fallback") ?: continue
             if (fb.optString("status") != STATUS_REQUIRED) continue
@@ -296,7 +296,7 @@ object ExpiryFallbackAcquirer {
     fun markWait(result: JSONObject, reason: String): Int {
         val sl = result.optJSONObject("single_leg_by_index") ?: return 0
         var n = 0
-        for (ix in listOf("NF", "BNF")) {
+        for (ix in BnfScope.indices) {
             val p = sl.optJSONObject(ix) ?: continue
             val fb = p.optJSONObject("expiry_fallback") ?: continue
             if (fb.optString("status") != STATUS_REQUIRED) continue

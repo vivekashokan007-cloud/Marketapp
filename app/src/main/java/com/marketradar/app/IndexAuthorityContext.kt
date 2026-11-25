@@ -39,11 +39,7 @@ object IndexAuthorityContext {
     const val PREF_SINGLE_LEG_CONFIG_REV = "single_leg_config_revision_v1"
     fun singleLegDir(filesDir: File) = File(filesDir, SINGLE_LEG_DIR_NAME)
 
-    fun normalizeSelector(raw: String?): String = when (raw?.trim()?.uppercase()) {
-        "NF", "NIFTY" -> "NF"
-        "BNF", "BANKNIFTY" -> "BNF"
-        else -> "BOTH"
-    }
+    fun normalizeSelector(raw: String?): String = "BNF"
 
     fun apply(ctx: JSONObject, filesDir: File, isRefresh: Boolean, nowMs: Long, selector: String? = null) {
         ctx.put("indexAuthorityStateDir", stateDir(filesDir).absolutePath)
@@ -52,6 +48,8 @@ object IndexAuthorityContext {
         // R1: trusted analysis clock for every analysis (live and refresh)
         ctx.put("analysisClockMs", nowMs)
         ctx.put("indexAuthorityDeferredWrite", true)
+        BnfScope.stripNiftyFields(ctx)
+        ctx.put("activeIndices", org.json.JSONArray(BnfScope.indices))
         ctx.put("indexSelector", normalizeSelector(selector))
         // Delivery B: managed single-leg store (read-only during analyze; written by bridge admit / IO monitor)
         ctx.put("singleLegStateDir", singleLegDir(filesDir).absolutePath)

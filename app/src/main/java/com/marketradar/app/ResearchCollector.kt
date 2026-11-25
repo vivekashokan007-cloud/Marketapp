@@ -47,7 +47,7 @@ object ResearchCollector {
     /** Must equal research_forecast_capture.RESULT_KEY (Python); pinned by a test. */
     const val RAW_FORECAST_KEY = "research_forecast_raw"
     const val PROTECTION_OWNER = "m0_collector"
-    val INDICES_FOR_POLL = listOf("NF", "BNF")
+    val INDICES_FOR_POLL = BnfScope.indices
     val STATES = listOf("PENDING", "CAPTURED", "LATE", "PARTIAL", "MISSING", "UNAVAILABLE")
 
     internal val lock = Any()
@@ -151,7 +151,7 @@ object ResearchCollector {
         val m = JSONObject().put("schema", SCHEMA).put("session_date", session).put("created_ms", nowMs)
             .put("calendar_version", ResearchCalendar.VERSION).put("created_by", if (observed) "collector" else "reconcile_missed_session")
         val idx = JSONObject()
-        for (index in ResearchCalendar.INDICES) {
+        for (index in BnfScope.indices) {
             val p = ResearchCalendar.plan(session, index)
             val o = JSONObject().put("available", p.available).put("reason", p.reason ?: JSONObject.NULL)
                 .put("is_session", p.isSession).put("expiry_authority", p.expiryAuthority)
@@ -344,7 +344,7 @@ object ResearchCollector {
             if (!existed) created++
             var changed = false
             val idx = m.getJSONObject("indices")
-            for (index in ResearchCalendar.INDICES) {
+            for (index in BnfScope.indices) {
                 val slots = idx.getJSONObject(index).getJSONObject("slots")
                 for (k in slots.keys()) {
                     val sl = slots.getJSONObject(k)
