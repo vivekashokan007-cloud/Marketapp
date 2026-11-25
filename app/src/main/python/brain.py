@@ -28542,7 +28542,8 @@ def c1_capture_plan(c1_dir, result_json='null', now_ms=None, enabled=False, sl_d
         res = json.loads(result_json or 'null') or {}
         return json.dumps(_c1.plan(c1_dir, res, now_ms, enabled=True, sl_dir=sl_dir,
                                    native_dropped=int(native_dropped or 0),
-                                   discarded_on_disable=int(discarded_on_disable or 0)))
+                                   discarded_on_disable=int(discarded_on_disable or 0),
+                                   indices=_scope.ACTIVE_INDICES))
     except Exception as exc:
         return json.dumps({'status': 'ERROR', 'reason': type(exc).__name__, 'fetches': []})
 

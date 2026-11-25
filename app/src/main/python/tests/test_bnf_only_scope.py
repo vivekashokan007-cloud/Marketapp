@@ -77,6 +77,21 @@ class BnfOnly(unittest.TestCase):
         self.assertEqual(live['p1_quantity_units'], 65)
         self.assertIn('284', r['positions'])
 
+    def test_live_capture_wrapper_has_no_nifty_denominator(self):
+        import tempfile
+        import os
+        from unittest.mock import patch
+        import c1_capture_pilot_v1 as capture
+        with tempfile.TemporaryDirectory() as root:
+            directory = os.path.join(root, 'c1_capture_v1')
+            with patch.object(capture, 'plan', wraps=capture.plan) as plan:
+                reply = json.loads(brain.c1_capture_plan(
+                    directory, '{}', 1794283200000, True))
+            self.assertEqual(reply['status'], 'OK')
+            self.assertEqual(set(reply['registered']), {'BNF'})
+            self.assertEqual(plan.call_args.kwargs['indices'], ('BNF',))
+            self.assertFalse(any('_NF' in name for name in os.listdir(directory)))
+
     def test_cached_nifty_candidates_cannot_reenter_analysis(self):
         candidates = [
             {'index': 'NF', 'id': 'old-nf'},

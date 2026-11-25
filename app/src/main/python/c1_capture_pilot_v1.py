@@ -962,7 +962,7 @@ def _fence_lost(lg, now_dt):
             lg['stats']['lost_in_flight'] += 1
 
 
-def plan(d, results, now_ms, *, enabled=False, sl_dir=None, native_dropped=0, discarded_on_disable=0):
+def plan(d, results, now_ms, *, enabled=False, sl_dir=None, native_dropped=0, discarded_on_disable=0, indices=INDICES):
     """Register the denominator for EVERY offered result, then return the bounded fetch plan.
     results: one result/slice dict or a list of them (native FIFO, offer order).  enabled=False -> no I/O."""
     if not enabled:
@@ -976,7 +976,7 @@ def plan(d, results, now_ms, *, enabled=False, sl_dir=None, native_dropped=0, di
     items = results if isinstance(results, list) else [results]
     out = {'status': 'OK', 'session_date': session, 'fetches': [], 'budget_exhausted': [], 'registered': {}}
     with _lock(d):
-        for ix in ('BNF',):
+        for ix in indices:
             lg = _read_ledger(d, session, ix)
             ev = _read_evidence(d, session, ix)
             if lg is None:
