@@ -85,13 +85,13 @@ class R1AnalysisClockProbe(unittest.TestCase):
             c = F.ctx(indexAuthorityStateDir=sd)
             brain.compute_index_authority(self.polls[:2], F.with_clock(c, self.polls[:2]))
             ok = brain.compute_index_authority(self.polls, F.with_clock(c, self.polls))
-            self.assertEqual(ok['NF']['availability'], 'AVAILABLE')
+            self.assertEqual(ok['BNF']['availability'], 'AVAILABLE')
             late = brain.compute_index_authority(self.polls, dict(c, analysisClockMs=ms(dt('12:00'))))
-            self.assertEqual(late['NF']['availability'], 'UNAVAILABLE')
-            self.assertIn('SPOT_STALE', late['NF']['reason_codes'])
-            self.assertEqual(late['NF']['decision_poll_ts'], dt('10:00').isoformat())     # never relabelled
-            self.assertEqual(late['NF']['analysis_ts'], dt('12:00').isoformat())
-            self.assertNotEqual(late['NF']['decision_id'], ok['NF']['decision_id'])
+            self.assertEqual(late['BNF']['availability'], 'UNAVAILABLE')
+            self.assertIn('SPOT_STALE', late['BNF']['reason_codes'])
+            self.assertEqual(late['BNF']['decision_poll_ts'], dt('10:00').isoformat())     # never relabelled
+            self.assertEqual(late['BNF']['analysis_ts'], dt('12:00').isoformat())
+            self.assertNotEqual(late['BNF']['decision_id'], ok['BNF']['decision_id'])
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
@@ -108,7 +108,7 @@ class R1AnalysisClockProbe(unittest.TestCase):
     def test_missing_clock_is_unavailable_both_indices(self):
         c = F.ctx(indexAuthorityStateDir=os.path.join(tempfile.mkdtemp(), 'index_authority_v1'))
         out = brain.compute_index_authority(self.polls, c)
-        for ix in ('NF', 'BNF'):
+        for ix in ('BNF',):
             self.assertEqual(out[ix]['availability'], 'UNAVAILABLE')
             self.assertIn('ANALYSIS_CLOCK_MISSING', out[ix]['reason_codes'])
 
@@ -166,7 +166,7 @@ class R4FailClosed(unittest.TestCase):
     def check_closed(self, r, stage):
         self.assertEqual(r['direction_authority']['status'], 'ERROR')
         self.assertEqual(r['direction_authority']['error_stage'], stage)
-        for ix in ('NF', 'BNF'):
+        for ix in ('BNF',):
             self.assertEqual(r['by_index'][ix]['availability'], 'UNAVAILABLE')
             self.assertTrue(any(c.startswith('AUTHORITY_ERROR:' + stage) for c in r['by_index'][ix]['reason_codes']))
             self.assertEqual(r['candidates_by_index'][ix], [])
@@ -218,7 +218,7 @@ class Section2Wiring(unittest.TestCase):
     def test_watchlist_replaced_by_authority_candidates_fixed_order(self):
         r = self.r
         ids = [c['id'] for c in r['watchlist']]
-        expect = [c['id'] for c in r['candidates_by_index']['NF']] + [c['id'] for c in r['candidates_by_index']['BNF']]
+        expect = [c['id'] for c in r['candidates_by_index']['BNF']]
         self.assertEqual(ids, expect)
         self.assertEqual([c['id'] for c in r['generated_candidates']], expect)
         for c in r['watchlist']:
@@ -230,7 +230,7 @@ class Section2Wiring(unittest.TestCase):
         cats = [a.get('category') for a in self.r['alerts']]
         self.assertNotIn('WATCHLIST', cats)
         idx = [a for a in self.r['alerts'] if a.get('category') == 'INDEX']
-        self.assertEqual(sorted(a['index'] for a in idx), ['BNF', 'NF'])
+        self.assertEqual(sorted(a['index'] for a in idx), ['BNF'])
         for a in idx:
             self.assertEqual(a['decision_id'], self.r['by_index'][a['index']]['decision_id'])
         for a in self.r['alerts']:
@@ -242,27 +242,25 @@ class Section2Wiring(unittest.TestCase):
         rec = ctxj['snapshot_index_authority_primary']
         self.assertEqual(rec['record_schema'], 'mr.snapshot_primary.index_direction_v1')
         self.assertEqual(rec['primary_reason'], 'NO_MANAGED_SELECTION')
-        self.assertEqual(rec['by_index']['NF']['decision_id'], self.r['by_index']['NF']['decision_id'])
+        self.assertEqual(rec['by_index']['BNF']['decision_id'], self.r['by_index']['BNF']['decision_id'])
         prim = snap.get('primary_candidate_json')
         prim = json.loads(prim) if isinstance(prim, str) and prim else prim
         self.assertFalse(prim)
         for k in brain.IA_CONTEXT_KEYS:
             self.assertNotIn(k, ctxj)
 
-    def test_selector_gates_new_admission_only(self):
+    def test_saved_nifty_selector_does_not_disable_bnf(self):
         r = two_step(os.path.join(self.tmp, 'sel', 'index_authority_v1'), self.polls, indexSelector='NF')
-        self.assertEqual(r['index_selector'], 'NF')
-        for g in r['managed_policy']['BNF']['gates']:
-            self.assertIn('INDEX_NOT_SELECTED', g['reasons'])
-        self.assertTrue(all('INDEX_NOT_SELECTED' not in g['reasons'] for g in r['managed_policy']['NF']['gates']))
-        self.assertEqual([a['index'] for a in r['alerts'] if a.get('category') == 'INDEX'], ['NF'])
-        self.assertEqual(r['by_index']['BNF']['direction']['value'], self.r['by_index']['BNF']['direction']['value'])
+        self.assertEqual(r['index_selector'], 'BNF')
+        self.assertTrue(all('INDEX_NOT_SELECTED' not in g['reasons'] for g in r['managed_policy']['BNF']['gates']))
+        self.assertEqual([a['index'] for a in r['alerts'] if a.get('category') == 'INDEX'], ['BNF'])
+        self.assertEqual(r['by_index']['BNF']['direction'], self.r['by_index']['BNF']['direction'])
 
     def test_expiry_day_contract_not_executable(self):
         polls = self.polls
         c = fresh_ctx(os.path.join(self.tmp, 'exp', 'index_authority_v1'), polls)
-        r = F.run(brain, polls, dict(c, session_date='2026-11-09', today_ist='2026-11-09'))
-        for c_ in r['candidates_by_index']['NF']:
+        r = F.run(brain, polls, dict(c, session_date='2026-11-23', today_ist='2026-11-23'))
+        for c_ in r['candidates_by_index']['BNF']:
             self.assertFalse(c_['entryEligible'])
 
 
@@ -281,7 +279,7 @@ class DeferredPersistence(unittest.TestCase):
             self.assertEqual(writes, [])
             self.assertFalse(os.path.exists(os.path.join(sd, F.SESSION + '.json')))
             # the deferred scale is visible to the next analysis in the same process
-            self.assertEqual(r2['by_index']['NF']['direction']['value'], 'BULL')
+            self.assertEqual(r2['by_index']['BNF']['direction']['value'], 'NEUTRAL')
             p = r2['index_authority_persist']
             self.assertEqual(p['session_date'], F.SESSION)
             pub = F.clock_ms(polls) + 1500
@@ -292,13 +290,13 @@ class DeferredPersistence(unittest.TestCase):
             self.assertLess(time.monotonic() - t0, 2.0)
             self.assertTrue(out['written'])
             doc = ias.load(sd, F.SESSION)
-            last = [h for h in doc['history']['NF'] if h['decision_id'] == r2['by_index']['NF']['decision_id']]
+            last = [h for h in doc['history']['BNF'] if h['decision_id'] == r2['by_index']['BNF']['decision_id']]
             self.assertEqual(last[0]['published_at'], ia.parse_ts(pub).isoformat())
-            first = [h for h in doc['history']['NF'] if h['decision_id'] == r1['by_index']['NF']['decision_id']]
+            first = [h for h in doc['history']['BNF'] if h['decision_id'] == r1['by_index']['BNF']['decision_id']]
             self.assertIsNone(first[0].get('published_at'))
             again = json.loads(brain.index_authority_persist(sd, F.SESSION, json.dumps(p['delta']), pub))
             self.assertTrue(again['written'])
-            self.assertEqual(len(ias.load(sd, F.SESSION)['history']['NF']), len(doc['history']['NF']))
+            self.assertEqual(len(ias.load(sd, F.SESSION)['history']['BNF']), len(doc['history']['BNF']))
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
@@ -341,9 +339,9 @@ class StructureChoice(unittest.TestCase):
         return json.loads(brain.index_authority_record_choice(self.sd, json.dumps(r or self.r), ix, dec_id, cid, now or self.now))
 
     def test_each_allowed_alternative_selectable_and_persisted(self):
-        dec = self.r['by_index']['NF']
-        for cand in self.r['candidates_by_index']['NF']:
-            out = self.choose('NF', dec['decision_id'], cand['id'])
+        dec = self.r['by_index']['BNF']
+        for cand in self.r['candidates_by_index']['BNF']:
+            out = self.choose('BNF', dec['decision_id'], cand['id'])
             self.assertEqual(out['status'], 'CHOSEN', out)
             self.assertEqual(out['choice']['structure'], cand['type'])
             self.assertEqual(out['choice']['selection_basis'], 'USER_EXPLICIT')
@@ -351,23 +349,23 @@ class StructureChoice(unittest.TestCase):
             self.assertEqual(len(json.load(f)['choices']), 2)
 
     def test_rejections(self):
-        nf = self.r['by_index']['NF']
-        cid = self.r['candidates_by_index']['NF'][0]['id']
-        bnf_cid = self.r['candidates_by_index']['BNF'][0]['id']
-        self.assertEqual(self.choose('NF', 'idx1_other', cid)['reason'], 'DECISION_NOT_CURRENT')
-        self.assertEqual(self.choose('NF', nf['decision_id'], bnf_cid)['reason'], 'CANDIDATE_NOT_IN_INDEX_ALTERNATIVES')
-        self.assertEqual(self.choose('NF', nf['decision_id'], cid, now=self.now + 3600 * 1000)['reason'], 'RESULT_NOT_CURRENT')
-        self.assertEqual(self.choose('XX', nf['decision_id'], cid)['reason'], 'INDEX_INVALID')
+        nf = self.r['by_index']['BNF']
+        cid = self.r['candidates_by_index']['BNF'][0]['id']
+        bnf_cid = 'retired-nf-candidate'
+        self.assertEqual(self.choose('BNF', 'idx1_other', cid)['reason'], 'DECISION_NOT_CURRENT')
+        self.assertEqual(self.choose('BNF', nf['decision_id'], bnf_cid)['reason'], 'CANDIDATE_NOT_IN_INDEX_ALTERNATIVES')
+        self.assertEqual(self.choose('BNF', nf['decision_id'], cid, now=self.now + 3600 * 1000)['reason'], 'RESULT_NOT_CURRENT')
+        self.assertEqual(self.choose('XX', nf['decision_id'], cid)['reason'], 'INDEX_RETIRED_BNF_ONLY')
         bad = json.loads(json.dumps(self.r))
-        bad['candidates_by_index']['NF'][0]['entryEligible'] = False
-        self.assertEqual(self.choose('NF', nf['decision_id'], cid, r=bad)['reason'], 'NOT_EXECUTABLE')
+        bad['candidates_by_index']['BNF'][0]['entryEligible'] = False
+        self.assertEqual(self.choose('BNF', nf['decision_id'], cid, r=bad)['reason'], 'NOT_EXECUTABLE')
         bad2 = json.loads(json.dumps(self.r))
         bad2['direction_authority']['status'] = 'ERROR'
-        self.assertEqual(self.choose('NF', nf['decision_id'], cid, r=bad2)['reason'], 'AUTHORITY_NOT_ACTIVE')
+        self.assertEqual(self.choose('BNF', nf['decision_id'], cid, r=bad2)['reason'], 'AUTHORITY_NOT_ACTIVE')
 
     def test_no_automatic_preference(self):
-        self.assertIsNone(self.r['managed_policy']['NF']['selected'])
-        self.assertEqual(self.r['managed_policy']['NF']['reason'], 'STRUCTURE_CHOICE_RULE_UNSPECIFIED')
+        self.assertIsNone(self.r['managed_policy']['BNF']['selected'])
+        self.assertEqual(self.r['managed_policy']['BNF']['reason'], 'STRUCTURE_CHOICE_RULE_UNSPECIFIED')
 
 
 # ───────────────────────────── report store: interleaving and corrections ─────────────────────────────
@@ -482,7 +480,7 @@ class ReportStoreInterleaving(unittest.TestCase):
         self.assertEqual([r['id'] for r in parts['index_single_leg_v1']['unresolved']], ['b'])
         self.assertEqual([r['id'] for r in parts['manual_or_legacy']['resolved']], ['c'])
         rep = dr.build_report(F.SESSION, self.decisions(), self.polls(), trades)
-        self.assertEqual(rep['by_index']['NF']['coverage']['scheduled'], 'UNKNOWN')
+        self.assertEqual(rep['by_index']['BNF']['coverage']['scheduled'], 'UNKNOWN')
 
 
 class GateMapIndividualReview(unittest.TestCase):

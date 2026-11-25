@@ -27365,8 +27365,10 @@ def _ia_analysis_dt(ctx):
     return None
 
 
-def compute_index_authority(polls, ctx):
-    """Writer of by_index (the only one).  Returns {NF: IndexDecision, BNF: IndexDecision}."""
+def compute_index_authority(polls, ctx, *, indices=_scope.ACTIVE_INDICES):
+    """Compute authority for the active scope, or an explicitly requested historical replay scope.
+    The live analyze path always uses the BNF default.
+    """
     ctx = ctx if isinstance(ctx, dict) else {}
     session = _ia_session_date(ctx, polls)
     latest = polls[-1] if isinstance(polls, list) and polls else {}
@@ -27383,7 +27385,7 @@ def compute_index_authority(polls, ctx):
     out = {}
     persisted = False
     delta = {'scales': {}, 'history': {}}
-    for ix in _scope.ACTIVE_INDICES:
+    for ix in indices:
         chain = ctx.get('nfChain' if ix == 'NF' else 'bnfChain') or {}
         expiry = ctx.get('nfExpiry' if ix == 'NF' else 'bnfExpiry')
         available, why = True, None

@@ -210,7 +210,7 @@ class ScaleAndCalendar(unittest.TestCase):
                   bnfExpiry='2027-01-26')
         ts = F.times('09:15', '09:20')
         p = [dict(x) for x in F.polls([24000, 24000], [52000, 52000], ts)]
-        out = brain.compute_index_authority(p, F.with_clock(c, p))
+        out = brain.compute_index_authority(p, F.with_clock(c, p), indices=('NF', 'BNF'))
         self.assertEqual(out['BNF']['calendar_coverage']['status'], 'CALENDAR_UNAVAILABLE')
         self.assertIn('CALENDAR_UNAVAILABLE', out['BNF']['reason_codes'])
         self.assertEqual(out['NF']['calendar_coverage']['status'], 'COVERED')
@@ -373,19 +373,18 @@ class AnalyzeCutover(unittest.TestCase):
     def test_authority_shape_and_actions(self):
         r = self.r
         self.assertIsNone(r.get('index_authority_error'))
-        self.assertEqual(r['by_index']['NF']['direction']['value'], 'BULL')
+        self.assertNotIn('NF', r['by_index'])
         self.assertEqual(r['by_index']['BNF']['regime']['value'], 'RANGE')
-        self.assertEqual([c['type'] for c in r['candidates_by_index']['NF']], ['BULL_CALL', 'BULL_PUT'])
         self.assertEqual([c['type'] for c in r['candidates_by_index']['BNF']], ['IRON_CONDOR', 'IRON_BUTTERFLY'])
         self.assertEqual(r['pc2_paper_primary']['pc2_primary_candidate_id'], None)
         v = r['verdict']
         self.assertTrue(v['combined_direction_retired'])
         self.assertIsNone(v['market_direction'])
         self.assertEqual(v['market_view_status'], 'RETIRED_LEGACY_COMBINED')
-        self.assertFalse(any(c.get('p_ml') is not None for c in r['candidates_by_index']['NF']))
+        self.assertFalse(any(c.get('p_ml') is not None for c in r['candidates_by_index']['BNF']))
 
     def test_managed_entry_blocked_without_verified_freshness_manual_never_locked(self):
-        for ix in ('NF', 'BNF'):
+        for ix in ('BNF',):
             m = self.r['managed_policy'][ix]
             self.assertIsNone(m['selected'])
             self.assertFalse(m['manual_paper_locked'])
@@ -401,10 +400,10 @@ class AnalyzeCutover(unittest.TestCase):
             c = dict(self.ctx, morningBias=mb, indexAuthorityStateDir=os.path.join(self.tmp, 'b' + mb['bias'].replace(' ', ''), 'index_authority_v1'))
             closed = [{'strategy_type': 'BULL_CALL', 'won': False, 'pnl': -1000, 'status': 'CLOSED'}] * 12
             variants.append(_sequential(c, self.polls) if mb['bias'] == 'STRONG BEAR' else
-                            F.run(brain, self.polls, dict(c, indexAuthorityScale={k: base['by_index'][k]['direction']['scale'] | {'status': 'OK'} for k in ('NF', 'BNF')}),
+                            F.run(brain, self.polls, dict(c, indexAuthorityScale={k: base['by_index'][k]['direction']['scale'] | {'status': 'OK'} for k in ('BNF',)}),
                                   closed=closed, baseline={'bnfSpot': 60000, 'nfSpot': 20000, 'vix': 30}))
-        strip = lambda r: json.dumps({ix: {k: v for k, v in r['by_index'][ix].items() if k not in ('decision_id',)} for ix in ('NF', 'BNF')}, sort_keys=True)
-        cands = lambda r: json.dumps({ix: [(c['id'], c['entryEligible']) for c in r['candidates_by_index'][ix]] for ix in ('NF', 'BNF')})
+        strip = lambda r: json.dumps({ix: {k: v for k, v in r['by_index'][ix].items() if k not in ('decision_id',)} for ix in ('BNF',)}, sort_keys=True)
+        cands = lambda r: json.dumps({ix: [(c['id'], c['entryEligible']) for c in r['candidates_by_index'][ix]] for ix in ('BNF',)})
         for v in variants:
             self.assertEqual(strip(v), strip(base))
             self.assertEqual(cands(v), cands(base))
@@ -421,9 +420,8 @@ class AnalyzeCutover(unittest.TestCase):
         a = self.r
         b = run(F.linear(24000, 8, n), F.linear(52000, -30, n), tag='iso1')
         c = run(F.linear(24000, 8, n), F.linear(52000, -30, n), bnf_chain_none=True, tag='iso2')
-        for other in (b, c):
-            self.assertEqual(json.dumps(a['by_index']['NF'], sort_keys=True), json.dumps(other['by_index']['NF'], sort_keys=True))
-            self.assertEqual([x['id'] for x in a['candidates_by_index']['NF']], [x['id'] for x in other['candidates_by_index']['NF']])
+        self.assertNotIn('NF', b['by_index'])
+        self.assertEqual(c['by_index']['BNF']['availability'], 'UNAVAILABLE')
         self.assertEqual(b['by_index']['BNF']['direction']['value'], 'BEAR')
         d = run(F.linear(24000, -8, n), [52000 + ((-1) ** i) * 20 for i in range(n)], tag='iso3')
         self.assertEqual(json.dumps(a['by_index']['BNF'], sort_keys=True), json.dumps(d['by_index']['BNF'], sort_keys=True))
@@ -431,7 +429,7 @@ class AnalyzeCutover(unittest.TestCase):
     def test_real_mode_display_follows_authority_orders_untouched(self):
         c = dict(self.ctx, executionMode='live', indexAuthorityStateDir=os.path.join(self.tmp, 'real', 'index_authority_v1'))
         r = _sequential(c, self.polls)
-        self.assertEqual(r['verdict']['by_index']['NF']['direction'], 'BULL')
+        self.assertEqual(r['verdict']['by_index']['BNF']['direction'], 'NEUTRAL')
         self.assertTrue(r['direction_authority']['real_display_follows_authority'])
         self.assertTrue(r['direction_authority']['real_orders_unchanged'])
         self.assertEqual(r['verdict']['decision_gate']['state'], 'PER_INDEX_AUTHORITY')
@@ -441,24 +439,24 @@ class AnalyzeCutover(unittest.TestCase):
         out = brain.compute_index_authority(self.polls[:2], F.with_clock(c, self.polls[:2]))
         out = brain.compute_index_authority(self.polls, F.with_clock(c, self.polls))
         self.assertEqual(out['BNF']['reason_codes'], ['EXPIRY_INVALID'])
-        self.assertEqual(out['NF']['direction']['value'], 'BULL')
+        self.assertNotIn('NF', out)
 
     def test_restart_reads_persisted_scale_and_corrupt_state_is_unavailable(self):
         d = os.path.join(self.tmp, 'restart', 'index_authority_v1')
         c = dict(self.ctx, indexAuthorityStateDir=d)
         brain.compute_index_authority(self.polls[:2], F.with_clock(c, self.polls[:2]))          # observes the scale at 09:20
         out = brain.compute_index_authority(self.polls, F.with_clock(c, self.polls))        # "restart": fresh call, state from disk
-        self.assertEqual(out['NF']['direction']['value'], 'BULL')
+        self.assertNotIn('NF', out)
         with open(os.path.join(d, F.SESSION + '.json'), 'w') as f:
             f.write('{corrupt')
         out2 = brain.compute_index_authority(self.polls, F.with_clock(c, self.polls))
-        self.assertEqual(out2['NF']['availability'], 'UNAVAILABLE')
-        self.assertIn('SCALE_SCALE_STATE_UNAVAILABLE', out2['NF']['reason_codes'])
+        self.assertEqual(out2['BNF']['availability'], 'UNAVAILABLE')
+        self.assertIn('SCALE_SCALE_STATE_UNAVAILABLE', out2['BNF']['reason_codes'])
 
     def test_no_state_dir_never_invents_scale(self):
         c = {k: v for k, v in self.ctx.items() if k != 'indexAuthorityStateDir'}
         out = brain.compute_index_authority(self.polls, F.with_clock(c, self.polls))
-        self.assertEqual(out['NF']['availability'], 'UNAVAILABLE')
+        self.assertEqual(out['BNF']['availability'], 'UNAVAILABLE')
 
     def test_snapshot_and_replay_never_carry_local_paths(self):
         self.assertIn('indexAuthorityStateDir', brain.IA_CONTEXT_KEYS)

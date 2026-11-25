@@ -15,6 +15,8 @@ import tempfile
 import unittest
 
 import brain
+from functools import partial
+historical_authority = partial(brain.compute_index_authority, indices=('NF', 'BNF'))
 import index_authority_fixtures as F
 import index_authority_v1 as ia
 
@@ -55,7 +57,7 @@ class ScaleAuthorityCase(unittest.TestCase):
         return c
 
     def run_authority(self, polls, c):
-        return brain.compute_index_authority(polls, F.with_clock(c, polls))
+        return historical_authority(polls, F.with_clock(c, polls))
 
     def observe_then(self, polls_later, c_open, c_later):
         """Observe the scale at the open reference (09:20 = polls[:2]), then evaluate later."""

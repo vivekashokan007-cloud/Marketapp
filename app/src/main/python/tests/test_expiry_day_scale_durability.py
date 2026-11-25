@@ -25,6 +25,8 @@ import tempfile
 import unittest
 
 import brain
+from functools import partial
+historical_authority = partial(brain.compute_index_authority, indices=('NF', 'BNF'))
 import index_authority_fixtures as F
 import index_authority_store as ias
 import index_authority_v1 as ia
@@ -138,7 +140,7 @@ class ScalePathCase(unittest.TestCase):
         return c
 
     def run_poll(self, polls, c):
-        return brain.compute_index_authority(polls, F.with_clock(c, polls))
+        return historical_authority(polls, F.with_clock(c, polls))
 
     def saved_scale(self, ix='NF'):
         return (ias.load(self.sd, SESSION) or {}).get('scales', {}).get(ix)
@@ -249,8 +251,8 @@ class TestKotlinFixtureIsTheRealPayload(unittest.TestCase):
                     c['nfScaleExpiry'] = expiry
                 return c
 
-            brain.compute_index_authority(polls[:2], F.with_clock(ctx(), polls[:2]))
-            brain.compute_index_authority(
+            historical_authority(polls[:2], F.with_clock(ctx(), polls[:2]))
+            historical_authority(
                 polls, F.with_clock(ctx(F.chain(24180, 50, lot=65), NEXT), polls))
             return ias.load(sd, SESSION)['scales']['NF']
         finally:

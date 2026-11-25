@@ -146,7 +146,7 @@ class T01ModeGate(Base):
         with patch.object(pbr, '_now_ms', return_value=ctx['x1PollMs']):
             a = json.loads(brain.analyze(polls, '[]', '{}', '[]', '[]', '{}', json.dumps(ctx)))
         b = json.loads(brain.analyze(polls, '[]', '{}', '[]', '[]', '{}', json.dumps(plain)))
-        self.assertNotIn('paper_buying_research', a)
+        self.assertEqual(a['paper_buying_research']['status'], 'RETIRED_BNF_ONLY')
         self.assertFalse(os.path.exists(self.h.dir))
         for k in ('verdict', 'watchlist', 'generated_candidates'):
             self.assertEqual(json.dumps(a.get(k), sort_keys=True), json.dumps(b.get(k), sort_keys=True))
@@ -158,6 +158,7 @@ class T02WarmupObservation(Base):
         self.h.reference()
         polls = json.dumps([{'t': '09:15', 'nf': 24500, 'bnf': 55000, 'vix': 14},
                             {'t': '09:20', 'nf': 24560, 'bnf': 54880, 'vix': 14}])
+        before = self.h.raw()
         ctx = self.h.ctx(MON, '09:20:40', 24560, 54880)
         with patch.object(pbr, '_now_ms', return_value=ctx['x1PollMs']):
             out = json.loads(brain.analyze(polls, '[]', '{}', '[]', '[]', '{}', json.dumps(ctx)))
@@ -165,9 +166,9 @@ class T02WarmupObservation(Base):
         self.assertEqual(out['generated_candidates'], [])
         self.assertEqual(out['watchlist'], [])
         x1 = out['paper_buying_research']
-        self.assertEqual(x1['status'], 'COLLECTING')
+        self.assertEqual(x1['status'], 'RETIRED_BNF_ONLY')
         self.assertFalse(x1['recommendation_authority'])
-        self.assertEqual(self.h.row(index='NF', arm='primary')['status'], 'OPEN')
+        self.assertEqual(self.h.raw(), before)
         self.assertNotIn(self.h.tmp, json.dumps(out))            # no local path leaks
 
 
@@ -664,14 +665,16 @@ class T15SnapshotAndAuthority(Base):
         self.h.reference()
         polls = [{'t': '09:15', 'nf': 24500, 'bnf': 55000, 'vix': 14},
                  {'t': '09:20', 'nf': 24560, 'bnf': 54880, 'vix': 14}]
+        before = self.h.raw()
         ctx = self.h.ctx(MON, '09:20:40', 24560, 54880)
         with patch.object(pbr, '_now_ms', return_value=ctx['x1PollMs']):
             out = json.loads(brain.analyze(json.dumps(polls), '[]', '{}', '[]', '[]', '{}', json.dumps(ctx)))
         snap = brain.take_poll_snapshot(out, ctx, polls, persistence_mode='android_compact_v1')
         mf = json.loads(snap['market_forces_json'])['paper_buying_research']
         self.assertNotIn('records', mf)
-        self.assertLessEqual(len(mf['transitions']), 8)
-        self.assertEqual({t['index'] for t in mf['transitions']}, {'NF', 'BNF'})
+        self.assertEqual(mf['status'], 'RETIRED_BNF_ONLY')
+        self.assertNotIn('transitions', mf)
+        self.assertEqual(self.h.raw(), before)
         self.assertFalse(mf['recommendation_authority'])
         self.assertLess(len(json.dumps(mf)), 4096)
         full = json.dumps(snap)
