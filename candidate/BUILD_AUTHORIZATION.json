@@ -1,0 +1,12 @@
+{
+  "approval_reference": "25 November 2026 IST, current ChatGPT conversation: owner chose Bank Nifty, instructed completion of NF decoupling, use of the supplied PAT, synchronized blueprint/forward-path updates, and repeatedly instructed proceeding/continuing with delivery. Existing candidate-apk required-owner-review gate remains enforced.",
+  "approved_by": "Vivek Ashokan P (Market Radar owner)",
+  "artifact_only": true,
+  "cert_sha256": "fb6042a2eb61045368e8d7b95db6f6d49b04d4b8da2e51b865ca77803a44b478",
+  "codex_final_check_reference": "b542 review validation run 45643718766 succeeded on exact Marketapp 1d05d033a4bf70d2b5f14a3296bc2d1059c1509a, pinning MarketVivi adfd292e02dbe59a51fccf200bf912d564fdab97. Full Python safety and bounded replay, repeated brain determinism, debug and bundled-candidate JVM suites, bridge/overnight/PWA integration, offline export/freeze/packaging and scratch PostgreSQL/PostgREST contracts passed. Complete PWA suite passed locally: 361 passed, 1 skipped; packaging 22 passed. BNF-only scope is verified while legacy NF exact-contract valuation, close and request-ID recovery remain supported. b542 corrects an explicit neutral test fixture after b541 native passed; no new strategy, forecasting, sizing or exit rule is activated. Candidate workflow must independently run full PWA/Python/debug/candidate checks before assembly and verify the existing signer, package/version and bundled hashes. Required owner review on candidate-apk remains enforced. This authorization does not publish a release, Pages or modify production data.",
+  "native_sha": "1d05d033a4bf70d2b5f14a3296bc2d1059c1509a",
+  "pwa_sha": "adfd292e02dbe59a51fccf200bf912d564fdab97",
+  "schema": "marketradar.candidate_build_authorization.v1",
+  "version_code": "542",
+  "version_name": "2.6.111"
+}
