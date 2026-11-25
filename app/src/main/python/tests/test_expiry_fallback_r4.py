@@ -43,7 +43,7 @@ class FinalGatePython(unittest.TestCase):
 
     def pub_of(self, d, aid):
         doc, oc = self.outcomes(d)
-        rows = [o['publication'] for o in oc['NF'] if o['publication'].get('attempt_id') == aid]
+        rows = [o['publication'] for o in oc['BNF'] if o['publication'].get('attempt_id') == aid]
         self.assertEqual(len(rows), 1)
         return doc, rows[0]
 
@@ -56,7 +56,7 @@ class FinalGatePython(unittest.TestCase):
                 self.assertEqual((res['accepted'], res['state']), (True, 'NOT_PUBLISHED'))
                 doc, p = self.pub_of(d, aid)
                 self.assertEqual((p['state'], p['reason'], p['decided_ms']), ('NOT_PUBLISHED', why, 1_700_000_000_123 + i))
-                cnt = efb.publication_counts(doc['indices']['NF'])
+                cnt = efb.publication_counts(doc['indices']['BNF'])
                 self.assertNotIn('PUBLISHED', cnt)
                 self.assertEqual(cnt['NOT_PUBLISHED'], {'outcomes': 1, 'computed_eligible': 1})
                 late = ack(d, aid, 100 + i, 'PUBLISHED', 1_700_000_009_000)       # terminal: never promoted
@@ -94,9 +94,9 @@ class FinalGatePython(unittest.TestCase):
         self.applied('efb-141-g', 141, d)                          # restart; next poll
         self.assertEqual(ack(d, 'efb-141-g', 141, 'PUBLISHED', 1_700_000_030_000)['state'], 'PUBLISHED')
         doc, oc = self.outcomes(d)
-        self.assertEqual([(o['publication']['attempt_id'], o['publication']['state']) for o in oc['NF']],
+        self.assertEqual([(o['publication']['attempt_id'], o['publication']['state']) for o in oc['BNF']],
                          [('efb-140-g', 'UNCONFIRMED'), ('efb-141-g', 'PUBLISHED')])
-        self.assertEqual(efb.publication_counts(doc['indices']['NF'])['UNCONFIRMED'], {'outcomes': 1, 'computed_eligible': 1})
+        self.assertEqual(efb.publication_counts(doc['indices']['BNF'])['UNCONFIRMED'], {'outcomes': 1, 'computed_eligible': 1})
 
     def test_late_ack_of_an_older_timed_out_attempt_cannot_alter_the_newer_result(self):
         d, _ = self.applied('efb-150-g', 150)
@@ -107,7 +107,7 @@ class FinalGatePython(unittest.TestCase):
             r = ack(d, 'efb-150-g', 150, st, 3, why)
             self.assertEqual((r['accepted'], r['state']), (False, 'TIMED_OUT'))
         _, oc = self.outcomes(d)
-        self.assertEqual([(o['publication']['attempt_id'], o['publication']['state']) for o in oc['NF']],
+        self.assertEqual([(o['publication']['attempt_id'], o['publication']['state']) for o in oc['BNF']],
                          [('efb-150-g', 'TIMED_OUT'), ('efb-151-g', 'PUBLISHED')])
 
     def test_successful_poll_after_a_failure_reconciles_its_own_attempt_once(self):
@@ -119,10 +119,10 @@ class FinalGatePython(unittest.TestCase):
         self.assertEqual((again['accepted'], again['state']), (False, 'PUBLISHED'))
         doc, oc = self.outcomes(d)
         self.assertEqual([(o['publication']['attempt_id'], o['publication']['state'], o['publication'].get('reason'),
-                           o['publication'].get('decided_ms')) for o in oc['NF']],
+                           o['publication'].get('decided_ms')) for o in oc['BNF']],
                          [('efb-160-g', 'NOT_PUBLISHED', 'SUPERSEDED_INPUT', 10_000), ('efb-161-g', 'PUBLISHED', None, 20_000)])
         self.assertEqual(doc['publication']['late_acks_refused'], 0)
-        self.assertEqual(efb.publication_counts(doc['indices']['NF'])['PUBLISHED'], {'outcomes': 1, 'computed_eligible': 1})
+        self.assertEqual(efb.publication_counts(doc['indices']['BNF'])['PUBLISHED'], {'outcomes': 1, 'computed_eligible': 1})
 
     def test_codex_probe_terminal_state_is_why_the_ack_must_move_not_the_fence(self):
         """Codex R3 reply probe: an early PUBLISHED cannot be corrected later (ALREADY_PUBLISHED).  The terminal-state

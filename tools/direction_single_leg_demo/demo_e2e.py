@@ -34,7 +34,7 @@ def _path():
     t2 = F.times('10:15', '15:00', 15) + ['15:05']
     ts = t1 + t2
     nf = [round(24000 + 25 * i, 2) for i in range(len(t1))] + [round(24225 + 5 * i, 2) for i in range(len(t2))]
-    bnf = [52000.0 + ((-1) ** i) * 20 for i in range(len(ts))]
+    bnf = [52000.0 + 2 * (value - 24000) for value in nf]
     return F.polls(nf, bnf, ts)
 
 
@@ -118,9 +118,9 @@ def phase1(work):
         if polls[i - 1]['t'] > '10:00':
             break
         r, c, clk = _analyze_publish(brain, dirs, polls[:i])
-        plan = (r.get('single_leg_by_index') or {}).get('NF') or {}
-        log.append({'t': polls[i - 1]['t'], 'nf_direction': r['by_index']['NF']['direction']['value'],
-                    'nf_er': r['by_index']['NF']['direction'].get('er'), 'proposal_action': plan.get('action'),
+        plan = (r.get('single_leg_by_index') or {}).get('BNF') or {}
+        log.append({'t': polls[i - 1]['t'], 'bnf_direction': r['by_index']['BNF']['direction']['value'],
+                    'bnf_er': r['by_index']['BNF']['direction'].get('er'), 'proposal_action': plan.get('action'),
                     'proposal_admit': plan.get('admit'), 'block_reasons': plan.get('reasons')})
         log[-1]['proposal_status'] = plan.get('status')
         if plan.get('status') in ('ADMISSIBLE', 'ELIGIBLE_PENDING_SNAPSHOT') and admitted is None:
@@ -128,10 +128,10 @@ def phase1(work):
             tgt = json.loads(brain.single_leg_quote_targets(dirs['sl'], json.dumps(r)))
             req, resp, rs, rc = _fetch_quotes(brain, dirs, c, tgt['keys'], clk + 1000)
             _set_clock(clk + 1700)
-            res = json.loads(brain.single_leg_admit(dirs['sl'], json.dumps(r), 'NF', '[]', True, True, 'BOTH',
+            res = json.loads(brain.single_leg_admit(dirs['sl'], json.dumps(r), 'BNF', '[]', True, True, 'BOTH',
                                                     req, resp, rs, rc, 1, capital=250000.0, max_risk_pct=10.0))
             _set_clock(clk + 2500)
-            again = json.loads(brain.single_leg_admit(dirs['sl'], json.dumps(r), 'NF', '[]', True, True, 'BOTH',
+            again = json.loads(brain.single_leg_admit(dirs['sl'], json.dumps(r), 'BNF', '[]', True, True, 'BOTH',
                                                       req, resp, rs, rc, 2, capital=250000.0, max_risk_pct=10.0))
             pos = res.get('position') or {}
             admitted = {'t': polls[i - 1]['t'], 'admit': res['status'], 'retry': again['status'],
@@ -159,15 +159,15 @@ def phase2(work):
             brain.single_leg_put_quotes(dirs['sl'], *fq)
         _set_clock(clk + 2000)
         out = json.loads(brain.single_leg_monitor(dirs['sl'], dirs['ia'], SESSION,
-                                                  json.dumps({'NF': polls[i - 1]['nfSpot']})))
+                                                  json.dumps({'BNF': polls[i - 1]['bnfSpot']})))
         for e in out.get('events') or []:
             events.append(dict(e, t=polls[i - 1]['t']))
     review = json.loads(brain.daily_review_run(dirs['ia'], dirs['rep'], SESSION, '[]', '[]'))
     rep = json.loads(brain.daily_review_read(dirs['rep'], SESSION))
-    nf = ((rep.get('latest') or {}).get('by_index') or {}).get('NF') or {}
+    nf = ((rep.get('latest') or {}).get('by_index') or {}).get('BNF') or {}
     return {'phase': 2, 'pid': os.getpid(), 'restart_loaded_positions': len(before.get('positions') or []),
             'events': events, 'store_after_phase2': json.loads(brain.single_leg_read(dirs['sl'])),
-            'daily_review': review, 'daily_review_nf_paper_outcomes': nf.get('paper_outcomes'),
+            'daily_review': review, 'daily_review_bnf_paper_outcomes': nf.get('paper_outcomes'),
             'daily_review_status': (rep.get('latest') or {}).get('report_status')}
 
 

@@ -198,7 +198,7 @@ class BrainAnalyze(unittest.TestCase):
         seen_abort = []
         with mock.patch.object(brain, "PC2_DIRECTIONAL_SHADOW_LATENCY_BUDGET_MS", budget_ms):
             for mode in ("live", "sandbox", "paper"):
-                c0 = dict(base, executionMode=mode, nfChain=ev["nfChain"], nfExpiry=ev["nfExpiry"])
+                c0 = dict(base, executionMode=mode, bnfChain=ev["nfChain"], bnfExpiry=ev["nfExpiry"])
                 raw_a = brain.analyze(*args, json.dumps(c0))
                 seen_abort.append('"latency_budget_exceeded": true' in raw_a)
                 a = json.loads(raw_a)

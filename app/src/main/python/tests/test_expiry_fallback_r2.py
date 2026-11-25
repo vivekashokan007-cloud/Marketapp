@@ -402,7 +402,7 @@ class S3S4Integration(unittest.TestCase):
                                                                  json.dumps(ev), cutoff, '[]', deadline_ms))
 
     def probe(self, plan, capital=OK['capital']):
-        return lambda: json.dumps({'decisions': {'NF': {'decision_id': plan.get('decision_id'),
+        return lambda: json.dumps({'decisions': {'BNF': {'decision_id': plan.get('decision_id'),
                                                         'instrument_key': plan.get('instrument_key')}},
                                    'enabled': True, 'paper_mode': True, 'selector': 'BOTH',
                                    'capital': capital, 'max_risk_pct': OK['max_risk_pct']})
@@ -414,7 +414,7 @@ class S3S4Integration(unittest.TestCase):
 
     def setUp(self):
         self.r = copy.deepcopy(self.result)
-        self.dec = self.r['by_index']['NF']
+        self.dec = self.r['by_index']['BNF']
         self.at = ia.parse_ts(self.dec['analysis_ts'])
         self.spot = self.dec['direction']['inputs']['spot']['value']
 
@@ -425,69 +425,69 @@ class S3S4Integration(unittest.TestCase):
                           ({k: v for k, v in self.ctx.items() if k != 'capital'}, 'ANALYSIS_DEFAULT')):
             d = self.newdir()
             out = self.apply(self.r, ctx, ev, ms(self.at) + 5000, d=d)
-            self.assertEqual(out['single_leg_by_index']['NF']['expiry_fallback']['planning_capital_source'], want)
-            o = load(os.path.join(d, efb.RETAIN_DIR, efb.RETAIN_DOC))['indices']['NF']['outcomes'][-1]
+            self.assertEqual(out['single_leg_by_index']['BNF']['expiry_fallback']['planning_capital_source'], want)
+            o = load(os.path.join(d, efb.RETAIN_DIR, efb.RETAIN_DOC))['indices']['BNF']['outcomes'][-1]
             self.assertEqual(o['planning_capital_source'], want)
 
     def test_admission_without_configured_capital_is_rejected(self):
         ev, ch = self.evidence(self.at, self.spot)
         d = self.newdir()
-        p = self.apply(self.r, dict(self.ctx, capitalSource='APP_DEFAULT'), ev, ms(self.at) + 5000, d=d)['single_leg_by_index']['NF']
-        self.r['single_leg_by_index']['NF'] = p
+        p = self.apply(self.r, dict(self.ctx, capitalSource='APP_DEFAULT'), ev, ms(self.at) + 5000, d=d)['single_leg_by_index']['BNF']
+        self.r['single_leg_by_index']['BNF'] = p
         t = self.at + timedelta(seconds=60)
         fresh = snap(ch, p['instrument_key'], t - timedelta(seconds=2), t - timedelta(seconds=1))
-        rej = sls.admit(d, self.r, 'NF', clock=lambda: t, snapshot=fresh, state_probe=self.probe(p, capital=None),
+        rej = sls.admit(d, self.r, 'BNF', clock=lambda: t, snapshot=fresh, state_probe=self.probe(p, capital=None),
                         **OK)
         self.assertEqual((rej['status'], rej['reason']), ('REJECTED', 'CAPITAL_CONFIG_UNAVAILABLE'))
 
     def test_refresh_withdraws_stale_tap_rejected_next_poll_restores_without_resurrection(self):
         ev, ch = self.evidence(self.at, self.spot)
         d = self.newdir()
-        base = copy.deepcopy(self.r['single_leg_by_index']['NF'])
-        p = self.apply(self.r, self.ctx, ev, ms(self.at) + 5000, d=d)['single_leg_by_index']['NF']
-        shown = copy.deepcopy(self.r); shown['single_leg_by_index']['NF'] = p          # what the user saw
+        base = copy.deepcopy(self.r['single_leg_by_index']['BNF'])
+        p = self.apply(self.r, self.ctx, ev, ms(self.at) + 5000, d=d)['single_leg_by_index']['BNF']
+        shown = copy.deepcopy(self.r); shown['single_leg_by_index']['BNF'] = p          # what the user saw
         # refresh: no acquisition; the recomputed base plan (EVIDENCE_REQUIRED) is withdrawn with an explicit WAIT
         w = efb.withdraw(base, 'REFRESH_NOT_ACQUIRED')
         self.assertEqual(w['expiry_fallback']['reason'], 'REFRESH_NOT_ACQUIRED')
         self.assertNotEqual(w.get('instrument_key'), p['instrument_key'])
         t = self.at + timedelta(seconds=40)
         fresh = snap(ch, p['instrument_key'], t - timedelta(seconds=2), t - timedelta(seconds=1))
-        stale = sls.admit(d, shown, 'NF', clock=lambda: t, snapshot=fresh, state_probe=self.probe(w), **OK)
+        stale = sls.admit(d, shown, 'BNF', clock=lambda: t, snapshot=fresh, state_probe=self.probe(w), **OK)
         self.assertEqual(stale['reason'], 'DECISION_CHANGED_BEFORE_COMMIT')
-        cur = copy.deepcopy(self.r); cur['single_leg_by_index']['NF'] = w
-        self.assertEqual(sls.admit(d, cur, 'NF', clock=lambda: t, snapshot=fresh, **OK)['status'], 'REJECTED')
+        cur = copy.deepcopy(self.r); cur['single_leg_by_index']['BNF'] = w
+        self.assertEqual(sls.admit(d, cur, 'BNF', clock=lambda: t, snapshot=fresh, **OK)['status'], 'REJECTED')
         # next qualifying poll: a NEW decision, fresh evidence, a new proposal; the old decision is never revived
         nxt = copy.deepcopy(self.r)
         new_id = self.dec['decision_id'] + '_next'
         t2 = self.at + timedelta(seconds=60)
-        nxt['by_index']['NF'].update(decision_id=new_id, analysis_ts=t2.isoformat())
-        nb = nxt['single_leg_by_index']['NF']
+        nxt['by_index']['BNF'].update(decision_id=new_id, analysis_ts=t2.isoformat())
+        nb = nxt['single_leg_by_index']['BNF']
         nb['decision_id'] = new_id
         nb['expiry_fallback']['decision_id'] = new_id
         ev2, ch2 = self.evidence(t2, self.spot)
-        p2 = self.apply(nxt, self.ctx, ev2, ms(t2) + 5000, d=d)['single_leg_by_index']['NF']
+        p2 = self.apply(nxt, self.ctx, ev2, ms(t2) + 5000, d=d)['single_leg_by_index']['BNF']
         self.assertEqual((p2['decision_id'], p2['expiry_fallback']['status']), (new_id, efb.STATUS_APPLIED))
-        nxt['single_leg_by_index']['NF'] = p2
+        nxt['single_leg_by_index']['BNF'] = p2
         t3 = t2 + timedelta(seconds=30)
         f3 = snap(ch2, p2['instrument_key'], t3 - timedelta(seconds=2), t3 - timedelta(seconds=1))
-        old_tap = sls.admit(d, shown, 'NF', clock=lambda: t3, snapshot=f3, state_probe=self.probe(p2), **OK)
+        old_tap = sls.admit(d, shown, 'BNF', clock=lambda: t3, snapshot=f3, state_probe=self.probe(p2), **OK)
         self.assertEqual(old_tap['status'], 'REJECTED')
-        okp = sls.admit(d, nxt, 'NF', clock=lambda: t3, snapshot=f3, state_probe=self.probe(p2), **OK)
+        okp = sls.admit(d, nxt, 'BNF', clock=lambda: t3, snapshot=f3, state_probe=self.probe(p2), **OK)
         self.assertEqual(okp['status'], 'ADMITTED', okp)
         ids = [x.get('entry_decision_id') for x in sls.read(d)['positions']]
         self.assertEqual(ids, [new_id])
 
     def test_acquisition_deadline_exhausted_is_an_explicit_wait(self):
         ev, _ = self.evidence(self.at, self.spot)
-        del ev['NF']['chain']
-        ev['NF']['stats']['acquisition'] = {'status': 'DEADLINE_EXHAUSTED', 'elapsed_ms': 8001, 'budget_ms': 8000,
+        del ev['BNF']['chain']
+        ev['BNF']['stats']['acquisition'] = {'status': 'DEADLINE_EXHAUSTED', 'elapsed_ms': 8001, 'budget_ms': 8000,
                                             'requests': 2, 'bytes': 30}
         d = self.newdir()
         out = self.apply(self.r, self.ctx, ev, ms(self.at) + 5000, d=d)
-        fb = out['single_leg_by_index']['NF']['expiry_fallback']
+        fb = out['single_leg_by_index']['BNF']['expiry_fallback']
         self.assertEqual((fb['status'], fb['reason']), ('WAIT', 'ACQUISITION_DEADLINE_EXHAUSTED'))
         self.assertEqual(fb['acquisition']['elapsed_ms'], 8001)
-        st = efb.summary(d)['NF']['stats'][self.SESSION]
+        st = efb.summary(d)['BNF']['stats'][self.SESSION]
         self.assertEqual((st['deadline_exhausted'], st['elapsed_ms_max']), (1, 8001))
 
     def test_apply_after_deadline_publishes_nothing_and_retains_nothing(self):

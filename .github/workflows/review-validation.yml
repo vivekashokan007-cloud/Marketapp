@@ -89,6 +89,9 @@ jobs:
           sdkmanager --install "platform-tools" "platforms;android-35" "build-tools;35.0.0"
           yes | sdkmanager --licenses >/dev/null
 
+      - name: Compile Android sources
+        run: ./gradlew :app:compileDebugKotlin --stacktrace
+
       - name: Verify generated lot-table source
         run: python3 scripts/generate_contract_lot_table_kt.py --check
       - name: M0 Stage 2 offline export verifier + B9 reproduction regressions

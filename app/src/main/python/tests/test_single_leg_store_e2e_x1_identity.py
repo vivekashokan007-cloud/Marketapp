@@ -141,7 +141,7 @@ class EndToEndDemo(unittest.TestCase):
             self.assertEqual(acc['status'], 'RESOLVED')
             self.assertAlmostEqual(acc['net_pnl'], round(acc['gross_pnl'] - acc['fees'], 2), places=2)
             self.assertEqual(acc['exit_quote']['instrument_key'], acc['instrument_key'])
-            res = p2['daily_review_nf_paper_outcomes']['index_single_leg_v1']['resolved']
+            res = p2['daily_review_bnf_paper_outcomes']['index_single_leg_v1']['resolved']
             self.assertEqual(res[0]['recorded_net_pnl'], acc['net_pnl'])
             self.assertEqual(t['profitability_claim'], 'NONE')
         finally:

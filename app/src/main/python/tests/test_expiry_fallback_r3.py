@@ -394,7 +394,7 @@ class S3Publication(unittest.TestCase):
 
     def setUp(self):
         self.r = copy.deepcopy(self.result)
-        self.dec = self.r['by_index']['NF']
+        self.dec = self.r['by_index']['BNF']
         self.at = ia.parse_ts(self.dec['analysis_ts'])
         self.spot = self.dec['direction']['inputs']['spot']['value']
 
@@ -407,19 +407,14 @@ class S3Publication(unittest.TestCase):
         return json.loads(brain.single_leg_expiry_fallback_apply(*args))
 
     def two_index(self):
-        """NF plus a BNF copy that also asks for evidence (its own outcome is a named WAIT: the BNF monthly is
-        listed as weekly in this fixture) so both indices retain an outcome in one attempt."""
+        """An old mixed result must process BNF only."""
         r = copy.deepcopy(self.result)
-        bdec = copy.deepcopy(r['by_index']['NF'])
-        bdec['decision_id'] = r['by_index']['NF']['decision_id'] + '_bnf'
-        bplan = copy.deepcopy(r['single_leg_by_index']['NF'])
-        bplan['decision_id'] = bdec['decision_id']
-        bplan['expiry_fallback'] = dict(bplan['expiry_fallback'], decision_id=bdec['decision_id'], index='BNF')
-        r['by_index']['BNF'] = bdec
-        r['single_leg_by_index']['BNF'] = bplan
+        r['by_index']['NF'] = dict(r['by_index']['BNF'], index='NF', decision_id='retired-nf')
+        r['single_leg_by_index']['NF'] = copy.deepcopy(r['single_leg_by_index']['BNF'])
+        r['single_leg_by_index']['NF'].update(index='NF', decision_id='retired-nf')
         ev, ch = self.evidence(self.at, self.spot)
-        ev['BNF'] = copy.deepcopy(ev['NF'])
-        ev['BNF']['listing']['index'] = 'BNF'
+        ev['NF'] = copy.deepcopy(ev['BNF'])
+        ev['NF']['listing']['index'] = 'NF'
         return r, ev, ch
 
     def outcomes(self, d):
@@ -457,30 +452,30 @@ class S3Publication(unittest.TestCase):
                 out, d, calls = self.controlled('during', two)
                 self.assertEqual(out.get('error'), 'APPLY_DEADLINE_EXCEEDED', out)
                 self.assertNotIn('single_leg_by_index', out)
-                self.assertEqual(calls, ['NF'])                       # nothing written after the deadline
+                self.assertEqual(calls, ['BNF'])                       # nothing written after the deadline
                 doc, oc = self.outcomes(d)
-                o = oc['NF'][-1]
+                o = oc['BNF'][-1]
                 self.assertEqual(o['planner_status'], 'ELIGIBLE_PENDING_SNAPSHOT')        # computed, kept
                 self.assertEqual(o['publication']['state'], efb.PUB_NOT_RETURNED)
                 self.assertEqual((o['publication']['attempt_id'], o['publication']['generation']), ('efb-11-t', 11))
-                self.assertNotIn('BNF', oc)
-                cnt = efb.publication_counts(doc['indices']['NF'])
+                self.assertNotIn('NF', oc)
+                cnt = efb.publication_counts(doc['indices']['BNF'])
                 self.assertNotIn(efb.PUB_PUBLISHED, cnt)
                 self.assertEqual(cnt[efb.PUB_NOT_RETURNED], {'outcomes': 1, 'computed_eligible': 1})
                 # native's own decision for that attempt arrives afterwards: refused, state unchanged
                 rec = json.loads(brain.single_leg_expiry_fallback_reconcile(d, 'efb-11-t', 11, 'PUBLISHED'))
                 self.assertEqual((rec['accepted'], rec['state']), (False, efb.PUB_NOT_RETURNED))
 
-    def test_deadline_expires_between_indices(self):
+    def test_deadline_expires_after_bnf_retention(self):
         out, d, calls = self.controlled('between', True)
         self.assertEqual(out.get('error'), 'APPLY_DEADLINE_EXCEEDED', out)
-        self.assertEqual(out['attempt']['retained_indices'], ['NF'])
-        self.assertEqual(calls, ['NF'])                               # BNF never written after the deadline
+        self.assertEqual(out['attempt']['retained_indices'], ['BNF'])
+        self.assertEqual(calls, ['BNF'])                               # BNF never written after the deadline
         _doc, oc = self.outcomes(d)
-        self.assertEqual(oc['NF'][-1]['publication']['state'], efb.PUB_NOT_RETURNED)
-        self.assertNotIn('BNF', oc)
+        self.assertEqual(oc['BNF'][-1]['publication']['state'], efb.PUB_NOT_RETURNED)
+        self.assertNotIn('NF', oc)
 
-    def test_both_indices_bound_to_one_attempt_when_in_time(self):
+    def test_only_bnf_bound_to_one_attempt_when_in_time(self):
         r, ev, _ = self.two_index()
         d = self.newdir()
         out = self.apply(r, ev, d, deadline_ms=int(time.time() * 1000) + 60_000,
@@ -488,13 +483,13 @@ class S3Publication(unittest.TestCase):
         self.assertNotIn('error', out)
         self.assertEqual(out['attempt'], {'attempt_id': 'efb-12-t', 'generation': 12, 'publication_state': 'UNCONFIRMED'})
         _doc, oc = self.outcomes(d)
-        for ix in ('NF', 'BNF'):
+        for ix in ('BNF',):
             self.assertEqual(oc[ix][-1]['publication']['state'], efb.PUB_UNCONFIRMED)
             self.assertEqual(out['single_leg_by_index'][ix]['expiry_fallback']['attempt']['attempt_id'], 'efb-12-t')
         self.assertEqual(json.loads(brain.single_leg_expiry_fallback_reconcile(d, 'efb-12-t', 12, 'PUBLISHED'))['state'],
                          efb.PUB_PUBLISHED)
         _doc, oc = self.outcomes(d)
-        self.assertEqual({ix: oc[ix][-1]['publication']['state'] for ix in oc}, {'NF': 'PUBLISHED', 'BNF': 'PUBLISHED'})
+        self.assertEqual({ix: oc[ix][-1]['publication']['state'] for ix in oc}, {'BNF': 'PUBLISHED'})
 
     def test_returned_but_not_accepted_by_native_is_never_published_or_admitted(self):
         """Python returned in time; native found its deadline passed before accepting (or PyTimeout fired) and
@@ -502,26 +497,26 @@ class S3Publication(unittest.TestCase):
         refused; a tap on the computed (never published) proposal is rejected; no position is created."""
         ev, ch = self.evidence(self.at, self.spot)
         d = self.newdir()
-        base = copy.deepcopy(self.r['single_leg_by_index']['NF'])
+        base = copy.deepcopy(self.r['single_leg_by_index']['BNF'])
         out = self.apply(self.r, ev, d, attempt={'attempt_id': 'efb-21-t', 'generation': 21})
-        p = out['single_leg_by_index']['NF']
+        p = out['single_leg_by_index']['BNF']
         self.assertEqual(p['status'], 'ELIGIBLE_PENDING_SNAPSHOT')
         rec = json.loads(brain.single_leg_expiry_fallback_reconcile(d, 'efb-21-t', 21, 'TIMED_OUT'))
         self.assertEqual((rec['accepted'], rec['state']), (True, 'TIMED_OUT'))
         late = json.loads(brain.single_leg_expiry_fallback_reconcile(d, 'efb-21-t', 21, 'PUBLISHED'))
         self.assertEqual((late['accepted'], late['state']), (False, 'TIMED_OUT'))
         doc, oc = self.outcomes(d)
-        self.assertEqual(oc['NF'][-1]['publication']['state'], 'TIMED_OUT')
-        self.assertEqual(oc['NF'][-1]['planner_status'], 'ELIGIBLE_PENDING_SNAPSHOT')
+        self.assertEqual(oc['BNF'][-1]['publication']['state'], 'TIMED_OUT')
+        self.assertEqual(oc['BNF'][-1]['planner_status'], 'ELIGIBLE_PENDING_SNAPSHOT')
         self.assertEqual(doc['publication']['late_acks_refused'], 1)
         w = efb.withdraw(base, 'APPLY_TIMEOUT')                                   # what native published
-        computed = copy.deepcopy(self.r); computed['single_leg_by_index']['NF'] = p
+        computed = copy.deepcopy(self.r); computed['single_leg_by_index']['BNF'] = p
         t = self.at + timedelta(seconds=40)
         fresh = snap(ch, p['instrument_key'], t - timedelta(seconds=2), t - timedelta(seconds=1))
-        tap = sls.admit(d, computed, 'NF', clock=lambda: t, snapshot=fresh, state_probe=self.probe(w), **OK)
+        tap = sls.admit(d, computed, 'BNF', clock=lambda: t, snapshot=fresh, state_probe=self.probe(w), **OK)
         self.assertEqual(tap['reason'], 'DECISION_CHANGED_BEFORE_COMMIT')
-        published = copy.deepcopy(self.r); published['single_leg_by_index']['NF'] = w
-        self.assertEqual(sls.admit(d, published, 'NF', clock=lambda: t, snapshot=fresh, **OK)['status'], 'REJECTED')
+        published = copy.deepcopy(self.r); published['single_leg_by_index']['BNF'] = w
+        self.assertEqual(sls.admit(d, published, 'BNF', clock=lambda: t, snapshot=fresh, **OK)['status'], 'REJECTED')
         self.assertEqual(sls.read(d)['positions'], [])
 
     def test_late_completion_after_timeout_or_cancel_inherits_the_decision(self):
@@ -538,7 +533,7 @@ class S3Publication(unittest.TestCase):
                 self.assertEqual(out['error'], 'ATTEMPT_ALREADY_DECIDED:' + st)
                 self.assertNotIn('single_leg_by_index', out)
                 _doc, oc = self.outcomes(d)
-                self.assertEqual(oc['NF'][-1]['publication']['state'], st)
+                self.assertEqual(oc['BNF'][-1]['publication']['state'], st)
                 self.assertEqual(json.loads(brain.single_leg_expiry_fallback_reconcile(d, 'efb-31-t', 31, 'PUBLISHED'))['state'], st)
                 self.assertEqual(sls.read(d)['positions'], [])
         # old work after newer work
@@ -553,7 +548,7 @@ class S3Publication(unittest.TestCase):
         self.assertEqual(json.loads(brain.single_leg_expiry_fallback_reconcile(d, 'efb-41-t', 41, 'PUBLISHED'))['state'],
                          'PUBLISHED')
         _doc, oc = self.outcomes(d)
-        self.assertEqual([(o['publication']['attempt_id'], o['publication']['state']) for o in oc['NF']],
+        self.assertEqual([(o['publication']['attempt_id'], o['publication']['state']) for o in oc['BNF']],
                          [('efb-41-t', 'PUBLISHED'), ('efb-40-t', 'SUPERSEDED')])
 
     def test_restart_keeps_unconfirmed_honest_and_next_poll_publishes_and_admits(self):
@@ -564,13 +559,13 @@ class S3Publication(unittest.TestCase):
         d = self.newdir()
         first = self.apply(self.r, ev, d, attempt={'attempt_id': 'efb-51-t', 'generation': 51})
         self.assertNotIn('error', first)
-        shown = copy.deepcopy(self.r); shown['single_leg_by_index']['NF'] = first['single_leg_by_index']['NF']
+        shown = copy.deepcopy(self.r); shown['single_leg_by_index']['BNF'] = first['single_leg_by_index']['BNF']
         # restart: drop every in-memory object; only the files remain
         nxt = copy.deepcopy(self.result)
         new_id = self.dec['decision_id'] + '_r3next'
         t2 = self.at + timedelta(seconds=60)
-        nxt['by_index']['NF'].update(decision_id=new_id, analysis_ts=t2.isoformat())
-        nb = nxt['single_leg_by_index']['NF']
+        nxt['by_index']['BNF'].update(decision_id=new_id, analysis_ts=t2.isoformat())
+        nb = nxt['single_leg_by_index']['BNF']
         nb['decision_id'] = new_id
         nb['expiry_fallback']['decision_id'] = new_id
         ev2, ch2 = self.evidence(t2, self.spot)
@@ -583,17 +578,17 @@ class S3Publication(unittest.TestCase):
         stale_ack = json.loads(brain.single_leg_expiry_fallback_reconcile(d, 'efb-51-t', 51, 'PUBLISHED'))
         self.assertEqual((stale_ack['accepted'], stale_ack['state']), (False, 'SUPERSEDED'))
         doc, oc = self.outcomes(d)
-        states = [(o['publication']['attempt_id'], o['publication']['state']) for o in oc['NF']]
+        states = [(o['publication']['attempt_id'], o['publication']['state']) for o in oc['BNF']]
         self.assertEqual(states, [('efb-51-t', 'SUPERSEDED'), ('efb-52-t', 'PUBLISHED')])
-        cnt = efb.publication_counts(doc['indices']['NF'])
+        cnt = efb.publication_counts(doc['indices']['BNF'])
         self.assertEqual(cnt['PUBLISHED'], {'outcomes': 1, 'computed_eligible': 1})
-        p2 = second['single_leg_by_index']['NF']
-        nxt['single_leg_by_index']['NF'] = p2
+        p2 = second['single_leg_by_index']['BNF']
+        nxt['single_leg_by_index']['BNF'] = p2
         t3 = t2 + timedelta(seconds=30)
         f3 = snap(ch2, p2['instrument_key'], t3 - timedelta(seconds=2), t3 - timedelta(seconds=1))
-        self.assertEqual(sls.admit(d, shown, 'NF', clock=lambda: t3, snapshot=f3, state_probe=self.probe(p2),
+        self.assertEqual(sls.admit(d, shown, 'BNF', clock=lambda: t3, snapshot=f3, state_probe=self.probe(p2),
                                    **OK)['status'], 'REJECTED')
-        okp = sls.admit(d, nxt, 'NF', clock=lambda: t3, snapshot=f3, state_probe=self.probe(p2), **OK)
+        okp = sls.admit(d, nxt, 'BNF', clock=lambda: t3, snapshot=f3, state_probe=self.probe(p2), **OK)
         self.assertEqual(okp['status'], 'ADMITTED', okp)
         self.assertEqual([x.get('entry_decision_id') for x in sls.read(d)['positions']], [new_id])
 
@@ -602,8 +597,8 @@ class S3Publication(unittest.TestCase):
         d = self.newdir()
         self.apply(self.r, ev, d, attempt={'attempt_id': 'efb-61-t', 'generation': 61})
         doc, oc = self.outcomes(d)
-        self.assertEqual(oc['NF'][-1]['publication']['state'], 'UNCONFIRMED')
-        self.assertEqual(efb.summary(d)['NF']['publication'], {'UNCONFIRMED': {'outcomes': 1, 'computed_eligible': 1}})
+        self.assertEqual(oc['BNF'][-1]['publication']['state'], 'UNCONFIRMED')
+        self.assertEqual(efb.summary(d)['BNF']['publication'], {'UNCONFIRMED': {'outcomes': 1, 'computed_eligible': 1}})
 
     def test_late_write_and_reconcile_are_serialised(self):
         """A late Python retention write (slow, inside the lock) and native's TIMED_OUT reconcile race on two
@@ -627,7 +622,7 @@ class S3Publication(unittest.TestCase):
                     th.join(10)
                 self.assertEqual(rec['state'], 'TIMED_OUT')
                 doc, oc = self.outcomes(d)
-                self.assertEqual(oc['NF'][-1]['publication']['state'], 'TIMED_OUT')
+                self.assertEqual(oc['BNF'][-1]['publication']['state'], 'TIMED_OUT')
                 self.assertEqual(doc['publication']['attempts']['efb-71-t']['state'], 'TIMED_OUT')
 
 

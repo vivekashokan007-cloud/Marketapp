@@ -443,7 +443,7 @@ class PM1_3_Why(unittest.TestCase):
             for k in ('by_index', 'candidates_by_index', 'managed_policy', 'single_leg_by_index', 'verdict'):
                 self.assertEqual(dr._canon(a.get(k)), dr._canon(b.get(k)), k)
                 self.assertEqual(dr._canon(a.get(k)), dr._canon(d.get(k)), k)
-            hb = ias.load(os.path.join(tmp, 'b', 'index_authority_v1'), S)['history']['NF'][-1]['why']
+            hb = ias.load(os.path.join(tmp, 'b', 'index_authority_v1'), S)['history']['BNF'][-1]['why']
             self.assertIn('error', hb)
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
@@ -468,16 +468,16 @@ class PM1_3_Why(unittest.TestCase):
                     if mode == 'deferred':
                         per = r['index_authority_persist']
                         self.assertIn('why', per['delta'])
-                        self.assertEqual(set(per['delta']['why']), {r['by_index'][ix]['decision_id'] for ix in ('NF', 'BNF')})
+                        self.assertEqual(set(per['delta']['why']), {r['by_index'][ix]['decision_id'] for ix in ('BNF',)})
                         brain.index_authority_persist(sd, S, json.dumps(per['delta']), F.clock_ms(polls[:i]) + 1500)
                     self.assertNotIn('new_record_ids', json.dumps(r.get('direction_authority')))
                 doc = ias.load(sd, S)
-                for ix in ('NF', 'BNF'):
+                for ix in ('BNF',):
                     self.assertTrue(all('why' in h for h in doc['history'][ix]), (mode, ix))
-                last = doc['history']['NF'][-1]
+                last = doc['history']['BNF'][-1]
                 # write-once: a second why for the same decision_id does not overwrite
                 ias.persist_delta(sd, S, {'why': {last['decision_id']: {'v': dw.WHY_SCHEMA, 'act': 'OVERWRITE'}}})
-                self.assertEqual(ias.load(sd, S)['history']['NF'][-1]['why'], last['why'])
+                self.assertEqual(ias.load(sd, S)['history']['BNF'][-1]['why'], last['why'])
                 self.assertIs(last['why']['en']['pref'], True)
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
@@ -489,8 +489,8 @@ class PM1_3_Why(unittest.TestCase):
             polls = F.polls(F.linear(24000, 8, 22), [52000] * 22)
             F.run(brain, polls[:2], self._ctx(sd, polls[:2]))
             r = F.run(brain, polls, self._ctx(sd, polls, spread=0.6))
-            nf = r['by_index']['NF']
-            rec_ = [h for h in ias.load(sd, S)['history']['NF'] if h['decision_id'] == nf['decision_id']][0]
+            nf = r['by_index']['BNF']
+            rec_ = [h for h in ias.load(sd, S)['history']['BNF'] if h['decision_id'] == nf['decision_id']][0]
             if nf['action']['value'] == 'NO_TRADE' and rec_['action'] == 'CANDIDATES':
                 self.assertEqual(rec_['why']['act'], 'NO_TRADE')
                 self.assertTrue(rec_['why']['act_r'])
@@ -507,14 +507,14 @@ class PM1_3_Why(unittest.TestCase):
             polls = F.polls(F.linear(24000, 8, 22), [52000] * 22)
             F.run(brain, polls[:2], self._ctx(sd, polls[:2]))
             r1 = F.run(brain, polls, self._ctx(sd, polls, singleLegPaperEnabled=False))
-            n1 = len(ias.load(sd, S)['history']['NF'])
+            n1 = len(ias.load(sd, S)['history']['BNF'])
             r2 = F.run(brain, polls, self._ctx(sd, polls, singleLegPaperEnabled=True))     # same poll, toggle OFF -> ON
             doc = ias.load(sd, S)
-            self.assertEqual(len(doc['history']['NF']), n1)
-            ids = {h['decision_id'] for h in doc['history']['NF']}
-            if r2['by_index']['NF']['decision_id'] != r1['by_index']['NF']['decision_id']:
-                self.assertNotIn(r2['by_index']['NF']['decision_id'], ids)
-            self.assertIs(doc['history']['NF'][-1]['why']['en']['pref'], False)   # the captured observation's own state
+            self.assertEqual(len(doc['history']['BNF']), n1)
+            ids = {h['decision_id'] for h in doc['history']['BNF']}
+            if r2['by_index']['BNF']['decision_id'] != r1['by_index']['BNF']['decision_id']:
+                self.assertNotIn(r2['by_index']['BNF']['decision_id'], ids)
+            self.assertIs(doc['history']['BNF'][-1]['why']['en']['pref'], False)   # the captured observation's own state
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
@@ -662,11 +662,11 @@ class PM1_Unchanged(unittest.TestCase):
         self.assertEqual(x1.PROTOCOL_ID, 'X1_gap_continuation_v2_causal_paper_20261017')
         self.assertEqual(x1.DIGEST, X1_DIGEST_A763DC4)
 
-    def test_legacy_behaviour_identical_to_a763dc4(self):
+    def test_bnf_cutover_behaviour_stays_frozen(self):
         import pm1_behaviour_fixture as B
 
-        # Keep the original baseline for the legacy planner. STRONG pilot admission
-        # and exit behavior have their own regression tests.
+        # Freeze the observed BNF-only output of the same historical scenarios.
+        # The original dual-index digest remains below for provenance.
         plan_entry = isl.plan_entry
 
         def legacy_plan(*args, **kwargs):
@@ -674,13 +674,13 @@ class PM1_Unchanged(unittest.TestCase):
             return plan_entry(*args, **kwargs)
 
         with mock.patch.object(isl, 'plan_entry', side_effect=legacy_plan):
-            self.assertEqual(B.digest(), BEHAVIOUR_DIGEST_A763DC4)
+            self.assertEqual(B.digest(), '566254a5b5af249a0af02e419976c9736bdc00c08be7ad40275073663d7298cd')
 
     def test_version_identity(self):
-        self.assertEqual(brain.BRAIN_VERSION, '2.6.106')
+        self.assertEqual(brain.BRAIN_VERSION, '2.6.107')
         g = open(os.path.join(os.path.dirname(__file__), '..', '..', '..', '..', 'build.gradle.kts')).read()
-        self.assertIn('versionCode = 537', g)
-        self.assertIn('versionName = "2.6.106"', g)
+        self.assertIn('versionCode = 538', g)
+        self.assertIn('versionName = "2.6.107"', g)
 
 
 BEHAVIOUR_DIGEST_A763DC4 = '2c62a2d7b11da627e7605efb00421672de384c0408bcc76621bfcfc13c5f7402'

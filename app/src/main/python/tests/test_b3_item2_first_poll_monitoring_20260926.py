@@ -172,7 +172,8 @@ class TestRealParityAtFirstPoll(unittest.TestCase):
 
     def test_real_only_early_payload_keeps_legacy_shape(self):
         r = _run(POLL1, [_real()], _ctx({"900": _p1_mark()}))
-        self.assertEqual(set(r.keys()), self.LEGACY_EARLY_KEYS)
+        self.assertEqual(set(r.keys()), self.LEGACY_EARLY_KEYS | {"market_scope", "paper_buying_research"})
+        self.assertEqual(r["market_scope"]["active_indices"], ["BNF"])
         self.assertEqual(r["positions"], {})
 
     def test_mixed_real_trade_is_not_monitored_or_alerted(self):

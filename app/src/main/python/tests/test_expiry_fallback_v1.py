@@ -369,11 +369,11 @@ class Retention(unittest.TestCase):
 
 
 class Integration(unittest.TestCase):
-    """Analysis (brain.analyze on NF's own expiry day, synthetic polls) -> native-shaped evidence -> apply ->
+    """Analysis (brain.analyze on BNF's own expiry day, synthetic polls) -> native-shaped evidence -> apply ->
     published proposal -> quote targets -> admission (stale / replaced approval rejected) -> restart -> exit on
     the exact fallback contract.  SYNTHETIC; the native acquisition itself is covered by the JVM test."""
-    SESSION = '2026-11-09'               # Tue 10 Nov 2026 holiday -> NF trades its own (shifted) expiry
-    NEXT = '2026-11-17'
+    SESSION = '2026-11-23'               # Tue 24 Nov 2026 holiday shifts BNF monthly expiry to Monday
+    NEXT = '2026-12-29'
 
     @classmethod
     def setUpClass(cls):
@@ -386,8 +386,8 @@ class Integration(unittest.TestCase):
         out = None
         for i in range(len(polls)):
             c = F.ctx(polls[i]['nfSpot'], polls[i]['bnfSpot'], indexAuthorityStateDir=cls.sd, session_date=cls.SESSION,
-                      today_ist=cls.SESSION, nfExpiry=cls.SESSION, singleLegPaperEnabled=True, singleLegStateDir=cls.d,
-                      nfScaleChain=F.chain(polls[i]['nfSpot'], 50, lot=65), nfScaleExpiry=cls.NEXT)
+                      today_ist=cls.SESSION, bnfExpiry=cls.SESSION, singleLegPaperEnabled=True, singleLegStateDir=cls.d,
+                      bnfScaleChain=F.chain(polls[i]['bnfSpot'], 100, lot=30), bnfScaleExpiry=cls.NEXT)
             out = F.run(brain, polls[:i + 1], c)
         cls.ctx = c
         cls.result = out
@@ -397,14 +397,14 @@ class Integration(unittest.TestCase):
         shutil.rmtree(cls.tmp, ignore_errors=True)
 
     def evidence(self, at, spot, chain_s=3.0):
-        ch = stamped_chain('NF', self.NEXT, spot)
-        ev = {'NF': {'listing': {'index': 'NF', 'session': self.SESSION,
-                                 'expiries': [self.SESSION, self.NEXT, '2026-11-23'],
-                                 'weekly': {self.SESSION: True, self.NEXT: True, '2026-11-23': True},
+        ch = stamped_chain('BNF', self.NEXT, spot)
+        ev = {'BNF': {'listing': {'index': 'BNF', 'session': self.SESSION,
+                                 'expiries': [self.SESSION, self.NEXT],
+                                 'weekly': {self.SESSION: False, self.NEXT: False},
                                  'request_start_ms': ms(at) + 1500, 'receipt_ms': ms(at) + 2000},
-                     'contracts': {'index': 'NF', 'expiry': self.NEXT, 'fetched_at_ms': ms(at) + 2500,
-                                   'response': TB.contracts_response(ch, 'NF', expiry=self.NEXT, lot=65)},
-                     'chain': {'index': 'NF', 'expiry': self.NEXT, 'chain': ch,
+                     'contracts': {'index': 'BNF', 'expiry': self.NEXT, 'fetched_at_ms': ms(at) + 2500,
+                                   'response': TB.contracts_response(ch, 'BNF', expiry=self.NEXT, lot=30)},
+                     'chain': {'index': 'BNF', 'expiry': self.NEXT, 'chain': ch,
                                'request_start_ms': ms(at) + int(chain_s * 1000) - 400,
                                'receipt_ms': ms(at) + int(chain_s * 1000)},
                      'stats': {'requests': {'listing': 1, 'contracts': 1, 'chain': 1},
@@ -413,12 +413,12 @@ class Integration(unittest.TestCase):
 
     def test_end_to_end(self):
         r = copy.deepcopy(self.result)
-        base = r['single_leg_by_index']['NF']
+        base = r['single_leg_by_index']['BNF']
         self.assertEqual(base['action'], 'BUY_CE')
         self.assertEqual(base['expiry_fallback']['status'], efb.STATUS_REQUIRED)
-        bnf = r['single_leg_by_index'].get('BNF') or {}
-        self.assertNotIn('expiry_fallback', bnf)                          # BNF is on an ordinary day
-        dec = r['by_index']['NF']
+        bnf = r['single_leg_by_index'].get('NF') or {}
+        self.assertNotIn('expiry_fallback', bnf)                          # retired NF has no active proposal
+        dec = r['by_index']['BNF']
         at = ia.parse_ts(dec['analysis_ts'])
         spot = dec['direction']['inputs']['spot']['value']
         ev, ch = self.evidence(at, spot)
@@ -426,47 +426,47 @@ class Integration(unittest.TestCase):
         out = json.loads(brain.single_leg_expiry_fallback_apply(self.d, json.dumps(r), json.dumps(self.ctx),
                                                                 json.dumps(ev), cutoff, '[]'))
         self.assertNotIn('error', out, out)
-        p = out['single_leg_by_index']['NF']
+        p = out['single_leg_by_index']['BNF']
         self.assertEqual(p['status'], 'ELIGIBLE_PENDING_SNAPSHOT', p['reasons'])
         self.assertEqual(p['contract']['expiry'], self.NEXT)
         key = p['instrument_key']
-        self.assertTrue(key.startswith('NSE_FO|NF20261117'))
+        self.assertTrue(key.startswith('NSE_FO|BNF20261229'))
         self.assertEqual(p['quote_needed'], [key])
-        self.assertEqual(out['retention']['NF']['index_bytes'] > 0, True)
+        self.assertEqual(out['retention']['BNF']['index_bytes'] > 0, True)
         # publication: the patched result carries the fallback proposal; quote targets name the exact key
-        r['single_leg_by_index']['NF'] = p
+        r['single_leg_by_index']['BNF'] = p
         tg = json.loads(brain.single_leg_quote_targets(self.d, json.dumps(r)))
         self.assertIn(key, tg['keys'])
         # stale approval: a quote older than 90 s at the tap is rejected
         t_tap = at + timedelta(seconds=60)
         old = snap(ch, key, at - timedelta(seconds=40), at - timedelta(seconds=39))
-        rej = sls.admit(self.d, r, 'NF', clock=lambda: t_tap, snapshot=old, **OK)
+        rej = sls.admit(self.d, r, 'BNF', clock=lambda: t_tap, snapshot=old, **OK)
         self.assertEqual(rej['status'], 'REJECTED')
         self.assertIn('SNAPSHOT_STALE_AT_ADMISSION', rej['reasons'])
         # replaced approval: the published decision changed (state probe) -> rejected before commit
         fresh = snap(ch, key, t_tap - timedelta(seconds=2), t_tap - timedelta(seconds=1))
-        probe = lambda: json.dumps({'decisions': {'NF': {'decision_id': 'idx1_newer', 'instrument_key': key}},
+        probe = lambda: json.dumps({'decisions': {'BNF': {'decision_id': 'idx1_newer', 'instrument_key': key}},
                                     'enabled': True, 'paper_mode': True, 'selector': 'BOTH',
                                     'capital': OK['capital'], 'max_risk_pct': OK['max_risk_pct']})
-        rep = sls.admit(self.d, r, 'NF', clock=lambda: t_tap, snapshot=fresh, state_probe=probe, **OK)
+        rep = sls.admit(self.d, r, 'BNF', clock=lambda: t_tap, snapshot=fresh, state_probe=probe, **OK)
         self.assertEqual(rep['reason'], 'DECISION_CHANGED_BEFORE_COMMIT')
         # a different instrument (trading-expiry strike) published -> also rejected
-        probe2 = lambda: json.dumps({'decisions': {'NF': {'decision_id': dec['decision_id'], 'instrument_key': 'X|other'}},
+        probe2 = lambda: json.dumps({'decisions': {'BNF': {'decision_id': dec['decision_id'], 'instrument_key': 'X|other'}},
                                      'enabled': True, 'paper_mode': True, 'selector': 'BOTH',
                                      'capital': OK['capital'], 'max_risk_pct': OK['max_risk_pct']})
-        self.assertEqual(sls.admit(self.d, r, 'NF', clock=lambda: t_tap, snapshot=fresh, state_probe=probe2,
+        self.assertEqual(sls.admit(self.d, r, 'BNF', clock=lambda: t_tap, snapshot=fresh, state_probe=probe2,
                                    **OK)['reason'], 'DECISION_CHANGED_BEFORE_COMMIT')
         # too old a decision (> ADMIT_MAX_DECISION_AGE_S) -> rejected
         t_old = at + timedelta(seconds=sls.ADMIT_MAX_DECISION_AGE_S + 5)
-        self.assertEqual(sls.admit(self.d, r, 'NF', clock=lambda: t_old,
+        self.assertEqual(sls.admit(self.d, r, 'BNF', clock=lambda: t_old,
                                    snapshot=snap(ch, key, t_old - timedelta(seconds=2), t_old - timedelta(seconds=1)),
                                    **OK)['reason'], 'DECISION_NOT_CURRENT')
         # exact admission
-        okp = sls.admit(self.d, r, 'NF', clock=lambda: t_tap, snapshot=fresh, **OK)
+        okp = sls.admit(self.d, r, 'BNF', clock=lambda: t_tap, snapshot=fresh, **OK)
         self.assertEqual(okp['status'], 'ADMITTED', okp)
         pos = okp['position']
         self.assertEqual((pos['index'], pos['expiry'], pos['instrument_key'], pos['strike'], pos['option_type']),
-                         ('NF', self.NEXT, key, p['strike'], 'CE'))
+                         ('BNF', self.NEXT, key, p['strike'], 'CE'))
         self.assertEqual(pos['expiry_fallback']['fallback_expiry'], self.NEXT)
         self.assertEqual(pos['expiry_fallback']['trade_expiry'], self.SESSION)
         # restart: a fresh read of the durable store (no in-memory state) still names the exact contract
@@ -474,8 +474,8 @@ class Integration(unittest.TestCase):
         self.assertEqual([(x['instrument_key'], x['expiry']) for x in reopened], [(key, self.NEXT)])
         # time exit at 15:05 on the exact instrument; a quote for the trading-expiry strike never closes it
         t_exit = ia.parse_ts(self.SESSION + 'T15:05:30+05:30')
-        trading_key = 'NSE_FO|NF%s%s' % (self.SESSION.replace('-', ''), str(p['strike']) + 'CE')
-        tq = snap(stamped_chain('NF', self.SESSION, spot), trading_key, t_exit - timedelta(seconds=5),
+        trading_key = 'NSE_FO|BNF%s%s' % (self.SESSION.replace('-', ''), str(p['strike']) + 'CE')
+        tq = snap(stamped_chain('BNF', self.SESSION, spot), trading_key, t_exit - timedelta(seconds=5),
                   t_exit - timedelta(seconds=4))
         m1 = sls.monitor(self.d, {trading_key: tq}, {}, clock=lambda: t_exit)
         self.assertEqual(m1['events'][0]['event'], 'EXIT_PENDING')
@@ -496,12 +496,12 @@ class Integration(unittest.TestCase):
 
     def test_decision_changed_between_analysis_and_apply_is_skipped(self):
         r = copy.deepcopy(self.result)
-        r['by_index']['NF']['decision_id'] = 'idx1_replaced'
-        at = ia.parse_ts(r['by_index']['NF']['analysis_ts'])
-        ev, _ = self.evidence(at, r['by_index']['NF']['direction']['inputs']['spot']['value'])
+        r['by_index']['BNF']['decision_id'] = 'idx1_replaced'
+        at = ia.parse_ts(r['by_index']['BNF']['analysis_ts'])
+        ev, _ = self.evidence(at, r['by_index']['BNF']['direction']['inputs']['spot']['value'])
         out = json.loads(brain.single_leg_expiry_fallback_apply(self.d, json.dumps(r), json.dumps(self.ctx),
                                                                 json.dumps(ev), ms(at) + 5000, '[]'))
-        self.assertEqual(out['skipped'], {'NF': 'DECISION_CHANGED'})
+        self.assertEqual(out['skipped'], {'BNF': 'DECISION_CHANGED'})
         self.assertEqual(out['single_leg_by_index'], {})
 
 
