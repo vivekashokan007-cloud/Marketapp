@@ -25,10 +25,10 @@ class B515CandidatePwaTest {
      * CI were ever noticed. This class compiles into testDebugUnitTest AND testCandidateUnitTest, so these literals
      * are enforced on every push and in the candidate variant, and the duplicates are no longer needed.
      */
-    private val acceptedMarketViviSha = "543f7325e752be40e6bec8aac35e28b9710358c8"
-    private val acceptedAppJsSha256 = "a3f1e98c8f51ba29327d08c37288cc0deb67e20954bee934461c30e013cc4f49"
-    private val acceptedVersionName = "2.6.109"
-    private val acceptedVersionCode = 540
+    private val acceptedMarketViviSha = "39673df7723c4291838be784ec4b79f9a559fede"
+    private val acceptedAppJsSha256 = "e91d4886835e484f52af68bb25b7ff3acb47280876ad3e404244a0f5b5929f5d"
+    private val acceptedVersionName = "2.6.110"
+    private val acceptedVersionCode = 541
 
     /**
      * The app.js cache-bust revision, named rather than typed inline.
@@ -39,7 +39,7 @@ class B515CandidatePwaTest {
      * integer argument. CI caught it. Keeping it up here means the next bump changes five named
      * values in one place and nothing else.
      */
-    private val acceptedAppJsV = 1404
+    private val acceptedAppJsV = 1405
 
     private fun file(rel: String) = listOf(File(rel), File("app/$rel")).first { it.exists() }
     private fun src(n: String) = file("src/main/java/com/marketradar/app/$n").readText()

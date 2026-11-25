@@ -139,13 +139,13 @@ class ExpiryFallbackAcquirerTest {
     @Test fun patchReplacesPlansAndOnlyExistingWhyRecords() {
         val r = result().put("index_authority_persist", JSONObject().put("delta",
             JSONObject().put("why", JSONObject().put("idx1_a", JSONObject().put("old", true)))))
-        val patch = JSONObject().put("single_leg_by_index", JSONObject().put("NF", JSONObject().put("status", "ADMISSIBLE")))
+        val patch = JSONObject().put("single_leg_by_index", JSONObject().put("BNF", JSONObject().put("status", "ADMISSIBLE")))
             .put("why", JSONObject().put("idx1_a", JSONObject().put("new", true)).put("idx1_other", JSONObject()))
         assertEquals(1, ExpiryFallbackAcquirer.applyPatch(r, patch))
-        assertEquals("ADMISSIBLE", r.getJSONObject("single_leg_by_index").getJSONObject("NF").getString("status"))
+        assertEquals("ADMISSIBLE", r.getJSONObject("single_leg_by_index").getJSONObject("BNF").getString("status"))
         val why = r.getJSONObject("index_authority_persist").getJSONObject("delta").getJSONObject("why")
         assertTrue(why.getJSONObject("idx1_a").has("new")); assertFalse(why.has("idx1_other"))
-        assertEquals("idx1_b", r.getJSONObject("single_leg_by_index").getJSONObject("BNF").getString("decision_id"))
+        assertEquals("idx1_b", r.getJSONObject("single_leg_by_index").getJSONObject("NF").getString("decision_id"))
         assertEquals(0, ExpiryFallbackAcquirer.applyPatch(r, JSONObject().put("error", "X")))
         assertNotNull(r.optJSONObject("single_leg_by_index"))
     }
@@ -207,8 +207,8 @@ class ExpiryFallbackAcquirerTest {
         val bytesBefore = ev.getJSONObject("BNF").getJSONObject("stats").toString()
         Thread.sleep(1_800L)                                                     // the abandoned calls finish now
         val cache = JSONObject(File(File(d, ExpiryFallbackAcquirer.DIR), ExpiryFallbackAcquirer.LISTING_CACHE_FILE).readText())
-        assertFalse(cache.getJSONObject("NF|2026-11-23").has("expiries"))
-        assertEquals(-2, cache.getJSONObject("NF|2026-11-23").getInt("last_code"))
+        assertFalse(cache.getJSONObject("BNF|2026-11-23").has("expiries"))
+        assertEquals(-2, cache.getJSONObject("BNF|2026-11-23").getInt("last_code"))
         assertEquals(bytesBefore, ev.getJSONObject("BNF").getJSONObject("stats").toString())
     }
 

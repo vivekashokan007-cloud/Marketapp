@@ -113,12 +113,12 @@ class M0Batch1ReviewBoundaryTest {
         assertEquals(3, counts.getInt("STAGED"))
         assertEquals(setOf(ResearchCollector.chainProtectionId(a.slotId, a.attemptId), id2, id3).size, 3)
         for (p in listOf("first", "second", "third")) assertTrue(ResearchProtection.isProtected(dir, "BNF", p))
-        // same id with different contents is an IDENTITY_COBNFLICT; the original identity is untouched
+        // same id with different contents is an IDENTITY_CONFLICT; the original identity is untouched
         val e0 = ResearchProtection.entry(dir, id2)!!.toString()
-        assertEquals("IDENTITY_COBNFLICT", ResearchProtection.request(dir, id2, "research_m0", "BNF", "other-poll", day, listOf("CHAIN_POLL"), now(), expectedRows = 2))
-        assertEquals("IDENTITY_COBNFLICT", ResearchProtection.request(dir, id2, "research_m0", "BNF", "second", day, listOf("CHAIN_POLL"), now(), expectedRows = 2, sourceSha = "0".repeat(64)))
+        assertEquals("IDENTITY_CONFLICT", ResearchProtection.request(dir, id2, "research_m0", "BNF", "other-poll", day, listOf("CHAIN_POLL"), now(), expectedRows = 2))
+        assertEquals("IDENTITY_CONFLICT", ResearchProtection.request(dir, id2, "research_m0", "BNF", "second", day, listOf("CHAIN_POLL"), now(), expectedRows = 2, sourceSha = "0".repeat(64)))
         assertEquals(e0, ResearchProtection.entry(dir, id2)!!.toString())
-        assertEquals(2, ResearchProtection.summary(dir, day).getInt("IDENTITY_COBNFLICT"))
+        assertEquals(2, ResearchProtection.summary(dir, day).getInt("IDENTITY_CONFLICT"))
         // identical re-request (restart) returns the state without a new entry
         val x = ResearchProtection.entry(dir, id2)!!
         assertEquals("STAGED", ResearchProtection.request(dir, id2, x.getString("owner"), "BNF", "second", day, listOf("CHAIN_POLL"), now() + 99,

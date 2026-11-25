@@ -270,7 +270,7 @@ class M0ResearchCollectorTest {
     @Test fun b7_7_index_expiry_and_unknown_identity_never_cross_map() {
         assertEquals(ResearchCollector.Begin.Unavailable("UNKNOWN_INDEX"), ResearchCollector.beginAttempt(dir, "FINNIFTY", "$S1|5", 1L))
         assertEquals(ResearchCollector.MapRef.Unavailable("CROSS_INDEX_ENTRY"),
-            ResearchCollector.putInstrumentMap(dir, "BNF", ResearchCollector.instrumentMapLines("BNF", chain("BNF", "2026-10-28")), 1L))
+            ResearchCollector.putInstrumentMap(dir, "BNF", ResearchCollector.instrumentMapLines("NF", chain("NF", "2026-10-28")), 1L))
         val nfPlan = ResearchCalendar.plan(S1, "NF"); val bnfPlan = ResearchCalendar.plan(S1, "BNF")
         assertEquals("2026-10-27", nfPlan.ruleExpiry)
         assertEquals("LIVE_CHAIN_ONLY", bnfPlan.expiryAuthority); assertNull(bnfPlan.ruleExpiry)
