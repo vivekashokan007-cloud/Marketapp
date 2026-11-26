@@ -12,8 +12,8 @@ object CloudDataPolicy {
         key !in setOf("service_running", "last_process_start_ms", "execution_sandbox_enabled", "execution_mode",
             "next_market_open_ms", "last_web_url", "last_version")
     fun portablePath(path: String): Boolean = CloudVault.validPath(path) &&
-        path.split('/').none { secretKey(it) } &&
-        path.substringBefore('/') !in setOf("chaquopy", "forensics", "cloud_vault_v1", "datastore") &&
+        path.split('/').none { secret.containsMatchIn(it) } &&
+        path.substringBefore('/') !in setOf("chaquopy", "forensics", "cloud_vault_v1", "cloud_session_v1", "datastore") &&
         !path.endsWith(".lock") && !path.endsWith(".tmp") && !path.endsWith(".lck")
     fun clean(value: Any?): Any? = when(value) {
         is JSONObject -> JSONObject().also { out -> value.keys().forEach { key ->

@@ -1,6 +1,8 @@
 package com.marketradar.app
 
 import android.content.Context
+import android.content.SharedPreferences
+import android.os.FileObserver
 import androidx.work.*
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -14,6 +16,7 @@ import java.time.OffsetDateTime
 import java.util.UUID
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
 
 /** Cloud backing for native files, typed preferences and PWA localStorage.
  * Local files remain the working cache/outbox; never delete unacknowledged work.
@@ -31,6 +34,32 @@ object CloudRecovery {
     @Volatile private var webVerified = false
     @Volatile private var filesChecked = 0
     @Volatile private var filesTotal = 0
+    private val mutations = AtomicLong()
+    private val observers = mutableMapOf<String, FileObserver>()
+    private val preferenceListeners = mutableListOf<SharedPreferences.OnSharedPreferenceChangeListener>()
+    private fun changed() {
+        mutations.incrementAndGet()
+        if (ready) state = "LOCAL_CHANGES_PENDING_UPLOAD"
+    }
+    private fun observeFiles(c: Context) {
+        observers.values.forEach { it.stopWatching() }
+        observers.clear()
+        c.filesDir.walkTopDown().onEnter { dir -> dir == c.filesDir ||
+            CloudDataPolicy.portablePath(dir.relativeTo(c.filesDir).invariantSeparatorsPath) }
+            .filter { it.isDirectory }.forEach { directory ->
+                if (observers.containsKey(directory.absolutePath)) return@forEach
+                val observer = object: FileObserver(directory.absolutePath,
+                    FileObserver.CLOSE_WRITE or FileObserver.MOVED_TO or FileObserver.MOVED_FROM or FileObserver.DELETE or FileObserver.CREATE) {
+                    override fun onEvent(event: Int, path: String?) {
+                        if (path == null) return
+                        val relative = File(directory, path).relativeTo(c.filesDir).invariantSeparatorsPath
+                        if (CloudDataPolicy.portablePath(relative)) changed()
+                    }
+                }
+                observers[directory.absolutePath] = observer
+                observer.startWatching()
+            }
+    }
     private fun meta(c: Context) = c.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
     fun owner(c: Context): String = meta(c).getString("owner", "") ?: ""
     fun canOpen(): Boolean = ready
@@ -41,7 +70,7 @@ object CloudRecovery {
         return true
     }
     fun canMonitor(): Boolean = ready && webVerified && leaseUntil > android.os.SystemClock.elapsedRealtime() + 5000
-    fun status(c: Context): String = JSONObject().put("state", state).put("ready", ready)
+    fun status(c: Context): String = JSONObject().put("state", if (meta(c).getBoolean("web_capture_failed", false)) "WEB_STATE_CAPTURE_FAILED" else state).put("ready", ready)
         .put("monitor_ready", canMonitor()).put("verified_at", meta(c).getString("verified_at", ""))
         .put("revision", meta(c).getLong("revision", 0)).put("last_error", meta(c).getString("last_error", ""))
         .put("files_checked", filesChecked).put("files_total", filesTotal)
@@ -55,6 +84,14 @@ object CloudRecovery {
         if (started) return
         started = true
         val c = context.applicationContext
+        for (name in listOf("market_radar", "ev_v12_acceptance", "cloud_web_cache_v1")) {
+            val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+                if (key == null || CloudDataPolicy.portablePreference(key)) changed()
+            }
+            preferenceListeners.add(listener)
+            c.getSharedPreferences(name, Context.MODE_PRIVATE).registerOnSharedPreferenceChangeListener(listener)
+        }
+        observeFiles(c)
         executor.scheduleWithFixedDelay({ runPass(c) }, 0, 30, TimeUnit.SECONDS)
         val work = PeriodicWorkRequestBuilder<CloudRecoveryWorker>(15, TimeUnit.MINUTES)
             .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()).build()
@@ -65,8 +102,18 @@ object CloudRecovery {
     fun saveWeb(c: Context, raw: String): Boolean = try {
         require(raw.toByteArray().size <= 4 * 1024 * 1024) { "PWA_STATE_TOO_LARGE" }
         val clean = CloudDataPolicy.cleanStorage(JSONObject(raw)).toString()
-        c.getSharedPreferences("cloud_web_cache_v1", Context.MODE_PRIVATE).edit().putString("storage", clean).commit()
-    } catch (_: Exception) { false }
+        val prefs = c.getSharedPreferences("cloud_web_cache_v1", Context.MODE_PRIVATE)
+        if (meta(c).getBoolean("web_capture_failed", false)) meta(c).edit().putBoolean("web_capture_failed", false).commit()
+        if (prefs.getString("storage", null) == clean) true else {
+            changed()
+            require(prefs.edit().putString("storage", clean).commit()) { "WEB_CACHE_WRITE_FAILED" }
+            true
+        }
+    } catch (_: Exception) {
+        changed(); webVerified = false
+        meta(c).edit().putBoolean("web_capture_failed", true).commit()
+        false
+    }
     fun web(c: Context): String = c.getSharedPreferences("cloud_web_cache_v1", Context.MODE_PRIVATE).getString("storage", "null") ?: "null"
 
     private class Transport(c: Context): CloudVault.Remote {
@@ -269,6 +316,8 @@ object CloudRecovery {
                     .putString("fingerprint", fingerprintMap(fingerprints(inventory(c)))).commit())
             } else if (ready && revision != localRevision) error("CLOUD_REVISION_CONFLICT")
             state = "CHECKING_PENDING_CACHE"
+            observeFiles(c)
+            val snapshotMutation = mutations.get()
             val sources = inventory(c)
             filesChecked = 0; filesTotal = sources.size
             val before = fingerprints(sources)
@@ -307,8 +356,10 @@ object CloudRecovery {
             }
             require(metadata.edit().putString("fingerprint", fingerprintMap(expectedCache)).commit())
             val webCaptured = c.getSharedPreferences("cloud_web_cache_v1", Context.MODE_PRIVATE).contains("storage")
-            webVerified = webCaptured && before.containsKey("prefs/cloud_web_cache_v1.json")
-            state = if (!webCaptured) "PWA_CAPTURE_REQUIRED" else if (before == fingerprints(inventory(c))) "VERIFIED_CHECKPOINT" else "LOCAL_CHANGES_PENDING_UPLOAD"
+            webVerified = webCaptured && !metadata.getBoolean("web_capture_failed", false) && before.containsKey("prefs/cloud_web_cache_v1.json")
+            state = if (!webCaptured) "PWA_CAPTURE_REQUIRED" else if (snapshotMutation == mutations.get() && before == fingerprints(inventory(c)))
+                "VERIFIED_CHECKPOINT" else "LOCAL_CHANGES_PENDING_UPLOAD"
+            if (webCaptured && snapshotMutation != mutations.get()) state = "LOCAL_CHANGES_PENDING_UPLOAD"
             if (webCaptured && canMonitor() && !legacyStarted) {
                 legacyStarted = true
                 PositionTickUploadRunner.onProcessStart(c, PositionTickDrainTrigger.APP_START)

@@ -84,6 +84,7 @@ class CloudSetupActivity: Activity() {
             "VERIFIED_CHECKPOINT" -> "Cloud checkpoint verified."
             "LOCAL_CHANGES_PENDING_UPLOAD" -> "New changes are waiting to upload. Keep this phone's data."
             "LOCAL_PAPER_CACHE_NOT_BACKED_UP" -> "Local Paper only. Cloud backup is incomplete; automatic monitoring is paused."
+            "WEB_STATE_CAPTURE_FAILED" -> "Saved screen data could not be captured. Keep your phone export; full backup is not confirmed."
             else -> "Cloud backup or restore is pending. Keep the phone export and retry."
         }
         status.text = "\n$description\nLast verified cloud checkpoint: ${s.optString("verified_at").ifBlank { "none" }}" +
