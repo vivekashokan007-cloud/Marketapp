@@ -1,0 +1,57 @@
+                                                                                                                         Constituents of NIFTY Bank
+                                                                                                                                                 October 30, 2026
+
+
+        Symbol                   Security Name                                                                                       Index Mcap          Weightage
+                                                                                    Industry                      Close Price
+                                                                                                                                     (Rs. Crores)          (%)
+ AUBANK                  AU Small Finance Bank Ltd.            Financial Services                                           864.00             145953               4.14
+
+
+ AXISBANK                Axis Bank Ltd.                        Financial Services                                          1217.00             351283               9.97
+
+
+ BANKBARODA              Bank of Baroda                        Financial Services                                           238.60             130795               3.71
+
+
+ CANBK                   Canara Bank                           Financial Services                                           117.54             116566               3.31
+
+
+ FEDERALBNK              Federal Bank Ltd.                     Financial Services                                           339.70             247141               7.02
+
+
+ HDFCBANK                HDFC Bank Ltd.                        Financial Services                                           692.80             640357             18.18
+
+
+ ICICIBANK               ICICI Bank Ltd.                       Financial Services                                          1398.00             527877             14.99
+
+
+ IDFCFIRSTB              IDFC First Bank Ltd.                  Financial Services                                            72.00             141285               4.01
+
+
+ INDUSINDBK              IndusInd Bank Ltd.                    Financial Services                                           838.00             162582               4.62
+
+
+ KOTAKBANK               Kotak Mahindra Bank Ltd.              Financial Services                                           461.60             397423             11.28
+
+
+ PNB                     Punjab National Bank                  Financial Services                                           122.85             125078               3.55
+
+
+ SBIN                    State Bank of India                   Financial Services                                           961.85             350152               9.94
+
+
+ UNIONBANK               Union Bank of India                   Financial Services                                           186.00             109507               3.11
+
+
+ YESBANK                 Yes Bank Ltd.                         Financial Services                                            15.15              76561               2.17
+
+
+
+
+Disclaimer: All information contained herewith is provided for reference purpose only. NSE Indices Limited (formerly known as India Index Services & Products Limited-
+IISL) ensures accuracy and reliability of the above information to the best of its endeavors. However, NSE Indices Limited makes no warranty or representation as to the
+accuracy, completeness or reliability of any of the information contained herein and disclaim any and all liability whatsoever to any person for any damage or loss of any
+nature arising from or as a result of reliance on any of the information provided herein. The information contained in this document is not intended to provide any
+professional advice.
+

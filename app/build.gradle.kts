@@ -5,6 +5,7 @@ plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("com.chaquo.python")
+    id("com.google.protobuf")
 }
 
 // b515 CANDIDATE-ONLY (DO NOT MERGE): pin for the bundled-PWA `candidate` build type. The committed expected manifest
@@ -171,6 +172,8 @@ chaquopy {
 }
 
 dependencies {
+    implementation("com.google.protobuf:protobuf-java-util:3.25.5")
+    implementation("com.tom-roush:pdfbox-android:2.0.27.0")
     implementation("androidx.core:core-ktx:1.12.0")
     implementation("androidx.appcompat:appcompat:1.6.1")
     implementation("androidx.activity:activity-ktx:1.8.0")
@@ -190,4 +193,8 @@ dependencies {
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20240303")
+}
+
+protobuf {
+    protoc { artifact = "com.google.protobuf:protoc:3.25.5" }
 }

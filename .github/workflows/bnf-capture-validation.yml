@@ -1,0 +1,31 @@
+name: BNF capture validation (no APK)
+on:
+  push:
+    branches: ['review/bnf-complete-capture-20261126']
+permissions:
+  contents: read
+jobs:
+  capture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - uses: android-actions/setup-android@v3
+      - run: sdkmanager --install 'platforms;android-35' 'build-tools;35.0.0'
+      - name: Compile and test capture without packaging an APK
+        run: ./gradlew :app:compileDebugKotlin :app:testDebugUnitTest --tests 'com.marketradar.app.Bnf*' --tests 'com.marketradar.app.CloudVaultTest' --stacktrace
+      - name: Preserve failing tests and compiler diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bnf-capture-test-reports
+          path: |
+            app/build/test-results/
+            app/build/reports/tests/

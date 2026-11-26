@@ -29,6 +29,7 @@ import java.io.File
 class MarketWatchService : Service() {
 
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private val bnfWebSocket by lazy { BnfWebSocketCapture(filesDir) }
     private var wakeLock: PowerManager.WakeLock? = null
     private var sessionWakeLock: PowerManager.WakeLock? = null
     private lateinit var prefs: SharedPreferences
@@ -4266,6 +4267,9 @@ class MarketWatchService : Service() {
                 CloudRecovery.request(applicationContext)
             }
             try {
+                val reference = runCatching { BnfReferenceCapture.daily(filesDir, day) }.getOrNull()
+                val monthlyStatus = runCatching { BnfReferenceCapture.monthly(filesDir, day); "PUBLICATION_CHECKED" }
+                    .getOrElse { "REFERENCE_CHECK_FAILED" }
                 val key = URLEncoder.encode("NSE_INDEX|Nifty Bank", Charsets.UTF_8.name())
                 val listing = fetchSync("https://api.upstox.com/v2/option/contract?instrument_key=$key", token)
                 val contracts = listing?.optJSONArray("data")
@@ -4279,7 +4283,17 @@ class MarketWatchService : Service() {
                     contract.optString("instrument_key").takeIf { it.startsWith("NSE_FO|") }
                         ?.let(optionKeys::add)
                 }
+                val listedKeys = optionKeys.toSet()
+                val masterOptions = reference?.optJSONArray("options") ?: JSONArray()
+                val masterKeys = (0 until masterOptions.length()).map { masterOptions.getJSONObject(it).getString("instrument_key") }.toSet()
+                optionKeys.addAll(masterKeys)
+                var observedSpot = 0.0
                 val coverage = JSONObject().put("schema", "bnf_universe_daily_v1")
+                    .put("instrument_master_status", if (reference == null) "MISSING" else "RECEIVED")
+                    .put("monthly_weights_status", monthlyStatus)
+                    .put("master_option_count", masterKeys.size)
+                    .put("master_only_keys", JSONArray((masterKeys - listedKeys).sorted()))
+                    .put("listing_only_keys", JSONArray((listedKeys - masterKeys).sorted()))
                     .put("day", day).put("poll_started_ms", pollStarted).put("cadence", "each_poll_when_previous_complete")
                     .put("contract_count", contracts?.length() ?: 0)
                     .put("expected_expiries", JSONArray(expiries.toList()))
@@ -4288,6 +4302,8 @@ class MarketWatchService : Service() {
                     delay(150) // independent of the decision poll; requests remain bounded
                     val encodedExpiry = URLEncoder.encode(expiry, Charsets.UTF_8.name())
                     val chain = fetchSync("https://api.upstox.com/v2/option/chain?instrument_key=$key&expiry_date=$encodedExpiry", token)
+                    val chainRows = chain?.optJSONArray("data")
+                    if (chainRows != null && chainRows.length() > 0) observedSpot = chainRows.getJSONObject(0).optDouble("underlying_spot_price", observedSpot)
                     val row = JSONObject().put("expiry", expiry)
                         .put("chain_status", if (chain?.optJSONArray("data") == null) "MISSING_DATA" else "RECEIVED")
                         .put("chain_rows", chain?.optJSONArray("data")?.length() ?: 0)
@@ -4326,19 +4342,24 @@ class MarketWatchService : Service() {
                         .put("received", response?.optJSONObject("data")?.length() ?: 0)
                         .put("status", if (response?.optJSONObject("data")?.length() == keys.size) "RECEIVED" else "INCOMPLETE"))
                 }
-                // This dated constituent manifest is for the bounded 27 Nov smoke test; a
-                // server-scheduled official monthly membership/weight refresh remains required.
-                val bankIsins = listOf("INE949L01017", "INE238A01034", "INE028A01039", "INE476A01022",
-                    "INE171A01029", "INE040A01034", "INE090A01021", "INE092T01019",
-                    "INE095A01012", "INE237A01036", "INE160A01022", "INE062A01020",
-                    "INE692A01016", "INE528G01035")
-                val contextKeys = bankIsins.map { "NSE_EQ|$it" } + listOf("NSE_INDEX|Nifty Bank",
-                    "NSE_INDEX|Nifty 50", "NSE_INDEX|India VIX", "NSE_FO|58872", "NSE_FO|54746", "NSE_FO|67070")
+                val members = reference?.optJSONArray("members") ?: JSONArray()
+                val futures = reference?.optJSONArray("futures") ?: JSONArray()
+                val contextKeys = (0 until members.length()).map { members.getJSONObject(it).getString("instrument_key") } +
+                    listOf("NSE_INDEX|Nifty Bank", "NSE_INDEX|Nifty 50", "NSE_INDEX|India VIX") +
+                    (0 until futures.length()).map { futures.getJSONObject(it).getString("instrument_key") }
+                val contractRows = (0 until (contracts?.length() ?: 0)).mapNotNull { contracts?.optJSONObject(it) }
+                val front = expiries.firstOrNull()
+                val nearOptions = if (observedSpot > 0) contractRows.filter { it.optString("expiry") == front }
+                    .sortedBy { kotlin.math.abs(it.optDouble("strike_price", 0.0) - observedSpot) }
+                    .take(4).map { it.getString("instrument_key") } else emptyList()
+                bnfWebSocket.ensure(token, contextKeys + nearOptions)
+                coverage.put("websocket_subscription_keys", JSONArray(contextKeys + nearOptions))
+                    .put("websocket_option_count", nearOptions.size)
                 val contextKey = URLEncoder.encode(contextKeys.joinToString(","), Charsets.UTF_8.name())
                 val context = fetchSync("https://api.upstox.com/v3/market-quote/quotes?instrument_key=$contextKey", token)
                 coverage.put("context_requested", contextKeys.size)
                     .put("context_received", context?.optJSONObject("data")?.length() ?: 0)
-                    .put("context_manifest_as_of", "2026-11-26")
+                    .put("context_manifest_as_of", reference?.optString("day") ?: JSONObject.NULL)
                     .put("quote_batches", quoteBatches)
                     .put("greek_batches", greekBatches)
                 val nfoStatus = fetchSync("https://api.upstox.com/v2/market/status/NFO", token)
@@ -4352,7 +4373,8 @@ class MarketWatchService : Service() {
                 coverage.put("fii_status", if (fii == null || fii.isNull("data")) "MISSING_DATA" else "RECEIVED")
                     .put("dii_status", if (dii == null || dii.isNull("data")) "MISSING_DATA" else "RECEIVED")
                 coverage.put("results", results)
-                    .put("status", if (contracts == null || expiries.isEmpty() ||
+                    .put("status", if (reference == null || masterKeys != listedKeys || members.length() == 0 || futures.length() == 0 ||
+                        monthlyStatus != "PUBLICATION_CHECKED" || nearOptions.size != 4 || contracts == null || expiries.isEmpty() ||
                         quoteBatches.length() == 0 ||
                         (0 until quoteBatches.length()).any { quoteBatches.getJSONObject(it).getString("status") != "RECEIVED" } ||
                         greekBatches.length() == 0 ||
@@ -5191,6 +5213,7 @@ class MarketWatchService : Service() {
     }
 
     override fun onDestroy() {
+        bnfWebSocket.close()
         // E5: Ensure wakelock is released when service is killed
         releaseWakeLock()
         releaseSessionWakeLock()
