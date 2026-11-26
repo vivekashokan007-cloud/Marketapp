@@ -29,6 +29,8 @@ object CloudRecovery {
     @Volatile private var state = "APP_SIGN_IN_REQUIRED"
     @Volatile private var legacyStarted = false
     @Volatile private var webVerified = false
+    @Volatile private var filesChecked = 0
+    @Volatile private var filesTotal = 0
     private fun meta(c: Context) = c.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
     fun owner(c: Context): String = meta(c).getString("owner", "") ?: ""
     fun canOpen(): Boolean = ready
@@ -42,6 +44,9 @@ object CloudRecovery {
     fun status(c: Context): String = JSONObject().put("state", state).put("ready", ready)
         .put("monitor_ready", canMonitor()).put("verified_at", meta(c).getString("verified_at", ""))
         .put("revision", meta(c).getLong("revision", 0)).put("last_error", meta(c).getString("last_error", ""))
+        .put("files_checked", filesChecked).put("files_total", filesTotal)
+        .put("verified_files", meta(c).getInt("verified_files", 0)).put("verified_bytes", meta(c).getLong("verified_bytes", 0))
+        .put("checkpoint_sha256", meta(c).getString("checkpoint_sha256", ""))
         .put("scope", "native files + preferences + PWA state; broker login stays on device")
         .put("web_state_captured", c.getSharedPreferences("cloud_web_cache_v1", Context.MODE_PRIVATE).contains("storage"))
         .put("local_cache", true).toString()
@@ -265,14 +270,17 @@ object CloudRecovery {
             } else if (ready && revision != localRevision) error("CLOUD_REVISION_CONFLICT")
             state = "CHECKING_PENDING_CACHE"
             val sources = inventory(c)
+            filesChecked = 0; filesTotal = sources.size
             val before = fingerprints(sources)
             val entries = JSONObject()
             val oldEntries = oldManifest?.getJSONObject("entries") ?: JSONObject()
             for (source in sources) {
                 val old = oldEntries.optJSONObject(source.path)
+                state = if (old != null && old.optString("sha256") == before[source.path]) "CHECKING_PENDING_CACHE" else "UPLOADING_RECOVERY_DATA"
                 val entry = if (old != null && old.optString("sha256") == before[source.path]) old else vault.store(source.stream())
                 require(entry.getString("sha256") == before[source.path]) { "CACHE_CHANGED_DURING_UPLOAD" }
                 entries.put(source.path, entry)
+                filesChecked++
             }
             require(before == fingerprints(inventory(c))) { "CACHE_CHANGED_DURING_UPLOAD" }
             if (oldManifest == null || before != manifestFingerprints(oldManifest)) {
@@ -285,8 +293,11 @@ object CloudRecovery {
                 revision = check.getLong("revision")
             }
             val checkTime = head!!.optString("committed_at")
+            val verifiedBytes = entries.keys().asSequence().sumOf { entries.getJSONObject(it).getLong("size") }
             require(metadata.edit().putLong("revision", revision).putBoolean("initialized", true)
                 .putString("fingerprint", fingerprintMap(before)).putString("verified_at", checkTime)
+                .putInt("verified_files", entries.length()).putLong("verified_bytes", verifiedBytes)
+                .putString("checkpoint_sha256", head.getString("manifest_sha256"))
                 .putString("last_error", "").commit())
             leaseUntil = maxOf(leaseUntil, head.getLong("_lease_deadline_elapsed"))
             ready = true

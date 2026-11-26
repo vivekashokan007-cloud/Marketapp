@@ -75,7 +75,20 @@ class CloudSetupActivity: Activity() {
     private fun renderStatus() {
         if (!::status.isInitialized) return
         val s = JSONObject(CloudRecovery.status(applicationContext))
-        status.text = "\n${s.optString("state")}\nLast verified cloud checkpoint: ${s.optString("verified_at").ifBlank { "none" }}" +
+        val description = when(s.optString("state")) {
+            "APP_SIGN_IN_REQUIRED" -> "Sign into your app account to back up or restore."
+            "RESTORING_VERIFIED_CLOUD_STATE" -> "Restoring your verified cloud data. Monitoring is paused."
+            "CHECKING_PENDING_CACHE" -> "Checking saved files: ${s.optInt("files_checked")} / ${s.optInt("files_total")}"
+            "UPLOADING_RECOVERY_DATA", "UPLOADING_CHECKPOINT" -> "Uploading and verifying: ${s.optInt("files_checked")} / ${s.optInt("files_total")} files. Keep the app open."
+            "PWA_CAPTURE_REQUIRED" -> "Native data is saved. Continue to the Paper app to include its saved screen data."
+            "VERIFIED_CHECKPOINT" -> "Cloud checkpoint verified."
+            "LOCAL_CHANGES_PENDING_UPLOAD" -> "New changes are waiting to upload. Keep this phone's data."
+            "LOCAL_PAPER_CACHE_NOT_BACKED_UP" -> "Local Paper only. Cloud backup is incomplete; automatic monitoring is paused."
+            else -> "Cloud backup or restore is pending. Keep the phone export and retry."
+        }
+        status.text = "\n$description\nLast verified cloud checkpoint: ${s.optString("verified_at").ifBlank { "none" }}" +
+            "\nVerified: ${s.optInt("verified_files")} files · ${s.optLong("verified_bytes") / (1024 * 1024)} MiB" +
+            "\nCheckpoint: ${s.optString("checkpoint_sha256").take(12)}" +
             "\nRevision ${s.optLong("revision")} · monitoring ${if (s.optBoolean("monitor_ready")) "ready" else "paused"}" +
             "\n${s.optString("last_error")}\n"
     }
