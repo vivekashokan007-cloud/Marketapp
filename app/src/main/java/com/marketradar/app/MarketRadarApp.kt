@@ -26,6 +26,7 @@ class MarketRadarApp : Application() {
         super.onCreate()
         CloudArchive.install(filesDir)
         CloudRecovery.start(this)
+        BnfSourceUploader.start(this)
         try {
             LogBuffer.init(this)
             val prefs = getSharedPreferences("market_radar", MODE_PRIVATE)
