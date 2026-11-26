@@ -2636,10 +2636,14 @@ object SupabaseClient {
         val insert = request("mr_market_source_captures?on_conflict=capture_id")
             .header("Prefer", "return=minimal,resolution=ignore-duplicates")
             .post(row.toString().toRequestBody("application/json".toMediaTypeOrNull())).build()
-        val saved = client.newCall(insert).execute().use { it.isSuccessful }
+        val saved = client.newCall(insert).execute().use {
+            if (!it.isSuccessful) LogBuffer.add('E', TAG, "MARKET_SOURCE_INSERT_HTTP=${it.code} id=$id")
+            it.isSuccessful
+        }
         if (!saved) false else {
             val verify = request("mr_market_source_captures?select=capture_id,original_sha256,stored_bytes&capture_id=eq.$id").get().build()
             client.newCall(verify).execute().use { response ->
+                if (!response.isSuccessful) LogBuffer.add('E', TAG, "MARKET_SOURCE_READBACK_HTTP=${response.code} id=$id")
                 val rows = if (response.isSuccessful) JSONArray(response.body?.string() ?: "[]") else JSONArray()
                 rows.length() == 1 && rows.getJSONObject(0).let {
                     it.optString("original_sha256") == row.optString("original_sha256") &&

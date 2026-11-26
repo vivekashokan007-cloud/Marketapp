@@ -29,14 +29,16 @@ object BnfSourceUploader {
 
     @Synchronized internal fun drain(c: Context) {
         val session = CloudSession(c)
-        if (!session.signedIn()) return
+        val status = c.getSharedPreferences("bnf_source_upload_status", Context.MODE_PRIVATE)
+        if (!session.signedIn()) { status.edit().putString("state", "APP_SIGN_IN_REQUIRED").apply(); return }
         val dir = File(c.filesDir, BnfRawCapture.DIRECTORY)
         if (!dir.isDirectory) return
         val acknowledgements = File(c.noBackupFilesDir, "bnf_table_ack_v1").apply { mkdirs() }
-        dir.listFiles { file -> file.isFile && file.name.endsWith(".json") }
-            ?.sortedBy { it.name }?.asSequence()?.filter { it.name.matches(Regex("[0-9]+_[0-9a-fA-F-]{36}\\.json")) }
-            ?.filter { !File(acknowledgements, it.name.removeSuffix(".json")).exists() }
-            ?.take(120)?.forEach { metadata ->
+        val all = dir.listFiles { file -> file.isFile && file.name.matches(Regex("[0-9]+_[0-9a-fA-F-]{36}\\.json")) }
+            ?.sortedBy { it.name } ?: emptyList()
+        val pending = all.filter { !File(acknowledgements, it.name.removeSuffix(".json")).exists() }
+        var verified = 0
+        pending.take(120).forEach { metadata ->
                 val id = metadata.name.removeSuffix(".json")
                 try {
                     uploadAndVerify(session, metadata, id)
@@ -44,12 +46,16 @@ object BnfSourceUploader {
                     try {
                         temp.writeText("verified")
                         require(temp.renameTo(File(acknowledgements, id)))
+                        verified++
                     } finally { temp.delete() }
                 } catch (e: Exception) {
                     LogBuffer.add('E', "BnfSourceUploader", "DIRECT_CAPTURE_PENDING id=$id reason=${e.javaClass.simpleName}")
                     // Keep the original file for the next pass. Continue other captures.
                 }
             }
+        status.edit().putString("state", if (pending.size == verified) "TABLE_ROWS_VERIFIED" else "UPLOAD_PENDING")
+            .putInt("pending", pending.size - verified).putInt("verified", all.size - pending.size + verified)
+            .putLong("checked_at_ms", System.currentTimeMillis()).apply()
     }
 
     private fun uploadAndVerify(session: CloudSession, metaFile: File, id: String) {

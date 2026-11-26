@@ -78,7 +78,12 @@ object CloudRecovery {
         .put("checkpoint_sha256", meta(c).getString("checkpoint_sha256", ""))
         .put("scope", "native files + preferences + PWA state; broker login stays on device")
         .put("web_state_captured", c.getSharedPreferences("cloud_web_cache_v1", Context.MODE_PRIVATE).contains("storage"))
-        .put("local_cache", true).toString()
+        .put("local_cache", true)
+        .put("market_source_upload", c.getSharedPreferences("bnf_source_upload_status", Context.MODE_PRIVATE).let { p ->
+            JSONObject().put("state", p.getString("state", "NOT_CHECKED"))
+                .put("verified_rows", p.getInt("verified", 0)).put("pending_rows", p.getInt("pending", 0))
+                .put("checked_at_ms", p.getLong("checked_at_ms", 0))
+        }).toString()
 
     @Synchronized fun start(context: Context) {
         if (started) return
