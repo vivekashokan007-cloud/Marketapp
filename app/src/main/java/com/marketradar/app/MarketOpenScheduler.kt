@@ -89,6 +89,7 @@ object MarketOpenScheduler {
     }
 
     fun maybeStartIngestionNow(context: Context, reason: String) {
+        if (!CloudRecovery.canMonitor()) return
         scheduleNextMarketOpen(context)
         val status = currentStatus()
         if (!status.marketOpen) {

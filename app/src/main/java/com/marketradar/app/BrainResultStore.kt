@@ -141,6 +141,6 @@ object BrainResultStore {
         val files = dir.listFiles { file -> file.isFile && file.extension == "json" }
             ?.sortedByDescending { it.lastModified() }
             ?: return
-        files.drop(8).forEach { file -> runCatching { file.delete() } }
+        files.drop(8).forEach { file -> runCatching { if (CloudArchive.preserveBeforeDiscard(file)) file.delete() } }
     }
 }

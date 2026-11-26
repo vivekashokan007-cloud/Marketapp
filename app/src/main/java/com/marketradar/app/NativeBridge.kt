@@ -97,6 +97,10 @@ class NativeBridge(private val context: Context) {
     }
 
     private fun defaultTradeMode(): String = "intraday"
+    @JavascriptInterface fun cloudStatus(): String = CloudRecovery.status(context)
+    @JavascriptInterface fun cloudSaveWeb(json: String): Boolean = CloudRecovery.saveWeb(context, json)
+    @JavascriptInterface fun cloudReadWeb(): String = CloudRecovery.web(context)
+    @JavascriptInterface fun cloudRequestSync() { CloudRecovery.request(context) }
 
     private fun readJsonArrayFile(file: File): JSONArray {
         if (!file.exists()) return JSONArray()
@@ -2027,7 +2031,8 @@ class NativeBridge(private val context: Context) {
     // (e.g. an older page) gets DISPLAYED_IDENTITY_REQUIRED and must be re-tapped from a page that sends identity.
     @JavascriptInterface
     fun singleLegAdmitDisplayed(index: String, decisionId: String, instrumentKey: String): String = try {
-        if (!BnfScope.permitsNew(index)) "{\"status\":\"REJECTED\",\"reason\":\"INDEX_RETIRED_BNF_ONLY\"}"
+        if (!CloudRecovery.canMonitor()) "{\"status\":\"REJECTED\",\"reason\":\"CLOUD_RECOVERY_OR_DEVICE_LEASE_PENDING\"}"
+        else if (!BnfScope.permitsNew(index)) "{\"status\":\"REJECTED\",\"reason\":\"INDEX_RETIRED_BNF_ONLY\"}"
         else singleLegCoordinator.submit(index, decisionId, instrumentKey)
     } catch (e: Exception) {
         "{\"status\":\"ERROR\"}"
@@ -2035,7 +2040,8 @@ class NativeBridge(private val context: Context) {
 
     @JavascriptInterface
     fun singleLegAdmit(index: String): String = try {
-        if (!BnfScope.permitsNew(index)) "{\"status\":\"REJECTED\",\"reason\":\"INDEX_RETIRED_BNF_ONLY\"}"
+        if (!CloudRecovery.canMonitor()) "{\"status\":\"REJECTED\",\"reason\":\"CLOUD_RECOVERY_OR_DEVICE_LEASE_PENDING\"}"
+        else if (!BnfScope.permitsNew(index)) "{\"status\":\"REJECTED\",\"reason\":\"INDEX_RETIRED_BNF_ONLY\"}"
         else singleLegCoordinator.submit(index, null, null)
     } catch (e: Exception) {
         "{\"status\":\"ERROR\"}"

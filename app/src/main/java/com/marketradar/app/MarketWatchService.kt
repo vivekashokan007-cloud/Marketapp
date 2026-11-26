@@ -336,6 +336,7 @@ class MarketWatchService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (!CloudRecovery.canMonitor() && intent?.action != "STOP") { stopSelf(); return START_NOT_STICKY }
         if (intent?.action == "STOP") {
             cancelPollAlarm()
             releaseLease()
@@ -848,6 +849,7 @@ class MarketWatchService : Service() {
         }
         pollingJob = serviceScope.launch {
             while (isActive) {
+                if (!CloudRecovery.canMonitor()) { stopSelf(); return@launch }
                 pollLoopIteration += 1
                 val now = System.currentTimeMillis()
                 val configuredPollIntervalMins = prefs.getInt("poll_frequency_mins", 5)

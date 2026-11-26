@@ -120,7 +120,7 @@ object EvaluationLocalCache {
                 val ageMs = today.plusDays(1).atStartOfDay().toInstant(ZoneOffset.UTC).toEpochMilli() - file.lastModified()
                 ageMs <= RETENTION_DAYS * 24L * 60L * 60L * 1000L
             }
-            if (!keep && file.delete()) {
+            if (!keep && CloudArchive.preserveBeforeDiscard(file) && file.delete()) {
                 snapshotStateByPath.remove(file.absolutePath)
                 fullSnapshotIndexByPath.remove(file.absolutePath)
                 LogBuffer.add('I', TAG, "LOCAL_SNAPSHOT_PRUNE: removed=${file.name}")
@@ -1148,6 +1148,11 @@ object EvaluationLocalCache {
         index.rows[key] = compactBytes
         index.totalBytes += compactBytes
         val rowsBefore = index.rows.size
+        if ((index.needsRewrite || index.rows.size > MAX_ROWS_PER_SESSION || index.totalBytes > MAX_BYTES_PER_SESSION) &&
+            !CloudArchive.preserveBeforeDiscard(file)) {
+            log('W', "CLOUD_ARCHIVE_PENDING: retained full snapshot before trim")
+            return true
+        }
         val trimmed = trimFullSnapshotIndex(index)
         if (index.needsRewrite || trimmed) {
             val droppedByTrim = if (trimmed) rowsBefore - index.rows.size else 0

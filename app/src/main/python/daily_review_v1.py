@@ -372,6 +372,8 @@ class StoreError(Exception):
 
 
 def _atomic_write(path, raw: bytes):
+    from cloud_archive_v1 import preserve
+    preserve(path)
     d = os.path.dirname(path)
     fd, tmp = tempfile.mkstemp(prefix='.tmp_', dir=d)
     try:

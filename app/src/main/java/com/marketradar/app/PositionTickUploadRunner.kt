@@ -85,6 +85,7 @@ internal object PositionTickUploadRunner {
 
     /** Executor-thread pass (in-process triggers). */
     private fun runOnce(context: Context, trigger: String) {
+        if (!CloudRecovery.canMonitor()) return
         coordinator(context).runPass(trigger)
     }
 
@@ -93,6 +94,7 @@ internal object PositionTickUploadRunner {
      * coordinator. An unexpected exception → RETRY (bounded explicit backoff).
      */
     fun runWorkerPass(context: Context, runAttemptCount: Int): PositionTickWorkerResult {
+        if (!CloudRecovery.canMonitor()) return PositionTickWorkerResult.RETRY
         val app = context.applicationContext
         return runPositionTickWorker(
             kv = SharedPrefsPositionTickKv(prefs(app)),

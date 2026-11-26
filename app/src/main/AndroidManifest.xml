@@ -22,6 +22,7 @@
         android:theme="@style/Theme.MarketRadar"
         tools:targetApi="34">
 
+        <activity android:name=".CloudSetupActivity" android:exported="false" />
         <activity
             android:name=".MainActivity"
             android:exported="true"

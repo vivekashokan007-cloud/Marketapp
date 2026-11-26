@@ -290,6 +290,8 @@ def persist_delta(d, session, delta, published_at=None):
             files = sorted(f for f in os.listdir(d) if f.endswith('.json'))
             for f in files[:-MAX_SESSIONS]:
                 try:
+                    from cloud_archive_v1 import preserve
+                    preserve(os.path.join(d, f))
                     os.unlink(os.path.join(d, f))
                 except OSError:
                     pass

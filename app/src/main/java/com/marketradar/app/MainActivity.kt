@@ -201,6 +201,11 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (!CloudRecovery.canOpen()) {
+            startActivity(Intent(this, CloudSetupActivity::class.java))
+            finish()
+            return
+        }
         LifecycleDiagnostics.onActivityCreate(savedInstanceState != null, MarketRadarApp.PROCESS_START_UUID).let { (seq, kind) ->
             instanceSeq = seq; createKind = kind
         }
@@ -242,10 +247,15 @@ class MainActivity : AppCompatActivity() {
             
             // Add Settings Icon
             val settingsItem = menu.add(Menu.NONE, 1, Menu.NONE, "Settings")
+            menu.add(Menu.NONE, 2, Menu.NONE, "Cloud backup / recovery")
             settingsItem.setIcon(android.R.drawable.ic_menu_preferences)
             settingsItem.setShowAsAction(MenuItem.SHOW_AS_ACTION_ALWAYS)
             
             setOnMenuItemClickListener { item ->
+                if (item.itemId == 2) {
+                    startActivity(Intent(this@MainActivity, CloudSetupActivity::class.java))
+                    return@setOnMenuItemClickListener true
+                }
                 if (item.itemId == 1) {
                     showVersionDialog()
                     true
@@ -725,6 +735,10 @@ class MainActivity : AppCompatActivity() {
                 window._nativeBridgeInjected = true;
                 window.NativeBridge = {
                     isNative: function() { return true; },
+                    cloudStatus: function() { return AndroidBridge.cloudStatus(); },
+                    cloudSaveWeb: function(j) { return AndroidBridge.cloudSaveWeb(j); },
+                    cloudReadWeb: function() { return AndroidBridge.cloudReadWeb(); },
+                    cloudRequestSync: function() { AndroidBridge.cloudRequestSync(); },
                     startMarketService: function() { AndroidBridge.startMarketService(); },
                     stopMarketService: function() { AndroidBridge.userStopMarketService(); },
                     sendNotification: function(title, body, type) { AndroidBridge.sendNotification(title, body, type); },
@@ -935,6 +949,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onPause() {
         super.onPause()
+        if (!::webView.isInitialized) return
         persistCurrentWebUrl(webView.url)
         LogBuffer.add('I', "MainActivity", "ACTIVITY_PAUSE: url=${webView.url.orEmpty()} pid=${android.os.Process.myPid()} startUuid=${MarketRadarApp.PROCESS_START_UUID}")
         // b515: let the page persist tab/scroll/unsaved drafts NOW, while it is still live; onStop's
@@ -951,6 +966,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        if (!::webView.isInitialized) return
         LogBuffer.add('I', "MainActivity", "ACTIVITY_RESUME: url=${webView.url.orEmpty()} pid=${android.os.Process.myPid()} startUuid=${MarketRadarApp.PROCESS_START_UUID}")
         webView.onResume() // resume if system paused it
         webView.resumeTimers()

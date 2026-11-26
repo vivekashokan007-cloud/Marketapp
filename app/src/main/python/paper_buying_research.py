@@ -660,6 +660,8 @@ def _now_ms():
 
 
 def _atomic_write(path, data):
+    from cloud_archive_v1 import preserve
+    preserve(path)
     tmp = '%s.%d.%s.tmp' % (path, os.getpid(), uuid.uuid4().hex)
     try:
         with open(tmp, 'wb') as fh:

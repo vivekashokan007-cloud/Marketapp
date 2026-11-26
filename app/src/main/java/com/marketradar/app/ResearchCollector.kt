@@ -625,6 +625,7 @@ object ResearchCollector {
             val key = readOrNull(f)?.optString("envelope_text")?.let { try { JSONObject(it).optString("source_poll_slot_key") } catch (_: Exception) { null } } ?: continue
             val id = envelopeEntryId(key)
             if (ResearchProtection.entry(dir, id)?.optString("state") != "ARCHIVE_ACKED") continue
+            if (!CloudArchive.preserveBeforeDiscard(f)) continue
             f.delete(); M0Durable.fsyncDir(dir)
             ResearchProtection.release(dir, id, System.currentTimeMillis())
             excess--
@@ -845,6 +846,7 @@ object InstrumentMaps {
             .sortedBy { maps.getJSONObject(it).optLong("created_ms") }
         for (v in candidates) {
             if (maps.length() <= keepCount && total() <= keepBytes) break
+            if (!CloudArchive.preserveBeforeDiscard(mapFile(dir, v))) continue
             maps.remove(v)
             saveIndex(dir, ix)   // un-admit first, then delete bytes
             mapFile(dir, v).delete()

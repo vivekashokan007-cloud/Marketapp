@@ -72,6 +72,7 @@ class PositionTickService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (!CloudRecovery.canMonitor()) { stopSelf(); return START_NOT_STICKY }
         if (!foregroundReady) return START_NOT_STICKY
         if (intent?.action == ACTION_CAPTURE_PAPER_CLOSE_QUOTE) {
             val requestId = intent.getStringExtra(EXTRA_PAPER_CLOSE_REQUEST_ID)?.trim().orEmpty()
@@ -156,6 +157,7 @@ class PositionTickService : Service() {
 
     private suspend fun runLoop() {
         while (serviceScope.coroutineContext.isActive) {
+            if (!CloudRecovery.canMonitor()) { stopSelf(); return }
             val shouldContinue = captureOnce()
             if (!shouldContinue) {
                 if (paperCloseJobs.isEmpty()) {

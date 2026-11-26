@@ -1145,21 +1145,26 @@ object SupabaseClient {
         }
     }
 
-    /**
-     * Reads trades_v2 where status = CLOSED, limit 200 (SC1: increased from 20 for ML calibration).
-     *
-     * Returns dirty rows for UI/accounting. Learning/calibration must filter via
-     * [CalibrationInputGate] / Python `calibration_input` — do not assume all 200 are eligible.
+    /** Full recovery history: deterministic keyset pages, never a silent latest-200 truncation.
+     * A failed page returns unknown, preserving the existing local closed-trade ledger.
      */
     fun getClosedTradesOrNull(): JSONArray? {
-        val request = getBaseRequest("trades_v2?status=eq.CLOSED&select=*&order=exit_date.desc&limit=200")
-            .get()
-            .build()
-        val json = fetchSync(request) ?: return null
+        val all = JSONArray()
+        var after: String? = null
         return try {
-            JSONArray(json)
+            while (true) {
+                val suffix = after?.let { "&id=gt." + java.net.URLEncoder.encode(it, "UTF-8") } ?: ""
+                val request = getBaseRequest("trades_v2?status=eq.CLOSED&select=*&order=id.asc&limit=500" + suffix).get().build()
+                val page = JSONArray(fetchSync(request) ?: return null)
+                if (page.length() == 0) break
+                val next = page.getJSONObject(page.length() - 1).getString("id")
+                require(next != after) { "CLOSED_TRADE_CURSOR_STALLED" }
+                for (i in 0 until page.length()) all.put(page.getJSONObject(i))
+                after = next
+            }
+            all
         } catch (e: Exception) {
-            Log.e(TAG, "Error parsing closed trades: ${e.message}")
+            Log.e(TAG, "Full closed-trade read unavailable: ${e.javaClass.simpleName}")
             null
         }
     }

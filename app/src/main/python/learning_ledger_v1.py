@@ -140,6 +140,8 @@ def capture(files_dir):
             if path is None:
                 break
             total -= os.path.getsize(path)
+            from cloud_archive_v1 import preserve
+            preserve(path)
             os.unlink(path)
             result['pruned'].append(name[:-5])
         if result['errors']:

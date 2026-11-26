@@ -580,6 +580,7 @@ class MarketMLService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (!CloudRecovery.canMonitor()) { stopSelf(); return START_NOT_STICKY }
         val action = intent?.action
         // B3: Must promote to foreground within 5s on Android 8+
         val channel = android.app.NotificationChannel(

@@ -64,6 +64,7 @@ object DailyReviewScheduler {
 
 class DailyReviewWorker(context: Context, params: WorkerParameters) : Worker(context, params) {
     override fun doWork(): Result {
+        if (!CloudRecovery.canMonitor()) return Result.retry()
         return try {
             if (!com.chaquo.python.Python.isStarted()) {
                 com.chaquo.python.Python.start(com.chaquo.python.android.AndroidPlatform(applicationContext))

@@ -24,6 +24,8 @@ class MarketRadarApp : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        CloudArchive.install(filesDir)
+        CloudRecovery.start(this)
         try {
             LogBuffer.init(this)
             val prefs = getSharedPreferences("market_radar", MODE_PRIVATE)
@@ -44,7 +46,7 @@ class MarketRadarApp : Application() {
             // B1.1: pending position ticks drain on every process start (this also
             // covers an app upgrade) and on connectivity recovery — independent of
             // open trades and of the market session. No quotes are fetched.
-            PositionTickUploadRunner.onProcessStart(this, PositionTickDrainTrigger.APP_START)
+            if (CloudRecovery.canMonitor()) PositionTickUploadRunner.onProcessStart(this, PositionTickDrainTrigger.APP_START)
             val pid = android.os.Process.myPid()
             Log.i("MarketRadarApp", "onCreate starting pid=$pid startUuid=$PROCESS_START_UUID")
             LogBuffer.add('I', "MarketRadarApp", "APP_PROCESS_START: pid=$pid startUuid=$PROCESS_START_UUID heap=${heapLine()}")
@@ -54,15 +56,18 @@ class MarketRadarApp : Application() {
             if (!Python.isStarted()) {
                 Python.start(AndroidPlatform(this))
             }
+            Python.getInstance().getModule("cloud_archive_v1").callAttr("install", filesDir.absolutePath)
             // R7: retry any pending/attempted Daily review after an app (re)start
-            DailyReviewScheduler.request(this, "app_start")
+            if (CloudRecovery.canMonitor()) DailyReviewScheduler.request(this, "app_start")
 
             // b503: process-owned capture runtime. Reconcile local capture journals at process
             // start (a different run id proves the previous process ended); network drains
             // follow when the service starts.
             try {
-                CaptureRuntime.ensure(this)
-                applicationScope.launch(Dispatchers.IO) { CaptureRuntime.reconcile() }
+                if (CloudRecovery.canMonitor()) {
+                    CaptureRuntime.ensure(this)
+                    applicationScope.launch(Dispatchers.IO) { CaptureRuntime.reconcile() }
+                }
             } catch (t: Throwable) {
                 LogBuffer.add('E', "MarketRadarApp", "CAPTURE_RUNTIME_INIT_FAIL: ${t.javaClass.simpleName}")
             }

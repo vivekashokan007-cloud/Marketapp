@@ -1,0 +1,331 @@
+package com.marketradar.app
+
+import android.content.Context
+import androidx.work.*
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONArray
+import org.json.JSONObject
+import java.io.File
+import java.security.MessageDigest
+import java.time.OffsetDateTime
+import java.util.UUID
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+
+/** Cloud backing for native files, typed preferences and PWA localStorage.
+ * Local files remain the working cache/outbox; never delete unacknowledged work.
+ * Startup hydration precedes every legacy worker/monitor. No network result is
+ * represented as a verified checkpoint until both object and head readbacks pass.
+ */
+object CloudRecovery {
+    private const val PREFS = "cloud_vault_v1"
+    private val executor = Executors.newSingleThreadScheduledExecutor()
+    @Volatile private var started = false
+    @Volatile private var ready = false
+    @Volatile private var leaseUntil = 0L
+    @Volatile private var state = "APP_SIGN_IN_REQUIRED"
+    @Volatile private var legacyStarted = false
+    @Volatile private var webVerified = false
+    private fun meta(c: Context) = c.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+    fun owner(c: Context): String = meta(c).getString("owner", "") ?: ""
+    fun canOpen(): Boolean = ready
+    fun openLocalPaperCache(c: Context): Boolean {
+        if (File(c.noBackupFilesDir, "cloud_restore_pending").exists()) return false
+        ready = true; leaseUntil = 0; webVerified = false
+        state = "LOCAL_PAPER_CACHE_NOT_BACKED_UP"
+        return true
+    }
+    fun canMonitor(): Boolean = ready && webVerified && leaseUntil > System.currentTimeMillis() + 5000
+    fun status(c: Context): String = JSONObject().put("state", state).put("ready", ready)
+        .put("monitor_ready", canMonitor()).put("verified_at", meta(c).getString("verified_at", ""))
+        .put("revision", meta(c).getLong("revision", 0)).put("last_error", meta(c).getString("last_error", ""))
+        .put("scope", "native files + preferences + PWA state; broker login stays on device")
+        .put("web_state_captured", c.getSharedPreferences("cloud_web_cache_v1", Context.MODE_PRIVATE).contains("storage"))
+        .put("local_cache", true).toString()
+
+    @Synchronized fun start(context: Context) {
+        if (started) return
+        started = true
+        val c = context.applicationContext
+        executor.scheduleWithFixedDelay({ runPass(c) }, 0, 30, TimeUnit.SECONDS)
+        val work = PeriodicWorkRequestBuilder<CloudRecoveryWorker>(15, TimeUnit.MINUTES)
+            .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()).build()
+        WorkManager.getInstance(c).enqueueUniquePeriodicWork("mr_cloud_recovery_v1", ExistingPeriodicWorkPolicy.KEEP, work)
+    }
+    fun request(c: Context) { executor.execute { runPass(c.applicationContext) } }
+    /** The PWA calls this synchronously after every localStorage mutation. Never takes a credential. */
+    fun saveWeb(c: Context, raw: String): Boolean = try {
+        require(raw.toByteArray().size <= 4 * 1024 * 1024) { "PWA_STATE_TOO_LARGE" }
+        val clean = CloudDataPolicy.cleanStorage(JSONObject(raw)).toString()
+        c.getSharedPreferences("cloud_web_cache_v1", Context.MODE_PRIVATE).edit().putString("storage", clean).commit()
+    } catch (_: Exception) { false }
+    fun web(c: Context): String = c.getSharedPreferences("cloud_web_cache_v1", Context.MODE_PRIVATE).getString("storage", "null") ?: "null"
+
+    private class Transport(c: Context): CloudVault.Remote {
+        private val cache = File(c.noBackupFilesDir, "cloud_manifest_cache")
+        private val auth = CloudSession(c)
+        private val client = OkHttpClient.Builder().connectTimeout(20, TimeUnit.SECONDS).readTimeout(60, TimeUnit.SECONDS).build()
+        private fun request(path: String): Request.Builder {
+            val s = auth.session()
+            return Request.Builder().url(BuildConfig.SUPABASE_URL + path).header("apikey", BuildConfig.SUPABASE_ANON_KEY)
+                .header("Authorization", "Bearer " + s.getString("access_token"))
+        }
+        fun uid(): String = auth.session().getJSONObject("user").getString("id")
+        fun head(): JSONObject? {
+            val req = request("/rest/v1/mr_cloud_heads?select=*&owner_id=eq." + uid()).get().build()
+            val bytes = execute(req, 64 * 1024)
+            val rows = JSONArray(String(bytes, Charsets.UTF_8))
+            return if (rows.length() == 0) null else rows.getJSONObject(0)
+        }
+        fun rpc(name: String, body: JSONObject): JSONObject = JSONObject(String(execute(request("/rest/v1/rpc/$name")
+            .post(body.toString().toRequestBody("application/json".toMediaType())).build(), 64 * 1024), Charsets.UTF_8))
+        override fun put(hash: String, bytes: ByteArray) {
+            require(CloudVault.validHash(hash))
+            val req = request("/storage/v1/object/mr-private-state/${uid()}/$hash")
+                .post(bytes.toRequestBody("application/octet-stream".toMediaType())).build()
+            client.newCall(req).execute().use { r ->
+                if (!r.isSuccessful) {
+                    // Storage sometimes returns 400 with a 409 status in the JSON body.
+                    val body = r.body?.string()?.take(4096).orEmpty()
+                    val code = try { JSONObject(body).optString("statusCode") } catch (_: Exception) { "" }
+                    require(r.code == 409 || code == "409") { "CLOUD_UPLOAD_HTTP_${r.code}" }
+                }
+            }
+        }
+        override fun get(hash: String): ByteArray {
+            require(CloudVault.validHash(hash))
+            if (cache.exists()) {
+                val cached = cache.readBytes()
+                if (CloudVault.hash(cached) == hash) return cached
+            }
+            val bytes = execute(request("/storage/v1/object/authenticated/mr-private-state/${uid()}/$hash").get().build(), CloudVault.MAX_MANIFEST)
+            if (bytes.firstOrNull() == '{'.code.toByte() && CloudVault.hash(bytes) == hash) {
+                val tmp = File(cache.parentFile, cache.name + ".tmp"); tmp.writeBytes(bytes); require(tmp.renameTo(cache))
+            }
+            return bytes
+        }
+        private fun execute(req: Request, max: Int): ByteArray = client.newCall(req).execute().use { r ->
+            if (!r.isSuccessful) {
+                val errorBody = r.body?.string()?.take(4096).orEmpty()
+                val reason = listOf("CLOUD_REVISION_CONFLICT", "OTHER_DEVICE_ACTIVE", "AUTH_REQUIRED").firstOrNull { errorBody.contains(it) }
+                error(reason ?: "CLOUD_HTTP_${r.code}")
+            }
+            val out = java.io.ByteArrayOutputStream()
+            r.body?.byteStream()?.use { input ->
+                val buffer = ByteArray(8192)
+                while (true) { val n = input.read(buffer); if (n < 0) break
+                    require(out.size() + n <= max) { "CLOUD_RESPONSE_TOO_LARGE" }; out.write(buffer, 0, n) }
+            }
+            out.toByteArray()
+        }
+    }
+    private fun preferenceFiles(c: Context): List<String> = File(c.applicationInfo.dataDir, "shared_prefs")
+        .listFiles()?.map { it.name.removeSuffix(".xml") }?.filter {
+            it.endsWith(".bak").not() && it !in setOf(PREFS, "lifecycle_diagnostics") &&
+                !it.startsWith("androidx.") && !it.startsWith("com.google.")
+        }?.distinct()?.sorted() ?: emptyList()
+    private fun typedPreferences(c: Context, name: String): ByteArray {
+        val values = JSONObject()
+        c.getSharedPreferences(name, Context.MODE_PRIVATE).all.toSortedMap().forEach { (key, value) ->
+            if (CloudDataPolicy.portablePreference(key)) {
+                val type = when (value) { is String -> "string"; is Long -> "long"; is Int -> "int";
+                    is Boolean -> "bool"; is Float -> "float"; is Set<*> -> "set"; else -> error("UNKNOWN_PREF_TYPE") }
+                var v: Any? = if (value is Set<*>) JSONArray(value.sortedBy { it.toString() }) else value
+                if (v is String) {
+                    val parsed = try { org.json.JSONTokener(v).nextValue() } catch (_: Exception) { null }
+                    if (parsed is JSONObject || parsed is JSONArray) v = CloudDataPolicy.clean(parsed).toString()
+                }
+                values.put(key, JSONObject().put("type", type).put("value", v))
+            }
+        }
+        return values.toString().toByteArray()
+    }
+    private fun restorePreferences(c: Context, name: String, file: File) {
+        require(name.matches(Regex("[A-Za-z0-9_.-]+")) && name != PREFS)
+        val prefs = c.getSharedPreferences(name, Context.MODE_PRIVATE)
+        val editor = prefs.edit()
+        prefs.all.keys.filter { CloudDataPolicy.portablePreference(it) }.forEach { editor.remove(it) }
+        val values = JSONObject(file.readText())
+        values.keys().forEach { key ->
+            if (!CloudDataPolicy.portablePreference(key)) return@forEach
+            val v = values.getJSONObject(key)
+            when (v.getString("type")) {
+                "string" -> editor.putString(key, v.getString("value"))
+                "long" -> editor.putLong(key, v.getLong("value"))
+                "int" -> editor.putInt(key, v.getInt("value"))
+                "bool" -> editor.putBoolean(key, v.getBoolean("value"))
+                "float" -> editor.putFloat(key, v.getDouble("value").toFloat())
+                "set" -> { val a = v.getJSONArray("value"); editor.putStringSet(key, (0 until a.length()).map { a.getString(it) }.toSet()) }
+                else -> error("UNSUPPORTED_PREF_TYPE")
+            }
+        }
+        if (name == "market_radar") editor.putBoolean("service_running", false).putString("execution_mode", "paper")
+            .putBoolean("execution_sandbox_enabled", false)
+        require(editor.commit()) { "PREFERENCE_RESTORE_FAILED" }
+    }
+    private data class Source(val path: String, val bytes: ByteArray? = null, val file: File? = null) {
+        fun stream() = bytes?.inputStream() ?: file!!.inputStream()
+        fun fingerprint(): String { val md = MessageDigest.getInstance("SHA-256")
+            stream().use { input -> val b = ByteArray(32768); while (true) { val n = input.read(b); if (n < 0) break; md.update(b, 0, n) } }
+            return md.digest().joinToString("") { "%02x".format(it) }
+        }
+    }
+    private fun inventory(c: Context): List<Source> {
+        val files = c.filesDir.walkTopDown().onEnter { dir ->
+            dir == c.filesDir || CloudDataPolicy.portablePath(dir.relativeTo(c.filesDir).invariantSeparatorsPath)
+        }.filter { it.isFile }.mapNotNull { file ->
+            val path = file.relativeTo(c.filesDir).invariantSeparatorsPath
+            if (!CloudDataPolicy.portablePath(path)) null else {
+                require(file.canonicalPath == file.absolutePath) { "SYMLINK_NOT_BACKED_UP" }
+                Source("files/$path", file = file)
+            }
+        }.toList()
+        return (files + preferenceFiles(c).map { Source("prefs/$it.json", bytes = typedPreferences(c, it)) }).sortedBy { it.path }
+    }
+    private fun fingerprints(sources: List<Source>) = sources.associate { it.path to it.fingerprint() }.toSortedMap()
+    private fun manifestFingerprints(manifest: JSONObject): Map<String, String> {
+        val entries = manifest.getJSONObject("entries")
+        return entries.keys().asSequence().associateWith { entries.getJSONObject(it).getString("sha256") }.toSortedMap()
+    }
+    private fun applyStage(c: Context, stage: File, manifest: JSONObject) {
+        // A durable marker keeps services gated across a crash in the activation phase.
+        val marker = File(c.noBackupFilesDir, "cloud_restore_pending")
+        marker.writeText(stage.absolutePath)
+        val entries = manifest.getJSONObject("entries")
+        entries.keys().forEach { path ->
+            require(CloudVault.validPath(path))
+            val input = File(stage, path)
+            when {
+                path.startsWith("files/") -> {
+                    val relative = path.removePrefix("files/")
+                    require(CloudDataPolicy.portablePath(relative)) { "FORBIDDEN_RESTORE_FILE" }
+                    val target = File(c.filesDir, relative)
+                    require(target.canonicalPath.startsWith(c.filesDir.canonicalPath + File.separator))
+                    target.parentFile!!.mkdirs()
+                    val tmp = File(target.parentFile, target.name + ".cloud.tmp")
+                    input.inputStream().use { source -> tmp.outputStream().use { source.copyTo(it) } }
+                    require(tmp.renameTo(target)) { "RESTORE_RENAME_FAILED" }
+                }
+                path.startsWith("prefs/") && path.endsWith(".json") ->
+                    restorePreferences(c, path.removePrefix("prefs/").removeSuffix(".json"), input)
+                else -> error("UNSUPPORTED_RESTORE_ENTRY")
+            }
+        }
+        // Remove obsolete cache files only after staging/readback, never unsent originals on first migration.
+        inventory(c).filter { !entries.has(it.path) && it.file != null }.forEach { source ->
+            val quarantine = File(c.noBackupFilesDir, "cloud_restore_replaced/${source.path}")
+            quarantine.parentFile!!.mkdirs()
+            require(source.file!!.renameTo(quarantine)) { "OBSOLETE_CACHE_QUARANTINE_FAILED" }
+        }
+        require(marker.delete()) { "RESTORE_MARKER_REMOVE_FAILED" }
+    }
+    @Synchronized fun runPass(c: Context) {
+        val hadMonitorLease = canMonitor()
+        try {
+            val session = CloudSession(c)
+            if (!session.signedIn()) { state = "APP_SIGN_IN_REQUIRED"; return }
+            val transport = Transport(c)
+            val uid = transport.uid()
+            val metadata = meta(c)
+            require(owner(c).isBlank() || owner(c) == uid) { "DIFFERENT_APP_ACCOUNT" }
+            val device = metadata.getString("device", null) ?: UUID.randomUUID().toString().also {
+                require(metadata.edit().putString("device", it).putString("owner", uid).commit())
+            }
+            val vault = CloudVault(transport)
+            var head = transport.head()
+            var revision = head?.getLong("revision") ?: 0L
+            var localRevision = metadata.getLong("revision", 0L)
+            val remoteWriter = head?.optString("device_id")
+            val hasCloud = head != null && !head.isNull("manifest_sha256")
+            var oldManifest = if (hasCloud) vault.manifest(head!!.getString("manifest_sha256"), BuildConfig.VERSION_CODE) else null
+            // A lost commit response must not become a false competing-device conflict.
+            // This install's UUID is private local identity; only its own ambiguous commit can be rebased.
+            if (hasCloud && remoteWriter == device && revision != localRevision && metadata.getBoolean("initialized", false)) {
+                require(metadata.edit().putLong("revision", revision).commit())
+                localRevision = revision
+            }
+            val claim = JSONObject().put("p_device", device).put("p_expected", revision)
+            head = transport.rpc("mr_cloud_claim", claim)
+            leaseUntil = OffsetDateTime.parse(head.getString("lease_until")).toInstant().toEpochMilli()
+            if (!ready && oldManifest != null && (!metadata.getBoolean("initialized", false) || revision != localRevision ||
+                        File(c.noBackupFilesDir, "cloud_restore_pending").exists())) {
+                state = "RESTORING_VERIFIED_CLOUD_STATE"
+                val current = fingerprints(inventory(c))
+                val recovering = File(c.noBackupFilesDir, "cloud_restore_pending").exists()
+                if (!recovering && !metadata.getBoolean("initialized", false) && inventory(c).any { it.path.startsWith("files/") } &&
+                    current != manifestFingerprints(oldManifest)) error("LOCAL_AND_CLOUD_CHANGED_RECONCILIATION_REQUIRED")
+                if (!recovering && metadata.getBoolean("initialized", false) && revision != localRevision &&
+                    metadata.getString("fingerprint", "") != fingerprintMap(current) && current != manifestFingerprints(oldManifest)) {
+                    error("LOCAL_AND_CLOUD_CHANGED_RECONCILIATION_REQUIRED")
+                }
+                val stage = File(c.noBackupFilesDir, "cloud_restore_stage")
+                if (stage.exists()) stage.deleteRecursively()
+                vault.stage(oldManifest, stage)
+                applyStage(c, stage, oldManifest)
+                require(metadata.edit().putLong("revision", revision).putBoolean("initialized", true)
+                    .putString("fingerprint", fingerprintMap(fingerprints(inventory(c)))).commit())
+            } else if (ready && revision != localRevision) error("CLOUD_REVISION_CONFLICT")
+            state = "CHECKING_PENDING_CACHE"
+            val sources = inventory(c)
+            val before = fingerprints(sources)
+            val entries = JSONObject()
+            val oldEntries = oldManifest?.getJSONObject("entries") ?: JSONObject()
+            for (source in sources) {
+                val old = oldEntries.optJSONObject(source.path)
+                val entry = if (old != null && old.optString("sha256") == before[source.path]) old else vault.store(source.stream())
+                require(entry.getString("sha256") == before[source.path]) { "CACHE_CHANGED_DURING_UPLOAD" }
+                entries.put(source.path, entry)
+            }
+            require(before == fingerprints(inventory(c))) { "CACHE_CHANGED_DURING_UPLOAD" }
+            if (oldManifest == null || before != manifestFingerprints(oldManifest)) {
+                state = "UPLOADING_CHECKPOINT"
+                val hash = vault.publishManifest(entries, BuildConfig.VERSION_CODE)
+                transport.rpc("mr_cloud_claim", claim) // renew/check lease after a large initial upload
+                head = transport.rpc("mr_cloud_commit", JSONObject(claim.toString()).put("p_manifest", hash))
+                val check = transport.head() ?: error("HEAD_READBACK_MISSING")
+                require(check.getString("manifest_sha256") == hash && check.getLong("revision") == revision + 1) { "HEAD_READBACK_MISMATCH" }
+                revision = check.getLong("revision")
+            }
+            val checkTime = head!!.optString("committed_at")
+            require(metadata.edit().putLong("revision", revision).putBoolean("initialized", true)
+                .putString("fingerprint", fingerprintMap(before)).putString("verified_at", checkTime)
+                .putString("last_error", "").commit())
+            leaseUntil = OffsetDateTime.parse(head.getString("lease_until")).toInstant().toEpochMilli()
+            ready = true
+            CloudArchive.pruneAcknowledged(c.filesDir, entries)
+            val expectedCache = before.filterNot { (path, _) ->
+                path.startsWith("files/${CloudArchive.DIRECTORY}/") && !File(c.filesDir, path.removePrefix("files/")).exists()
+            }
+            require(metadata.edit().putString("fingerprint", fingerprintMap(expectedCache)).commit())
+            val webCaptured = c.getSharedPreferences("cloud_web_cache_v1", Context.MODE_PRIVATE).contains("storage")
+            webVerified = webCaptured && before.containsKey("prefs/cloud_web_cache_v1.json")
+            state = if (!webCaptured) "PWA_CAPTURE_REQUIRED" else if (before == fingerprints(inventory(c))) "VERIFIED_CHECKPOINT" else "LOCAL_CHANGES_PENDING_UPLOAD"
+            if (webCaptured && canMonitor() && !legacyStarted) {
+                legacyStarted = true
+                PositionTickUploadRunner.onProcessStart(c, PositionTickDrainTrigger.APP_START)
+                DailyReviewScheduler.request(c, "cloud_recovered")
+                CaptureRuntime.ensure(c)
+                CaptureRuntime.reconcile()
+            }
+            if (webCaptured && canMonitor() && !hadMonitorLease) MarketOpenScheduler.maybeStartIngestionNow(c, "cloud_recovered")
+        } catch (e: Exception) {
+            val detail = e.message.orEmpty().takeIf { it.matches(Regex("[A-Z0-9_]+")) } ?: e.javaClass.simpleName
+            meta(c).edit().putString("last_error", detail).commit()
+            state = "PENDING_OR_BLOCKED: $detail"
+            if (detail.contains("CONFLICT") || detail.contains("OTHER_DEVICE") || detail.contains("RECONCILIATION")) {
+                ready = false; leaseUntil = 0
+            }
+            // Existing verified cache may be inspected offline. Automatic monitoring remains lease-gated.
+            if (!ready && meta(c).getBoolean("initialized", false) && !File(c.noBackupFilesDir, "cloud_restore_pending").exists() &&
+                detail.startsWith("CLOUD_HTTP_").not() && e is java.io.IOException) ready = true
+        }
+    }
+    private fun fingerprintMap(map: Map<String, String>) = CloudVault.hash(map.entries.joinToString("\n") { it.key + ":" + it.value }.toByteArray())
+}
+
+class CloudRecoveryWorker(c: Context, p: WorkerParameters): Worker(c, p) {
+    override fun doWork(): Result { CloudRecovery.runPass(applicationContext); return if (CloudRecovery.canMonitor()) Result.success() else Result.retry() }
+}
