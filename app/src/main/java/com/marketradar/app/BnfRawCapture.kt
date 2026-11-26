@@ -6,11 +6,11 @@ import java.io.FileOutputStream
 import java.util.UUID
 import java.util.zip.GZIPOutputStream
 
-/** Immutable, lossless Upstox response evidence. These files are included by CloudRecovery. */
+/** Immutable Upstox retry files. SupabaseClient delivers them directly to the source table. */
 object BnfRawCapture {
     const val DIRECTORY = "bnf_raw_capture_v1"
 
-    fun eligible(url: String): Boolean = url.startsWith("https://api.upstox.com/") &&
+    fun eligible(url: String): Boolean = url == "marketradar://capture/coverage" || url.startsWith("https://api.upstox.com/") &&
         (url.contains("/option/chain?") && (url.contains("Nifty%20Bank", true) ||
          url.contains("Nifty+Bank", true) || url.contains("Nifty Bank", true)) ||
          url.contains("/option/contract?") && url.contains("Nifty", true) ||

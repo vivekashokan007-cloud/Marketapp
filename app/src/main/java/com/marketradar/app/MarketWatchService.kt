@@ -4252,6 +4252,10 @@ class MarketWatchService : Service() {
         serviceScope.launch(Dispatchers.IO) {
             val pollStarted = System.currentTimeMillis()
             fun saveCoverage(coverage: JSONObject) {
+                require(BnfRawCapture.record(filesDir, "marketradar://capture/coverage",
+                    pollStarted, System.currentTimeMillis(), 200, coverage.toString().toByteArray(Charsets.UTF_8))) {
+                    "COVERAGE_QUEUE_FAILED"
+                }
                 val dir = File(filesDir, BnfRawCapture.DIRECTORY).apply { mkdirs() }
                 val marker = File(dir, "${day}_${pollStarted}_universe_coverage.json")
                 val tmp = File.createTempFile("coverage_", ".tmp", dir)
@@ -4362,8 +4366,7 @@ class MarketWatchService : Service() {
                                 .any { row.optString("${it}_status") != "RECEIVED" }
                         })
                         "INCOMPLETE" else "RECEIVED_UNVERIFIED")
-                // CloudRecovery includes this directory in its account-private checkpoint.
-                // A local marker does not imply a cloud upload or verified readback.
+                // A local marker does not imply a source-table upload or verified readback.
                 saveCoverage(coverage)
             } catch (e: Exception) {
                 LogBuffer.add('E', TAG, "BNF_UNIVERSE_CAPTURE_FAILED: ${e.javaClass.simpleName}")

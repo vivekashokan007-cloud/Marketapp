@@ -95,6 +95,7 @@ class CloudVaultTest {
         assertFalse(CloudDataPolicy.portablePreference("lease_owner_pid"))
         assertFalse(CloudDataPolicy.portablePreference("g1_supabase_user_access_token"))
         assertFalse(CloudDataPolicy.portablePath("forensics/logbuffer.jsonl"))
+        assertFalse("Market sources have one authoritative table upload route", CloudDataPolicy.portablePath("bnf_raw_capture_v1/123.json"))
         assertTrue(CloudDataPolicy.portablePath("single_leg_v1/positions.json"))
         assertTrue(CloudDataPolicy.portablePath("research_m0/session_20261126.jsonl"))
         assertTrue("History queues are recovery data, never credentials", CloudDataPolicy.portablePath("cloud_history_outbox_v1/payload.bin"))

@@ -21,7 +21,7 @@ object CloudDataPolicy {
             "next_market_open_ms", "last_web_url", "last_version", "pc2_ingest_registered_confirmed")
     fun portablePath(path: String): Boolean = CloudVault.validPath(path) &&
         path.split('/').none { secret.containsMatchIn(it) } &&
-        path.substringBefore('/') !in setOf("chaquopy", "forensics", "cloud_vault_v1", "cloud_session_v1", "datastore") &&
+        path.substringBefore('/') !in setOf("chaquopy", "forensics", "cloud_vault_v1", "cloud_session_v1", "datastore", BnfRawCapture.DIRECTORY) &&
         !path.endsWith(".lock") && !path.endsWith(".tmp") && !path.endsWith(".lck")
     fun clean(value: Any?): Any? = when(value) {
         is JSONObject -> JSONObject().also { out -> value.keys().forEach { key ->

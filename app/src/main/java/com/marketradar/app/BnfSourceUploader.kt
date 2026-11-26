@@ -85,7 +85,7 @@ object BnfSourceUploader {
         val urlUri = URI(url)
         val owner = session.session().getJSONObject("user").getString("id")
         val row = JSONObject().put("capture_id", id).put("owner_id", owner)
-            .put("source", "upstox").put("endpoint", urlUri.path)
+            .put("source", if (urlUri.scheme == "marketradar") "market_radar" else "upstox").put("endpoint", urlUri.path)
             .put("request_params", JSONObject().put("query", urlUri.rawQuery ?: ""))
             .put("session_date", Instant.ofEpochMilli(started).atZone(ist).toLocalDate().toString())
             .put("request_started_at", Instant.ofEpochMilli(started).toString())
