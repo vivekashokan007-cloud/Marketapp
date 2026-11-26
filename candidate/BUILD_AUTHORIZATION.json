@@ -1,0 +1,12 @@
+{
+  "schema": "marketradar.candidate_build_authorization.v1",
+  "native_sha": "5788c5d6ebe31d12c86e06d73c0eaf7e4d6cacc1",
+  "pwa_sha": "a66ad324d609da09cb2442fd74150d348a0653c1",
+  "version_code": "543",
+  "version_name": "2.6.112",
+  "cert_sha256": "fb6042a2eb61045368e8d7b95db6f6d49b04d4b8da2e51b865ca77803a44b478",
+  "artifact_only": true,
+  "approved_by": "Vivek Ashokan P (Market Radar owner)",
+  "approval_reference": "26 November 2026: owner requested implementing all required app data persistence/recovery in Supabase before installing the update; existing Git deployment authorization persists. Signed candidate execution remains subject to the candidate-apk required owner review. No approval bypass or automatic release.",
+  "codex_final_check_reference": "Native source frozen at parent 5788c5d, pinned PWA a66ad324. Full Python runtime 2147 tests zero failures two skips; full PWA 353 pass one skip; focused recovery JVM nine pass; packaging22 pass; isolated PostgreSQL17 account/lease/commit checks pass. Exact-source full Android CI https://github.com/vivekashokan007-cloud/Marketapp/actions/runs/45750211123 is required to pass before approval. Backend migration 20261126031552 deployed and policies read back. Phone first upload and real fresh-device restore remain unproven; b542 installation held."
+}
