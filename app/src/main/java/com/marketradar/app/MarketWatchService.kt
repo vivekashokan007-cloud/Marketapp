@@ -4249,7 +4249,13 @@ class MarketWatchService : Service() {
     }
 
     private fun scheduleBnfUniverseCapture(day: String, token: String) {
-        if (!bnfUniverseInProgress.compareAndSet(false, true)) return
+        if (!bnfUniverseInProgress.compareAndSet(false, true)) {
+            val now = System.currentTimeMillis()
+            BnfRawCapture.record(filesDir, "marketradar://capture/coverage", now, now, 200,
+                JSONObject().put("day", day).put("status", "INCOMPLETE")
+                    .put("missing_reason", "PREVIOUS_UNIVERSE_PASS_STILL_RUNNING").toString().toByteArray())
+            return
+        }
         serviceScope.launch(Dispatchers.IO) {
             val pollStarted = System.currentTimeMillis()
             fun saveCoverage(coverage: JSONObject) {
