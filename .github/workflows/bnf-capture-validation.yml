@@ -18,6 +18,8 @@ jobs:
           java-version: '17'
           cache: gradle
       - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
       - run: sdkmanager --install 'platforms;android-35' 'build-tools;35.0.0'
       - name: Compile and test capture without packaging an APK
         run: ./gradlew :app:compileDebugKotlin :app:testDebugUnitTest --tests 'com.marketradar.app.Bnf*' --tests 'com.marketradar.app.CloudVaultTest' --stacktrace
