@@ -18,10 +18,10 @@ The app uses local working caches and a durable upload queue for offline operati
 
 ## Checks completed locally
 
-- JVM protocol suite: six tests pass, including 351 closed trades, multi-chunk research, interruptions, corrupted/missing objects, unsafe paths, downgrade, secret exclusion, and save-before-trim acknowledgement.
-- PWA bootstrap: first upgrade, cloud restore, empty cloud state, 351 trades, storage mutations, failed capture and status pass.
+- JVM protocol/activation/lease suite: eight tests pass, including 351 closed trades, multi-chunk research, interruptions, corrupted/missing objects, unsafe paths, downgrade, secret exclusion, and save-before-trim acknowledgement.
+- Full PWA suite: 353 passed, one skipped. PWA bootstrap: first upgrade, cloud restore, empty cloud state, 351 trades, storage mutations, failed capture and status pass.
 - Python archive: two tests pass, including retaining the original when the history queue cannot be written.
-- Existing single-leg Python regressions: 62 tests pass.
+- Existing single-leg Python regressions: 62 tests pass; daily-review regressions: 12 tests pass.
 - PostgreSQL 17 scratch fixture: anonymous isolation despite broad existing anon policy, two-account isolation despite broad authenticated policy, immutable objects, conditional revisions, competing devices and expired lease recovery pass. No production data is used.
 
 ## Remaining acceptance work
@@ -35,3 +35,15 @@ The app uses local working caches and a durable upload queue for offline operati
 The already verified managed database backup from 26 November 2026 05:24:37 IST protects database contents. It does not include Storage object bodies. This feature's private Storage checkpoint is therefore not an independent backup against losing the entire Supabase project; separate disaster-recovery object copies remain necessary.
 
 The predictive brain objective, BNF-only scope, single-leg buying priority, later protected two-leg selling research, manual Paper availability and Real disabled are unchanged. This is persistence infrastructure, not evidence of a trading edge.
+
+## Verified capacity and identity follow-up
+
+Supabase Usage was inspected while signed in on 26 November: 12 GB disk provisioned against 8 GB included, spend cap on, 1,832 GP3 GB-hours overage reported; Storage 0.016/100 GB and egress 0.456/250 GB. Billing/spend-cap settings were not changed. The database is not proven physically full by this warning. Large new recovery payloads use object Storage.
+
+The first full Android run compiled the new code and reached the JVM suite. Its two failures were candidate identity tripwires still pinned to b542; those expectations have been explicitly updated with the new version, PWA commit and byte hash. The checks remain exact. A full rerun on the final candidate is required; compilation or partial test success alone is not acceptance.
+
+## Backend deployment — 26 November 2026, 08:45 IST
+
+The additive migration was applied through Supabase and recorded as `20261126031552_cloud_state_v1`. The originally CLI-created local migration filename is aligned to this observed production version to avoid a duplicate future migration. Readback confirms the recovery bucket is private (9 MiB object limit), both new tables have RLS, anonymous users cannot read heads or execute the claim function, authenticated clients cannot directly update heads, and the existing EXPORTS bucket is unchanged. Head and checkpoint row counts are zero: no phone data has been uploaded. The security advisor reports no findings naming the new cloud objects.
+
+The broad Python run executed 2,147 tests with two skips and three version-identity failures: Android was bumped before the brain version/older identity assertions. These are now aligned to 2.6.112/b543 and the affected suites are rechecked. Do not describe the earlier run as fully passing. This is version metadata only; no forecasting rule was changed.

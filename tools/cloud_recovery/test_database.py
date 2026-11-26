@@ -34,7 +34,7 @@ create policy existing_authenticated_all on storage.objects for all to authentic
 insert into auth.users values('11111111-1111-1111-1111-111111111111'),('22222222-2222-2222-2222-222222222222');
 ''')
 root=pathlib.Path(__file__).resolve().parents[2]
-sql((root/'supabase/migrations/20261126023830_cloud_state_v1.sql').read_text())
+sql((root/'supabase/migrations/20261126031552_cloud_state_v1.sql').read_text())
 u='11111111-1111-1111-1111-111111111111'; other='22222222-2222-2222-2222-222222222222'; d='aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'; d2='bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'; h='a'*64
 sql('set role anon')
 assert scalar("select count(*) from storage.objects where bucket_id='mr-private-state'")==0
