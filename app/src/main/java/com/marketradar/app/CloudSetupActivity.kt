@@ -75,6 +75,13 @@ class CloudSetupActivity: Activity() {
     private fun renderStatus() {
         if (!::status.isInitialized) return
         val s = JSONObject(CloudRecovery.status(applicationContext))
+        val market = s.optJSONObject("market_source_upload") ?: JSONObject()
+        val marketStatus = when (market.optString("state")) {
+            "APP_SIGN_IN_REQUIRED" -> "sign in required"
+            "TABLE_ROWS_VERIFIED" -> if (market.optInt("verified_rows") > 0) "uploaded and verified" else "no captures yet"
+            "UPLOAD_PENDING" -> "uploads pending; phone copies retained"
+            else -> "not checked yet"
+        }
         val description = when(s.optString("state")) {
             "APP_SIGN_IN_REQUIRED" -> "Sign into your app account to back up or restore."
             "RESTORING_VERIFIED_CLOUD_STATE" -> "Restoring your verified cloud data. Monitoring is paused."
@@ -91,6 +98,8 @@ class CloudSetupActivity: Activity() {
             "\nVerified: ${s.optInt("verified_files")} files · ${s.optLong("verified_bytes") / (1024 * 1024)} MiB" +
             "\nCheckpoint: ${s.optString("checkpoint_sha256").take(12)}" +
             "\nRevision ${s.optLong("revision")} · monitoring ${if (s.optBoolean("monitor_ready")) "ready" else "paused"}" +
+            "\nMarket data: $marketStatus" +
+            "\nMarket captures: ${market.optInt("verified_rows")} verified · ${market.optInt("pending_rows")} pending" +
             "\n${s.optString("last_error")}\n"
     }
     override fun onDestroy() { handler.removeCallbacks(refresh); io.shutdown(); super.onDestroy() }
