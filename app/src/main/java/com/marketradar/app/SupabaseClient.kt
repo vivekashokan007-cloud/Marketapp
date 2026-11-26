@@ -2627,6 +2627,28 @@ object SupabaseClient {
         return normalized
     }
 
+    /** Same client/REST transport as existing captures; no second service or table fallback. */
+    fun saveMarketSourceCapture(row: JSONObject, userToken: String): Boolean = try {
+        require(!AuthAccess.isDisallowedClientSecret(userToken))
+        val id = row.getString("capture_id")
+        require(id.matches(Regex("[0-9]+_[0-9a-fA-F-]{36}")))
+        fun request(path: String) = getBaseRequest(path).header("Authorization", "Bearer $userToken")
+        val insert = request("mr_market_source_captures?on_conflict=capture_id")
+            .header("Prefer", "return=minimal,resolution=ignore-duplicates")
+            .post(row.toString().toRequestBody("application/json".toMediaTypeOrNull())).build()
+        val saved = client.newCall(insert).execute().use { it.isSuccessful }
+        if (!saved) false else {
+            val verify = request("mr_market_source_captures?select=capture_id,original_sha256,stored_bytes&capture_id=eq.$id").get().build()
+            client.newCall(verify).execute().use { response ->
+                val rows = if (response.isSuccessful) JSONArray(response.body?.string() ?: "[]") else JSONArray()
+                rows.length() == 1 && rows.getJSONObject(0).let {
+                    it.optString("original_sha256") == row.optString("original_sha256") &&
+                        it.optInt("stored_bytes", -1) == row.optInt("stored_bytes", -1)
+                }
+            }
+        }
+    } catch (_: Exception) { false }
+
     fun saveChainRows(rows: JSONArray): Boolean {
         if (rows.length() == 0) return true
         return saveChainRowsDetailed(rows) != null

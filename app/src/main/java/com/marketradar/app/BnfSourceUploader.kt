@@ -22,8 +22,6 @@ import java.util.zip.GZIPInputStream
 object BnfSourceUploader {
     private val executor = Executors.newSingleThreadScheduledExecutor()
     private val started = AtomicBoolean(false)
-    private val client = OkHttpClient.Builder().connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(30, TimeUnit.SECONDS).build()
     private val ist = ZoneId.of("Asia/Kolkata")
 
     fun start(context: Context) {
@@ -108,25 +106,8 @@ object BnfSourceUploader {
             .put("body_encoding", if (compressed == null) "identity" else "gzip")
             .put("stored_bytes", if (compressed == null) JSONObject.NULL else compressed.size)
             .put("notes", JSONObject().put("url", url).put("capture_schema", BnfRawCapture.DIRECTORY))
-        val base = BuildConfig.SUPABASE_URL + "/rest/v1/mr_market_source_captures"
-        val token = session.session().getString("access_token")
-        val insert = Request.Builder().url("$base?on_conflict=capture_id")
-            .header("apikey", BuildConfig.SUPABASE_ANON_KEY)
-            .header("Authorization", "Bearer $token")
-            .header("Prefer", "return=minimal,resolution=ignore-duplicates")
-            .post(row.toString().toRequestBody("application/json".toMediaType())).build()
-        client.newCall(insert).execute().use { require(it.isSuccessful) { "DIRECT_CAPTURE_INSERT_HTTP_${it.code}" } }
-        val verify = Request.Builder().url("$base?select=capture_id,original_sha256,stored_bytes&capture_id=eq.$id")
-            .header("apikey", BuildConfig.SUPABASE_ANON_KEY)
-            .header("Authorization", "Bearer ${session.session().getString("access_token")}").get().build()
-        client.newCall(verify).execute().use { response ->
-            require(response.isSuccessful) { "DIRECT_CAPTURE_READ_HTTP_${response.code}" }
-            val rows = JSONArray(response.body?.string() ?: "[]")
-            require(rows.length() == 1)
-            val stored = rows.getJSONObject(0)
-            require(stored.getString("capture_id") == id)
-            require(stored.optString("original_sha256") == meta.optString("body_sha256"))
-            if (compressed != null) require(stored.getInt("stored_bytes") == compressed.size)
+        require(SupabaseClient.saveMarketSourceCapture(row, session.session().getString("access_token"))) {
+            "SOURCE_CAPTURE_PENDING_READBACK"
         }
     }
 }
