@@ -72,7 +72,9 @@ class PositionTickService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (!CloudRecovery.canMonitor()) { stopSelf(); return START_NOT_STICKY }
+        // A user's fresh Paper close quote remains available during a cloud outage.
+        // Only background monitoring needs the shared device lease.
+        if (!CloudRecovery.canMonitor() && intent?.action != ACTION_CAPTURE_PAPER_CLOSE_QUOTE) { stopSelf(); return START_NOT_STICKY }
         if (!foregroundReady) return START_NOT_STICKY
         if (intent?.action == ACTION_CAPTURE_PAPER_CLOSE_QUOTE) {
             val requestId = intent.getStringExtra(EXTRA_PAPER_CLOSE_REQUEST_ID)?.trim().orEmpty()
