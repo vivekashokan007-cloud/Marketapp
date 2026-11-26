@@ -33,7 +33,9 @@ object BnfRawCapture {
             val temp = File.createTempFile("capture_", ".tmp", dir)
             try {
                 FileOutputStream(temp).use { file ->
-                    GZIPOutputStream(file).use { gzip -> gzip.write(it) }
+                    // Closing GZIPOutputStream also closes the underlying file descriptor.
+                    // Finish the compressed member before syncing the still-open descriptor.
+                    GZIPOutputStream(file).apply { write(it); finish(); flush() }
                     file.fd.sync()
                 }
                 val target = File(dir, "$id.body.gz")
