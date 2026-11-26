@@ -18,7 +18,7 @@ The app uses local working caches and a durable upload queue for offline operati
 
 ## Checks completed locally
 
-- JVM protocol/activation/lease suite: eight tests pass, including 351 closed trades, multi-chunk research, interruptions, corrupted/missing objects, unsafe paths, downgrade, secret exclusion, and save-before-trim acknowledgement.
+- JVM protocol/activation/lease suite: nine tests pass, including 351 closed trades, multi-chunk research, interruptions, corrupted/missing objects, unsafe paths, downgrade, secret exclusion, and save-before-trim acknowledgement.
 - Full PWA suite: 353 passed, one skipped. PWA bootstrap: first upgrade, cloud restore, empty cloud state, 351 trades, storage mutations, failed capture and status pass.
 - Python archive: two tests pass, including retaining the original when the history queue cannot be written.
 - Existing single-leg Python regressions: 62 tests pass; daily-review regressions: 12 tests pass.
@@ -26,9 +26,9 @@ The app uses local working caches and a durable upload queue for offline operati
 
 ## Remaining acceptance work
 
-1. Finish Android compilation and complete JVM suite; run lifecycle/restore integration checks, including interrupted activation and ambiguous commit response.
-2. Review save-before-discard coverage and account/credential exclusions against actual on-device inventory. Legacy data not present on the phone or already in Supabase cannot be reconstructed.
-3. Apply the additive migration only after the database tests pass on the final SQL and confirm actual project access policies. Verify deployed schema/RLS and private bucket access. Do not alter the public EXPORTS bucket, existing trade policies or Auth settings incidentally.
+1. Final-source GitHub validation must pass. Prior source revisions passed the complete Android JVM suite. Local Android compilation and nine focused protocol/activation/lease tests pass, including interrupted activation; the complete Python suite passes 2,147 tests with two skips.
+2. Save-before-discard and credential exclusions have been reviewed. Device-specific PC2 ingest keys and registration confirmations are excluded; replacement devices register their own credentials. Actual on-device inventory/restore still requires the owner’s first upload. Legacy missing data cannot be reconstructed.
+3. Backend deployment is complete; verified details appear below. No changes were made to the public EXPORTS bucket, existing trade policies or Auth settings.
 4. Build the signed candidate from pinned native and PWA commits through the existing owner-review environment. Do not publish main/Pages or an automatic release as part of this review.
 5. On the original phone, sign in/create the application account and verify the first native+PWA checkpoint. Verify a separate fresh-install restore against this real inventory before claiming phone migration is proven. Keep the owner's export. Dashboard sign-in is not application authentication.
 
@@ -46,4 +46,4 @@ The first full Android run compiled the new code and reached the JVM suite. Its 
 
 The additive migration was applied through Supabase and recorded as `20261126031552_cloud_state_v1`. The originally CLI-created local migration filename is aligned to this observed production version to avoid a duplicate future migration. Readback confirms the recovery bucket is private (9 MiB object limit), both new tables have RLS, anonymous users cannot read heads or execute the claim function, authenticated clients cannot directly update heads, and the existing EXPORTS bucket is unchanged. Head and checkpoint row counts are zero: no phone data has been uploaded. The security advisor reports no findings naming the new cloud objects.
 
-The broad Python run executed 2,147 tests with two skips and three version-identity failures: Android was bumped before the brain version/older identity assertions. These are now aligned to 2.6.112/b543 and the affected suites are rechecked. Do not describe the earlier run as fully passing. This is version metadata only; no forecasting rule was changed.
+The final complete Python rerun passes: 2,147 tests, zero failures, two skips. Version identities are aligned to 2.6.112/b543. No forecasting rule was changed. Manual fresh-quote Paper close remains available during cloud outages; automatic background monitoring requires a current device lease.

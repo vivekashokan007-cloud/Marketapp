@@ -13,12 +13,12 @@ object CloudDataPolicy {
         val relative = file.relativeTo(root).invariantSeparatorsPath
         CloudVault.validPath(relative) && file.canonicalPath == File(root.canonicalFile, relative).absolutePath
     } catch (_: Exception) { false }
-    private val secret = Regex("(^|[_-])(token|auth_token|access_token|refresh_token|password|secret|api_key|apikey|sandbox_token|authorization|cookie|bearer)([_-]|$)", RegexOption.IGNORE_CASE)
+    private val secret = Regex("(^|[_-])(token|auth_token|access_token|refresh_token|password|secret|api_key|apikey|sandbox_token|authorization|cookie|bearer|device_key)([_-]|$)", RegexOption.IGNORE_CASE)
     fun secretKey(key: String) = secret.containsMatchIn(key) || key.startsWith("g1_") || key.startsWith("cloud_")
     fun portablePreference(key: String): Boolean = !secretKey(key) &&
         !key.contains("lease", true) && !key.contains("owner_pid", true) &&
         key !in setOf("service_running", "last_process_start_ms", "execution_sandbox_enabled", "execution_mode",
-            "next_market_open_ms", "last_web_url", "last_version")
+            "next_market_open_ms", "last_web_url", "last_version", "pc2_ingest_registered_confirmed")
     fun portablePath(path: String): Boolean = CloudVault.validPath(path) &&
         path.split('/').none { secret.containsMatchIn(it) } &&
         path.substringBefore('/') !in setOf("chaquopy", "forensics", "cloud_vault_v1", "cloud_session_v1", "datastore") &&
