@@ -113,6 +113,13 @@ class CloudVault(private val remote: Remote) {
         require(!directory.exists()) { "STAGE_ALREADY_EXISTS" }
         require(directory.mkdirs()) { "STAGE_CREATE_FAILED" }
         val entries = manifest.getJSONObject("entries")
+        var requiredBytes = 0L
+        entries.keys().forEach {
+            val size = entries.getJSONObject(it).getLong("size")
+            require(size >= 0) { "BAD_FILE_SIZE" }
+            requiredBytes = Math.addExact(requiredBytes, size)
+        }
+        require(requiredBytes <= directory.usableSpace - 8L * 1024 * 1024) { "RESTORE_NEEDS_MORE_CACHE_SPACE" }
         entries.keys().forEach { path ->
             require(validPath(path)) { "UNSAFE_RESTORE_PATH" }
             val target = File(directory, path)

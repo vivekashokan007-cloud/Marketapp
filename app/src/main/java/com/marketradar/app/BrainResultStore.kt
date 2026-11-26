@@ -96,7 +96,7 @@ object BrainResultStore {
     fun clearIn(dir: File, prefs: SharedPreferences.Editor): SharedPreferences.Editor {
         dir.listFiles()?.forEach { file ->
             if (file.isFile && file.extension == "json") {
-                runCatching { file.delete() }
+                runCatching { if (CloudArchive.preserveBeforeDiscard(file)) file.delete() }
             }
         }
         return prefs

@@ -1162,7 +1162,9 @@ object SupabaseClient {
                 for (i in 0 until page.length()) all.put(page.getJSONObject(i))
                 after = next
             }
-            all
+            val ordered = (0 until all.length()).map { all.getJSONObject(it) }
+                .sortedByDescending { it.optString("exit_date", "") }
+            JSONArray(ordered)
         } catch (e: Exception) {
             Log.e(TAG, "Full closed-trade read unavailable: ${e.javaClass.simpleName}")
             null

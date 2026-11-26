@@ -343,13 +343,13 @@ object CanonicalExportStore {
         }
         dirs.forEachIndexed { idx, dir ->
             if (dir.name !in protectedIds && idx >= maxKeep) {
-                dir.deleteRecursively()
+                if (dir.walkTopDown().filter { it.isFile }.all { CloudArchive.preserveBeforeDiscard(it) }) dir.deleteRecursively()
             }
         }
         // Also ignore staging dirs that never got a manifest.
         dirs.forEach { dir ->
             if (dir.name !in protectedIds && !File(dir, "manifest.json").exists()) {
-                dir.deleteRecursively()
+                if (dir.walkTopDown().filter { it.isFile }.all { CloudArchive.preserveBeforeDiscard(it) }) dir.deleteRecursively()
             }
         }
     }

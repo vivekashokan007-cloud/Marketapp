@@ -55,8 +55,7 @@ class CloudSession(private val context: Context) {
         require(CloudRecovery.owner(context).isBlank()) { "EXISTING_APP_ACCOUNT_SIGN_IN_REQUIRED" }
         val response = auth("signup", JSONObject().put("email", email).put("password", password))
         // Confirmation email may be required. Never treat signup as authenticated by itself.
-        if (response.has("access_token") && response.has("refresh_token")) { save(response); return true }
-        return false
+        if (response.has("access_token") && response.has("refresh_token")) { save(response); true } else false
     }
     fun session(): JSONObject = synchronized(LOCK) {
         var s = read()
@@ -65,7 +64,7 @@ class CloudSession(private val context: Context) {
             s = auth("token?grant_type=refresh_token", JSONObject().put("refresh_token", s.getString("refresh_token")))
             require(s.has("refresh_token") && s.has("access_token")) { "SESSION_REFRESH_REQUIRED" }; save(s)
         }
-        return s
+        s
     }
     private fun auth(path: String, body: JSONObject): JSONObject {
         val request = Request.Builder().url(BuildConfig.SUPABASE_URL + "/auth/v1/" + path)

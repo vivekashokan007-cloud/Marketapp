@@ -10,6 +10,30 @@ object CloudArchive {
     const val DIRECTORY = "cloud_history_outbox_v1"
     @Volatile private var root: File? = null
     fun install(filesDir: File?) { root = filesDir?.canonicalFile }
+    fun preserveJson(name: String, value: Any): Boolean {
+        val base = root ?: return true
+        return try {
+            require(name.matches(Regex("[a-z0-9_]+")))
+            val bytes = CloudDataPolicy.clean(value).toString().toByteArray()
+            val hash = CloudVault.hash(bytes)
+            val relative = "preference_history/$name.json"
+            val id = CloudVault.hash(relative.toByteArray()).take(16) + "_" + hash
+            val dir = File(base, DIRECTORY).apply { mkdirs() }
+            require(dir.usableSpace > bytes.size + 4L * 1024 * 1024)
+            val payload = File(dir, "$id.bin")
+            if (!payload.exists()) {
+                val tmp = File.createTempFile("archive_", ".tmp", dir)
+                FileOutputStream(tmp).use { it.write(bytes); it.fd.sync() }; require(tmp.renameTo(payload))
+            }
+            val metadata = File(dir, "$id.json")
+            if (!metadata.exists()) {
+                val tmp = File.createTempFile("archive_", ".tmp", dir)
+                FileOutputStream(tmp).use { it.write(JSONObject().put("source_path",relative).put("sha256",hash)
+                    .put("bytes",bytes.size).toString().toByteArray()); it.fd.sync() }; require(tmp.renameTo(metadata))
+            }
+            true
+        } catch (_: Exception) { false }
+    }
     fun preserveBeforeDiscard(file: File): Boolean {
         val base = root ?: return true // Android-free legacy test calls; Application always installs before writers.
         return try {

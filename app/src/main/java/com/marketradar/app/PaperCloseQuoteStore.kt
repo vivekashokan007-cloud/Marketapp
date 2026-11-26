@@ -152,6 +152,7 @@ internal object PaperCloseQuoteStore {
     }
 
     private fun writeAll(prefs: SharedPreferences, all: JSONObject) {
+        require(CloudArchive.preserveJson("paper_close_quotes", readAll(prefs))) { "CLOUD_ARCHIVE_PENDING" }
         prefs.edit().putString(PREF_KEY, all.toString()).commit()
     }
 }

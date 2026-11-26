@@ -128,7 +128,9 @@ class SingleLegTradeTraceStore(
 
     private fun prune(dir: File) {
         val days = dir.listFiles { f -> f.name.matches(Regex("""\d{4}-\d{2}-\d{2}\.json""")) }?.sortedBy { it.name } ?: return
-        if (days.size > KEEP_SESSIONS) days.take(days.size - KEEP_SESSIONS).forEach { it.delete() }
+        if (days.size > KEEP_SESSIONS) days.take(days.size - KEEP_SESSIONS).forEach {
+            if (CloudArchive.preserveBeforeDiscard(it)) it.delete()
+        }
     }
 
     private val pendingDeduped = HashMap<String, Int>()

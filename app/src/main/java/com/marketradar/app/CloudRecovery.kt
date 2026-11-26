@@ -194,36 +194,10 @@ object CloudRecovery {
         return entries.keys().asSequence().associateWith { entries.getJSONObject(it).getString("sha256") }.toSortedMap()
     }
     private fun applyStage(c: Context, stage: File, manifest: JSONObject) {
-        // A durable marker keeps services gated across a crash in the activation phase.
-        val marker = File(c.noBackupFilesDir, "cloud_restore_pending")
-        marker.writeText(stage.absolutePath)
         val entries = manifest.getJSONObject("entries")
-        entries.keys().forEach { path ->
-            require(CloudVault.validPath(path))
-            val input = File(stage, path)
-            when {
-                path.startsWith("files/") -> {
-                    val relative = path.removePrefix("files/")
-                    require(CloudDataPolicy.portablePath(relative)) { "FORBIDDEN_RESTORE_FILE" }
-                    val target = File(c.filesDir, relative)
-                    require(target.canonicalPath.startsWith(c.filesDir.canonicalPath + File.separator))
-                    target.parentFile!!.mkdirs()
-                    val tmp = File(target.parentFile, target.name + ".cloud.tmp")
-                    input.inputStream().use { source -> tmp.outputStream().use { source.copyTo(it) } }
-                    require(tmp.renameTo(target)) { "RESTORE_RENAME_FAILED" }
-                }
-                path.startsWith("prefs/") && path.endsWith(".json") ->
-                    restorePreferences(c, path.removePrefix("prefs/").removeSuffix(".json"), input)
-                else -> error("UNSUPPORTED_RESTORE_ENTRY")
-            }
-        }
-        // Remove obsolete cache files only after staging/readback, never unsent originals on first migration.
-        inventory(c).filter { !entries.has(it.path) && it.file != null }.forEach { source ->
-            val quarantine = File(c.noBackupFilesDir, "cloud_restore_replaced/${source.path}")
-            quarantine.parentFile!!.mkdirs()
-            require(source.file!!.renameTo(quarantine)) { "OBSOLETE_CACHE_QUARANTINE_FAILED" }
-        }
-        require(marker.delete()) { "RESTORE_MARKER_REMOVE_FAILED" }
+        val obsolete = inventory(c).filter { !entries.has(it.path) && it.file != null }.map { it.file!! }
+        CloudRestoreTransaction(c.filesDir, c.noBackupFilesDir).activate(stage, entries, obsolete,
+            preferences = { name, file -> restorePreferences(c, name, file) })
     }
     @Synchronized fun runPass(c: Context) {
         val hadMonitorLease = canMonitor()

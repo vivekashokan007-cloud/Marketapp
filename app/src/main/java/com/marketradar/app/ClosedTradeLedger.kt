@@ -30,6 +30,7 @@ internal object ClosedTradeLedger {
     private fun id(row: JSONObject?): String = row?.optString("id", "")?.trim().orEmpty()
 
     private fun boundedUnique(first: List<JSONObject>, second: List<JSONObject>): JSONArray {
+        require(CloudArchive.preserveJson("closed_trade_ledger", JSONArray(first + second))) { "CLOUD_ARCHIVE_PENDING" }
         val result = JSONArray()
         val seen = mutableSetOf<String>()
         for (row in first + second) {

@@ -96,4 +96,30 @@ class CloudVaultTest {
             assertEquals("trimmed cache\n",file.readText())
         } finally { CloudArchive.install(null);root.deleteRecursively() }
     }
+    @Test fun interruptedActivationRemainsGatedAndReappliesWithoutAnEntryOrExitSideEffect() {
+        val root = Files.createTempDirectory("restore-transaction").toFile()
+        try {
+            val files = java.io.File(root,"files").apply { mkdirs() }
+            val privateRoot = java.io.File(root,"private").apply { mkdirs() }
+            val obsolete = java.io.File(files,"old-cache.json").apply { writeText("previous cache") }
+            val remote = Memory(); val vault = CloudVault(remote)
+            val entries = JSONObject().put("files/single_leg_v1/positions.json",vault.store("OPEN exact-contract position".byteInputStream()))
+                .put("prefs/market_radar.json",vault.store("{\"capital\":1000000}".byteInputStream()))
+            val manifest = vault.manifest(vault.publishManifest(entries,543),543)
+            val stage = java.io.File(root,"stage");vault.stage(manifest,stage)
+            val prefs = mutableMapOf<String,String>()
+            val tx = CloudRestoreTransaction(files,privateRoot)
+            assertThrows(IllegalStateException::class.java) {
+                tx.activate(stage,entries,listOf(obsolete),{name,file->prefs[name]=file.readText()},
+                    installed={error("SIMULATED_PROCESS_DEATH")})
+            }
+            assertTrue(java.io.File(privateRoot,"cloud_restore_pending").exists())
+            tx.activate(stage,entries,listOf(obsolete),{name,file->prefs[name]=file.readText()})
+            assertFalse(java.io.File(privateRoot,"cloud_restore_pending").exists())
+            assertEquals("OPEN exact-contract position",java.io.File(files,"single_leg_v1/positions.json").readText())
+            assertEquals("{\"capital\":1000000}",prefs["market_radar"])
+            assertFalse(obsolete.exists())
+            assertEquals("previous cache",java.io.File(privateRoot,"cloud_restore_replaced/old-cache.json").readText())
+        } finally { root.deleteRecursively() }
+    }
 }
