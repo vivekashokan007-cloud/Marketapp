@@ -4243,59 +4243,130 @@ class MarketWatchService : Service() {
     }
 
     private fun scheduleBnfUniverseCapture(day: String, token: String) {
-        if (prefs.getString("bnf_universe_capture_complete_day", "") == day ||
-            !bnfUniverseInProgress.compareAndSet(false, true)) return
+        if (!bnfUniverseInProgress.compareAndSet(false, true)) return
         serviceScope.launch(Dispatchers.IO) {
+            val pollStarted = System.currentTimeMillis()
+            fun saveCoverage(coverage: JSONObject) {
+                val dir = File(filesDir, BnfRawCapture.DIRECTORY).apply { mkdirs() }
+                val marker = File(dir, "${day}_${pollStarted}_universe_coverage.json")
+                val tmp = File.createTempFile("coverage_", ".tmp", dir)
+                try {
+                    tmp.writeText(coverage.toString())
+                    require(tmp.renameTo(marker)) { "COVERAGE_SAVE_FAILED" }
+                } finally { tmp.delete() }
+                CloudRecovery.request(applicationContext)
+            }
             try {
                 val key = URLEncoder.encode("NSE_INDEX|Nifty Bank", Charsets.UTF_8.name())
                 val listing = fetchSync("https://api.upstox.com/v2/option/contract?instrument_key=$key", token)
                 val contracts = listing?.optJSONArray("data")
                 val expiries = sortedSetOf<String>()
+                val optionKeys = sortedSetOf<String>()
                 if (contracts != null) for (i in 0 until contracts.length()) {
-                    contracts.optJSONObject(i)?.optString("expiry")?.takeIf {
+                    val contract = contracts.optJSONObject(i) ?: continue
+                    contract.optString("expiry").takeIf {
                         it.length == 10 && it >= day && parseExpiryDate(it) != null
                     }?.let(expiries::add)
+                    contract.optString("instrument_key").takeIf { it.startsWith("NSE_FO|") }
+                        ?.let(optionKeys::add)
                 }
                 val coverage = JSONObject().put("schema", "bnf_universe_daily_v1")
-                    .put("day", day).put("cadence", "once_per_session")
+                    .put("day", day).put("poll_started_ms", pollStarted).put("cadence", "each_poll_when_previous_complete")
                     .put("contract_count", contracts?.length() ?: 0)
                     .put("expected_expiries", JSONArray(expiries.toList()))
                 val results = JSONArray()
                 for (expiry in expiries) {
-                    delay(500) // a bounded independent worker; never delays the decision poll
+                    delay(150) // independent of the decision poll; requests remain bounded
                     val encodedExpiry = URLEncoder.encode(expiry, Charsets.UTF_8.name())
                     val chain = fetchSync("https://api.upstox.com/v2/option/chain?instrument_key=$key&expiry_date=$encodedExpiry", token)
-                    results.put(JSONObject().put("expiry", expiry)
-                        .put("status", if (chain == null) "REQUEST_FAILED" else "RECEIVED")
-                        .put("rows", chain?.optJSONArray("data")?.length() ?: 0))
-                    // Vendor max pain is a published historical series; acquisition time is retained.
-                    delay(500)
-                    val pain = fetchSync("https://api.upstox.com/v2/market/max-pain?instrument_key=$key&expiry=$encodedExpiry&date=$day&bucket_interval=60", token)
-                    results.getJSONObject(results.length() - 1).put("max_pain_status",
-                        if (pain == null) "REQUEST_FAILED" else "RECEIVED")
+                    val row = JSONObject().put("expiry", expiry)
+                        .put("chain_status", if (chain?.optJSONArray("data") == null) "MISSING_DATA" else "RECEIVED")
+                        .put("chain_rows", chain?.optJSONArray("data")?.length() ?: 0)
+                    for ((label, suffix) in listOf(
+                        "max_pain" to "max-pain?instrument_key=$key&expiry=$encodedExpiry&date=$day&bucket_interval=60",
+                        "oi" to "oi?instrument_key=$key&expiry=$encodedExpiry&date=$day",
+                        "change_oi" to "change-oi?instrument_key=$key&expiry=$encodedExpiry&date=$day&interval=2",
+                        "pcr" to "pcr?instrument_key=$key&expiry=$encodedExpiry&date=$day&bucket_interval=60")) {
+                        delay(150)
+                        val response = fetchSync("https://api.upstox.com/v2/market/$suffix", token)
+                        row.put("${label}_status", when {
+                            response == null -> "REQUEST_FAILED"
+                            response.isNull("data") -> "UPSTOX_DATA_NULL"
+                            else -> "RECEIVED"
+                        })
+                    }
+                    results.put(row)
                 }
-                val fii = fetchSync("https://api.upstox.com/v2/market/fii?data_type=NSE_FO%7CINDEX_FUTURES,NSE_FO%7CINDEX_OPTIONS&interval=1D", token)
+                // The full quote endpoint accepts at most 500 keys. Query the entire discovered
+                // option universe, including contracts absent from the option-chain response.
+                val quoteBatches = JSONArray()
+                optionKeys.toList().chunked(250).forEachIndexed { index, keys ->
+                    delay(150)
+                    val joined = URLEncoder.encode(keys.joinToString(","), Charsets.UTF_8.name())
+                    val response = fetchSync("https://api.upstox.com/v3/market-quote/quotes?instrument_key=$joined", token)
+                    quoteBatches.put(JSONObject().put("batch", index).put("requested", keys.size)
+                        .put("received", response?.optJSONObject("data")?.length() ?: 0)
+                        .put("status", if (response?.optJSONObject("data")?.length() == keys.size) "RECEIVED" else "INCOMPLETE"))
+                }
+                val greekBatches = JSONArray()
+                optionKeys.toList().chunked(50).forEachIndexed { index, keys ->
+                    delay(150)
+                    val joined = URLEncoder.encode(keys.joinToString(","), Charsets.UTF_8.name())
+                    val response = fetchSync("https://api.upstox.com/v3/market-quote/option-greek?instrument_key=$joined", token)
+                    greekBatches.put(JSONObject().put("batch", index).put("requested", keys.size)
+                        .put("received", response?.optJSONObject("data")?.length() ?: 0)
+                        .put("status", if (response?.optJSONObject("data")?.length() == keys.size) "RECEIVED" else "INCOMPLETE"))
+                }
+                // This dated constituent manifest is for the bounded 27 Nov smoke test; a
+                // server-scheduled official monthly membership/weight refresh remains required.
+                val bankIsins = listOf("INE949L01017", "INE238A01034", "INE028A01039", "INE476A01022",
+                    "INE171A01029", "INE040A01034", "INE090A01021", "INE092T01019",
+                    "INE095A01012", "INE237A01036", "INE160A01022", "INE062A01020",
+                    "INE692A01016", "INE528G01035")
+                val contextKeys = bankIsins.map { "NSE_EQ|$it" } + listOf("NSE_INDEX|Nifty Bank",
+                    "NSE_INDEX|Nifty 50", "NSE_INDEX|India VIX", "NSE_FO|58872", "NSE_FO|54746", "NSE_FO|67070")
+                val contextKey = URLEncoder.encode(contextKeys.joinToString(","), Charsets.UTF_8.name())
+                val context = fetchSync("https://api.upstox.com/v3/market-quote/quotes?instrument_key=$contextKey", token)
+                coverage.put("context_requested", contextKeys.size)
+                    .put("context_received", context?.optJSONObject("data")?.length() ?: 0)
+                    .put("context_manifest_as_of", "2026-11-26")
+                    .put("quote_batches", quoteBatches)
+                    .put("greek_batches", greekBatches)
+                val nfoStatus = fetchSync("https://api.upstox.com/v2/market/status/NFO", token)
+                val nseStatus = fetchSync("https://api.upstox.com/v2/market/status/NSE", token)
+                val timings = fetchSync("https://api.upstox.com/v2/market/timings/$day", token)
+                coverage.put("nfo_status", nfoStatus?.optJSONObject("data")?.optString("status") ?: "MISSING")
+                    .put("nse_status", nseStatus?.optJSONObject("data")?.optString("status") ?: "MISSING")
+                    .put("timings_status", if (timings?.optJSONArray("data") == null) "MISSING" else "RECEIVED")
+                val fii = fetchSync("https://api.upstox.com/v2/market/fii?data_type=NSE_EQ%7CCASH,NSE_FO%7CINDEX_FUTURES,NSE_FO%7CINDEX_OPTIONS&interval=1D", token)
                 val dii = fetchSync("https://api.upstox.com/v2/market/dii?data_type=NSE_EQ%7CCASH&interval=1D", token)
-                val niftySpot = fetchSync("https://api.upstox.com/v2/market-quote/quotes?instrument_key=NSE_INDEX%7CNifty+50", token)
-                coverage.put("fii_status", if (fii == null) "REQUEST_FAILED" else "RECEIVED")
-                    .put("dii_status", if (dii == null) "REQUEST_FAILED" else "RECEIVED")
-                    .put("nifty_spot_status", if (niftySpot == null) "REQUEST_FAILED" else "RECEIVED")
+                coverage.put("fii_status", if (fii == null || fii.isNull("data")) "MISSING_DATA" else "RECEIVED")
+                    .put("dii_status", if (dii == null || dii.isNull("data")) "MISSING_DATA" else "RECEIVED")
                 coverage.put("results", results)
                     .put("status", if (contracts == null || expiries.isEmpty() ||
-                        fii == null || dii == null || niftySpot == null ||
-                        (0 until results.length()).any { results.getJSONObject(it).getString("status") != "RECEIVED" ||
-                            results.getJSONObject(it).getString("max_pain_status") != "RECEIVED" })
+                        quoteBatches.length() == 0 ||
+                        (0 until quoteBatches.length()).any { quoteBatches.getJSONObject(it).getString("status") != "RECEIVED" } ||
+                        greekBatches.length() == 0 ||
+                        (0 until greekBatches.length()).any { greekBatches.getJSONObject(it).getString("status") != "RECEIVED" } ||
+                        context?.optJSONObject("data")?.length() != contextKeys.size ||
+                        nfoStatus?.optJSONObject("data") == null || nseStatus?.optJSONObject("data") == null ||
+                        timings?.optJSONArray("data") == null ||
+                        (0 until results.length()).any { rowIndex ->
+                            val row = results.getJSONObject(rowIndex)
+                            listOf("chain", "max_pain", "oi", "change_oi", "pcr")
+                                .any { row.optString("${it}_status") != "RECEIVED" }
+                        })
                         "INCOMPLETE" else "RECEIVED_UNVERIFIED")
-                val dir = File(filesDir, BnfRawCapture.DIRECTORY).apply { mkdirs() }
-                val marker = File(dir, "${day}_universe_coverage.json")
-                // Coverage is an attempt report, not a claim that cloud upload/readback succeeded.
-                val tmp = File.createTempFile("coverage_", ".tmp", dir)
-                tmp.writeText(coverage.toString())
-                if (!tmp.renameTo(marker)) tmp.delete()
-                if (coverage.optString("status") == "RECEIVED_UNVERIFIED")
-                    prefs.edit().putString("bnf_universe_capture_complete_day", day).commit()
+                // CloudRecovery includes this directory in its account-private checkpoint.
+                // A local marker does not imply a cloud upload or verified readback.
+                saveCoverage(coverage)
             } catch (e: Exception) {
                 LogBuffer.add('E', TAG, "BNF_UNIVERSE_CAPTURE_FAILED: ${e.javaClass.simpleName}")
+                try {
+                    saveCoverage(JSONObject().put("schema", "bnf_universe_daily_v1")
+                        .put("day", day).put("poll_started_ms", pollStarted)
+                        .put("status", "INCOMPLETE").put("error", e.javaClass.simpleName))
+                } catch (_: Exception) { LogBuffer.add('E', TAG, "BNF_COVERAGE_SAVE_FAILED") }
             } finally { bnfUniverseInProgress.set(false) }
         }
     }

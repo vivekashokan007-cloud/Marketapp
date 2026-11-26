@@ -35,4 +35,19 @@ class BnfRawCaptureTest {
             assertTrue(meta.isNull("body_sha256"))
         } finally { root.deleteRecursively() }
     }
+
+    @Test fun dedicatedNullResultAndGreekResponseAreCapturedLosslessly() {
+        val root = Files.createTempDirectory("bnf-capture-analytics").toFile()
+        try {
+            val nullUrl = "https://api.upstox.com/v2/market/change-oi?instrument_key=NSE_INDEX%7CNifty+Bank&expiry=2027-02-23&date=2026-11-26&interval=2"
+            val greekUrl = "https://api.upstox.com/v3/market-quote/option-greek?instrument_key=NSE_FO%7C59945"
+            val nullBody = """{"status":"success","data":null}""".toByteArray()
+            assertTrue(BnfRawCapture.record(root, nullUrl, 100, 200, 200, nullBody))
+            assertTrue(BnfRawCapture.record(root, greekUrl, 201, 300, 200, "{}".toByteArray()))
+            val stored = root.resolve(BnfRawCapture.DIRECTORY).listFiles()!!.filter { it.name.endsWith(".body.gz") }
+                .map { GZIPInputStream(it.inputStream()).use { gz -> gz.readBytes() } }
+            assertTrue(stored.any { it.contentEquals(nullBody) })
+            assertEquals(2, stored.size)
+        } finally { root.deleteRecursively() }
+    }
 }

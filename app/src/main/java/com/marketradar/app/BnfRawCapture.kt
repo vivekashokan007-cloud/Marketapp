@@ -16,7 +16,10 @@ object BnfRawCapture {
          url.contains("/option/contract?") && url.contains("Nifty", true) ||
          url.contains("/market-quote/quotes?") ||
          url.contains("/market/max-pain?") || url.contains("/market/fii?") ||
-         url.contains("/market/dii?"))
+         url.contains("/market/dii?") || url.contains("/market/oi?") ||
+         url.contains("/market/change-oi?") || url.contains("/market/pcr?") ||
+         url.contains("/market-quote/option-greek?") ||
+         url.contains("/market/status/") || url.contains("/market/timings/"))
 
     /** Returns false on any storage failure; the caller must surface the capture gap. */
     fun record(root: File, url: String, startedMs: Long, completedMs: Long,
