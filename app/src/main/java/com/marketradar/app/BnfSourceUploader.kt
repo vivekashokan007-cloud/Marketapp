@@ -62,6 +62,7 @@ object BnfSourceUploader {
             require(name == "$id.body.gz")
             File(metaFile.parentFile, name).readBytes().also { require(it.size in 1..4194304) }
         }
+        var document: JSONObject? = null
         if (compressed != null) {
             val expected = meta.getInt("body_bytes")
             require(expected in 0..(16 * 1024 * 1024))
@@ -78,15 +79,30 @@ object BnfSourceUploader {
             }
             require(raw.size == expected)
             require(CloudVault.hash(raw) == meta.getString("body_sha256"))
+            document = runCatching { JSONObject(String(raw, Charsets.UTF_8)) }.getOrNull()
         }
         val started = meta.getLong("request_started_ms")
         val received = meta.getLong("request_completed_ms")
         val status = meta.getInt("http_status")
         val urlUri = URI(url)
+        val params = JSONObject()
+        urlUri.rawQuery?.split('&')?.forEach { part ->
+            val pair = part.split('=', limit = 2)
+            params.put(java.net.URLDecoder.decode(pair[0], "UTF-8"),
+                java.net.URLDecoder.decode(pair.getOrElse(1) { "" }, "UTF-8"))
+        }
+        val notes = JSONObject().put("url", url).put("capture_schema", BnfRawCapture.DIRECTORY)
+            .put("native_sha", BuildConfig.SOURCE_HEAD).put("app_version", BuildConfig.VERSION_NAME)
+        for (name in listOf("schema", "source_url", "as_of_date", "status", "source_sha256", "master_decoded_sha256"))
+            document?.opt(name)?.let { notes.put(name, it) }
+        if (document?.has("data") == true && document?.isNull("data") == true)
+            notes.put("missing_reason", "UPSTOX_DATA_NULL")
         val owner = session.session().getJSONObject("user").getString("id")
         val row = JSONObject().put("capture_id", id).put("owner_id", owner)
             .put("source", if (urlUri.scheme == "marketradar") "market_radar" else "upstox").put("endpoint", urlUri.path)
-            .put("request_params", JSONObject().put("query", urlUri.rawQuery ?: ""))
+            .put("request_params", params)
+            .put("instrument_key", params.opt("instrument_key") ?: JSONObject.NULL)
+            .put("contract_expiry", params.opt("expiry_date") ?: params.opt("expiry") ?: JSONObject.NULL)
             .put("session_date", Instant.ofEpochMilli(started).atZone(ist).toLocalDate().toString())
             .put("request_started_at", Instant.ofEpochMilli(started).toString())
             .put("response_received_at", Instant.ofEpochMilli(received).toString())
@@ -100,7 +116,7 @@ object BnfSourceUploader {
             .put("original_body", if (compressed == null) JSONObject.NULL else "\\x" + compressed.joinToString("") { "%02x".format(it) })
             .put("body_encoding", if (compressed == null) "identity" else "gzip")
             .put("stored_bytes", if (compressed == null) JSONObject.NULL else compressed.size)
-            .put("notes", JSONObject().put("url", url).put("capture_schema", BnfRawCapture.DIRECTORY))
+            .put("notes", notes)
         require(SupabaseClient.saveMarketSourceCapture(row, session.session().getString("access_token"))) {
             "SOURCE_CAPTURE_PENDING_READBACK"
         }

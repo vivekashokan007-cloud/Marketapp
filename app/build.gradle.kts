@@ -193,7 +193,10 @@ dependencies {
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20240303")
+    testImplementation("org.robolectric:robolectric:4.14.1")
 }
+
+android.testOptions.unitTests.isIncludeAndroidResources = true
 
 protobuf {
     protoc { artifact = "com.google.protobuf:protoc:3.25.5" }
