@@ -8,6 +8,12 @@ import java.nio.file.Files
 import java.io.ByteArrayOutputStream
 
 class CloudVaultTest {
+    @Test fun networkDelayAndWallClockChangesCannotExtendADeviceLease() {
+        val reply = JSONObject().put("server_now","2026-11-26T03:00:00Z").put("lease_until","2026-11-26T03:02:00Z")
+        assertEquals(116_000L,CloudLeaseClock.deadline(reply,1000,2000))
+        // Even a response delayed beyond its server lease gives no usable time.
+        assertEquals(130_000L,CloudLeaseClock.deadline(reply,0,130_000))
+    }
     class Memory: CloudVault.Remote {
         val objects = mutableMapOf<String, ByteArray>()
         var refuse = false

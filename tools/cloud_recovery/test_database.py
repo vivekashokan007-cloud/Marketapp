@@ -15,7 +15,7 @@ def denied(s):
     except psycopg.Error: return
     raise AssertionError('Unexpectedly allowed: '+s)
 assert scalar("select count(*) from information_schema.tables where table_schema='public'")==0
-sql('''create role anon; create role authenticated;
+sql('''do $$ begin if not exists(select 1 from pg_roles where rolname='anon') then create role anon; end if; if not exists(select 1 from pg_roles where rolname='authenticated') then create role authenticated; end if; end $$;
 create schema auth; create table auth.users(id uuid primary key);
 create function auth.uid() returns uuid language sql stable as $$ select nullif(current_setting('request.jwt.claim.sub',true),'')::uuid $$;
 grant usage on schema auth to anon,authenticated;
@@ -51,12 +51,14 @@ denied(f"insert into storage.objects(bucket_id,name) values('mr-private-state','
 assert sql("update storage.objects set name='changed' where bucket_id='mr-private-state'").rowcount==0
 assert sql("delete from storage.objects where bucket_id='mr-private-state'").rowcount==0
 head=scalar(f"select public.mr_cloud_commit('{d}',0,'{h}')");assert head['revision']==1
+assert scalar('select count(*) from public.mr_cloud_checkpoints')==1
 # Retried or stale commits do not create a second logical revision.
 denied(f"select public.mr_cloud_commit('{d}',0,'{h}')")
 denied(f"update public.mr_cloud_heads set revision=99 where owner_id='{u}'")
 print('PASS immutable chunks, owner scoping, compare-and-swap and competing-device lease')
 sql('reset role');sql(f"set request.jwt.claim.sub='{other}'");sql('set role authenticated')
 assert scalar('select count(*) from public.mr_cloud_heads')==0
+assert scalar('select count(*) from public.mr_cloud_checkpoints')==0
 assert scalar("select count(*) from storage.objects where bucket_id='mr-private-state'")==0
 head=scalar(f"select public.mr_cloud_claim('{d2}',0)");assert head['owner_id']==other
 print('PASS second account cannot see first account head or objects despite pre-existing broad policy')

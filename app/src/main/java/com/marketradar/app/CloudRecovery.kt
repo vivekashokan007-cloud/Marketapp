@@ -38,7 +38,7 @@ object CloudRecovery {
         state = "LOCAL_PAPER_CACHE_NOT_BACKED_UP"
         return true
     }
-    fun canMonitor(): Boolean = ready && webVerified && leaseUntil > System.currentTimeMillis() + 5000
+    fun canMonitor(): Boolean = ready && webVerified && leaseUntil > android.os.SystemClock.elapsedRealtime() + 5000
     fun status(c: Context): String = JSONObject().put("state", state).put("ready", ready)
         .put("monitor_ready", canMonitor()).put("verified_at", meta(c).getString("verified_at", ""))
         .put("revision", meta(c).getLong("revision", 0)).put("last_error", meta(c).getString("last_error", ""))
@@ -68,7 +68,12 @@ object CloudRecovery {
         var renewLease: (() -> Unit)? = null
         private val cache = File(c.noBackupFilesDir, "cloud_manifest_cache")
         private val auth = CloudSession(c)
-        private val client = OkHttpClient.Builder().connectTimeout(20, TimeUnit.SECONDS).readTimeout(60, TimeUnit.SECONDS).build()
+        private val client = OkHttpClient.Builder().connectTimeout(20, TimeUnit.SECONDS).readTimeout(60, TimeUnit.SECONDS)
+            .authenticator { _, response ->
+                // One server-driven refresh covers clock skew without an authentication retry loop.
+                if (response.priorResponse != null) null else response.request.newBuilder()
+                    .header("Authorization", "Bearer " + auth.refreshAccessToken()).build()
+            }.build()
         private fun request(path: String): Request.Builder {
             val s = auth.session()
             return Request.Builder().url(BuildConfig.SUPABASE_URL + path).header("apikey", BuildConfig.SUPABASE_ANON_KEY)
@@ -81,8 +86,12 @@ object CloudRecovery {
             val rows = JSONArray(String(bytes, Charsets.UTF_8))
             return if (rows.length() == 0) null else rows.getJSONObject(0)
         }
-        fun rpc(name: String, body: JSONObject): JSONObject = JSONObject(String(execute(request("/rest/v1/rpc/$name")
-            .post(body.toString().toRequestBody("application/json".toMediaType())).build(), 64 * 1024), Charsets.UTF_8))
+        fun rpc(name: String, body: JSONObject): JSONObject {
+            val sent = android.os.SystemClock.elapsedRealtime()
+            val response = JSONObject(String(execute(request("/rest/v1/rpc/$name")
+                .post(body.toString().toRequestBody("application/json".toMediaType())).build(), 64 * 1024), Charsets.UTF_8))
+            return response.put("_lease_deadline_elapsed", CloudLeaseClock.deadline(response, sent, android.os.SystemClock.elapsedRealtime()))
+        }
         override fun put(hash: String, bytes: ByteArray) {
             renewLease?.invoke()
             require(CloudVault.validHash(hash))
@@ -226,13 +235,13 @@ object CloudRecovery {
             }
             val claim = JSONObject().put("p_device", device).put("p_expected", revision)
             head = transport.rpc("mr_cloud_claim", claim)
-            leaseUntil = OffsetDateTime.parse(head.getString("lease_until")).toInstant().toEpochMilli()
+            leaseUntil = head.getLong("_lease_deadline_elapsed")
             var lastRenewal = android.os.SystemClock.elapsedRealtime()
             transport.renewLease = {
                 val now = android.os.SystemClock.elapsedRealtime()
                 if (now - lastRenewal >= 30_000) {
                     val renewed = transport.rpc("mr_cloud_claim", JSONObject().put("p_device", device).put("p_expected", revision))
-                    leaseUntil = OffsetDateTime.parse(renewed.getString("lease_until")).toInstant().toEpochMilli()
+                    leaseUntil = renewed.getLong("_lease_deadline_elapsed")
                     lastRenewal = now
                 }
             }
@@ -279,7 +288,7 @@ object CloudRecovery {
             require(metadata.edit().putLong("revision", revision).putBoolean("initialized", true)
                 .putString("fingerprint", fingerprintMap(before)).putString("verified_at", checkTime)
                 .putString("last_error", "").commit())
-            leaseUntil = maxOf(leaseUntil, OffsetDateTime.parse(head.getString("lease_until")).toInstant().toEpochMilli())
+            leaseUntil = maxOf(leaseUntil, head.getLong("_lease_deadline_elapsed"))
             ready = true
             CloudArchive.pruneAcknowledged(c.filesDir, entries)
             val expectedCache = before.filterNot { (path, _) ->

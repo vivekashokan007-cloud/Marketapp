@@ -51,7 +51,7 @@ declare u uuid := auth.uid(); h public.mr_cloud_heads; begin
   insert into public.mr_cloud_checkpoints(owner_id,revision,manifest_sha256,committed_at)
   values(u,h.revision,p_manifest,h.committed_at);
  end if;
- return to_jsonb(h);
+ return to_jsonb(h) || jsonb_build_object('server_now',clock_timestamp());
 end $$;
 revoke all on function mr_cloud_private.change_head(uuid,bigint,text) from public, anon;
 grant execute on function mr_cloud_private.change_head(uuid,bigint,text) to authenticated;

@@ -66,6 +66,14 @@ class CloudSession(private val context: Context) {
         }
         s
     }
+    fun refreshAccessToken(): String = synchronized(LOCK) {
+        val current = read()
+        require(current.has("refresh_token")) { "APP_SIGN_IN_REQUIRED" }
+        val updated = auth("token?grant_type=refresh_token", JSONObject().put("refresh_token", current.getString("refresh_token")))
+        require(updated.has("refresh_token") && updated.has("access_token")) { "SESSION_REFRESH_REQUIRED" }
+        save(updated)
+        updated.getString("access_token")
+    }
     private fun auth(path: String, body: JSONObject): JSONObject {
         val request = Request.Builder().url(BuildConfig.SUPABASE_URL + "/auth/v1/" + path)
             .header("apikey", BuildConfig.SUPABASE_ANON_KEY)
