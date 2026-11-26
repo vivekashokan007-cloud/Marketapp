@@ -65,6 +65,7 @@ object CloudRecovery {
     fun web(c: Context): String = c.getSharedPreferences("cloud_web_cache_v1", Context.MODE_PRIVATE).getString("storage", "null") ?: "null"
 
     private class Transport(c: Context): CloudVault.Remote {
+        var renewLease: (() -> Unit)? = null
         private val cache = File(c.noBackupFilesDir, "cloud_manifest_cache")
         private val auth = CloudSession(c)
         private val client = OkHttpClient.Builder().connectTimeout(20, TimeUnit.SECONDS).readTimeout(60, TimeUnit.SECONDS).build()
@@ -83,6 +84,7 @@ object CloudRecovery {
         fun rpc(name: String, body: JSONObject): JSONObject = JSONObject(String(execute(request("/rest/v1/rpc/$name")
             .post(body.toString().toRequestBody("application/json".toMediaType())).build(), 64 * 1024), Charsets.UTF_8))
         override fun put(hash: String, bytes: ByteArray) {
+            renewLease?.invoke()
             require(CloudVault.validHash(hash))
             val req = request("/storage/v1/object/mr-private-state/${uid()}/$hash")
                 .post(bytes.toRequestBody("application/octet-stream".toMediaType())).build()
@@ -96,6 +98,7 @@ object CloudRecovery {
             }
         }
         override fun get(hash: String): ByteArray {
+            renewLease?.invoke()
             require(CloudVault.validHash(hash))
             if (cache.exists()) {
                 val cached = cache.readBytes()
@@ -250,6 +253,15 @@ object CloudRecovery {
             val claim = JSONObject().put("p_device", device).put("p_expected", revision)
             head = transport.rpc("mr_cloud_claim", claim)
             leaseUntil = OffsetDateTime.parse(head.getString("lease_until")).toInstant().toEpochMilli()
+            var lastRenewal = android.os.SystemClock.elapsedRealtime()
+            transport.renewLease = {
+                val now = android.os.SystemClock.elapsedRealtime()
+                if (now - lastRenewal >= 30_000) {
+                    val renewed = transport.rpc("mr_cloud_claim", JSONObject().put("p_device", device).put("p_expected", revision))
+                    leaseUntil = OffsetDateTime.parse(renewed.getString("lease_until")).toInstant().toEpochMilli()
+                    lastRenewal = now
+                }
+            }
             if (!ready && oldManifest != null && (!metadata.getBoolean("initialized", false) || revision != localRevision ||
                         File(c.noBackupFilesDir, "cloud_restore_pending").exists())) {
                 state = "RESTORING_VERIFIED_CLOUD_STATE"
@@ -293,7 +305,7 @@ object CloudRecovery {
             require(metadata.edit().putLong("revision", revision).putBoolean("initialized", true)
                 .putString("fingerprint", fingerprintMap(before)).putString("verified_at", checkTime)
                 .putString("last_error", "").commit())
-            leaseUntil = OffsetDateTime.parse(head.getString("lease_until")).toInstant().toEpochMilli()
+            leaseUntil = maxOf(leaseUntil, OffsetDateTime.parse(head.getString("lease_until")).toInstant().toEpochMilli())
             ready = true
             CloudArchive.pruneAcknowledged(c.filesDir, entries)
             val expectedCache = before.filterNot { (path, _) ->

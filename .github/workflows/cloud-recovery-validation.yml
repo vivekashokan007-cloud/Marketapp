@@ -16,7 +16,7 @@ jobs:
           POSTGRES_PASSWORD: postgres
         ports: ['5432:5432']
         options: >-
-          --health-cmd 'pg_isready -U postgres'
+          --health-cmd "pg_isready -U postgres"
           --health-interval 5s --health-timeout 5s --health-retries 20
     steps:
       - uses: actions/checkout@v4
@@ -31,11 +31,11 @@ jobs:
         run: |
           sdkmanager --install 'platforms;android-35' 'build-tools;35.0.0'
           yes | sdkmanager --licenses >/dev/null
-      - name: Compile native app and run complete JVM suite
-        run: ./gradlew :app:testDebugUnitTest --stacktrace
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+      - name: Compile native app and run complete JVM suite
+        run: ./gradlew :app:testDebugUnitTest --stacktrace
       - name: Python recovery and existing state/position regressions
         run: |
           PYTHONPATH=app/src/main/python python -m unittest discover -s app/src/main/python/tests -p 'test_cloud_archive_v1.py'
