@@ -4286,6 +4286,10 @@ class MarketWatchService : Service() {
                 val listedKeys = optionKeys.toSet()
                 val masterOptions = reference?.optJSONArray("options") ?: JSONArray()
                 val masterKeys = (0 until masterOptions.length()).map { masterOptions.getJSONObject(it).getString("instrument_key") }.toSet()
+                for (mi in 0 until masterOptions.length()) {
+                    BnfReferenceCapture.expiryDate(masterOptions.getJSONObject(mi).opt("expiry"))
+                        ?.takeIf { it >= day }?.let(expiries::add)
+                }
                 optionKeys.addAll(masterKeys)
                 var observedSpot = 0.0
                 val chainKeys = sortedSetOf<String>()
