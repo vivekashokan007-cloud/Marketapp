@@ -61,6 +61,7 @@ class MarketWatchService : Service() {
     private var pollingJob: Job? = null
     private val serviceStartInProgress = AtomicBoolean(false)
     private val pollInProgress = AtomicBoolean(false)
+    private val bnfUniverseInProgress = AtomicBoolean(false)
     private val pollSaveLock = Any()
     private val pollDispatchLock = Any()
     private val pollDispatchInFlightKeys = mutableSetOf<String>()
@@ -1094,6 +1095,8 @@ class MarketWatchService : Service() {
                 Triple(quotes.await(), chain.await(), stocks.await())
             } }
             val (quotesJson, chainResponse, stocksResponse) = acquisition.value
+            // Independent daily full-expiry evidence pass. It never supplies the brain or Paper path.
+            scheduleBnfUniverseCapture(today, token)
             val nf50Breadth = JSONObject()
             val bnfChainJson = chainResponse ?: JSONObject().put("data", JSONArray()).put("input_failure", "CHAIN_FETCH_FAILED")
             val bnfStocksJson = stocksResponse ?: JSONObject().put("data", JSONObject()).put("input_failure", "BNF_BREADTH_FETCH_FAILED")
@@ -4239,7 +4242,66 @@ class MarketWatchService : Service() {
         }
     }
 
+    private fun scheduleBnfUniverseCapture(day: String, token: String) {
+        if (prefs.getString("bnf_universe_capture_complete_day", "") == day ||
+            !bnfUniverseInProgress.compareAndSet(false, true)) return
+        serviceScope.launch(Dispatchers.IO) {
+            try {
+                val key = URLEncoder.encode("NSE_INDEX|Nifty Bank", Charsets.UTF_8.name())
+                val listing = fetchSync("https://api.upstox.com/v2/option/contract?instrument_key=$key", token)
+                val contracts = listing?.optJSONArray("data")
+                val expiries = sortedSetOf<String>()
+                if (contracts != null) for (i in 0 until contracts.length()) {
+                    contracts.optJSONObject(i)?.optString("expiry")?.takeIf {
+                        it.length == 10 && it >= day && parseExpiryDate(it) != null
+                    }?.let(expiries::add)
+                }
+                val coverage = JSONObject().put("schema", "bnf_universe_daily_v1")
+                    .put("day", day).put("cadence", "once_per_session")
+                    .put("contract_count", contracts?.length() ?: 0)
+                    .put("expected_expiries", JSONArray(expiries.toList()))
+                val results = JSONArray()
+                for (expiry in expiries) {
+                    delay(500) // a bounded independent worker; never delays the decision poll
+                    val encodedExpiry = URLEncoder.encode(expiry, Charsets.UTF_8.name())
+                    val chain = fetchSync("https://api.upstox.com/v2/option/chain?instrument_key=$key&expiry_date=$encodedExpiry", token)
+                    results.put(JSONObject().put("expiry", expiry)
+                        .put("status", if (chain == null) "REQUEST_FAILED" else "RECEIVED")
+                        .put("rows", chain?.optJSONArray("data")?.length() ?: 0))
+                    // Vendor max pain is a published historical series; acquisition time is retained.
+                    delay(500)
+                    val pain = fetchSync("https://api.upstox.com/v2/market/max-pain?instrument_key=$key&expiry=$encodedExpiry&date=$day&bucket_interval=60", token)
+                    results.getJSONObject(results.length() - 1).put("max_pain_status",
+                        if (pain == null) "REQUEST_FAILED" else "RECEIVED")
+                }
+                val fii = fetchSync("https://api.upstox.com/v2/market/fii?data_type=NSE_FO%7CINDEX_FUTURES,NSE_FO%7CINDEX_OPTIONS&interval=1D", token)
+                val dii = fetchSync("https://api.upstox.com/v2/market/dii?data_type=NSE_EQ%7CCASH&interval=1D", token)
+                val niftySpot = fetchSync("https://api.upstox.com/v2/market-quote/quotes?instrument_key=NSE_INDEX%7CNifty+50", token)
+                coverage.put("fii_status", if (fii == null) "REQUEST_FAILED" else "RECEIVED")
+                    .put("dii_status", if (dii == null) "REQUEST_FAILED" else "RECEIVED")
+                    .put("nifty_spot_status", if (niftySpot == null) "REQUEST_FAILED" else "RECEIVED")
+                coverage.put("results", results)
+                    .put("status", if (contracts == null || expiries.isEmpty() ||
+                        fii == null || dii == null || niftySpot == null ||
+                        (0 until results.length()).any { results.getJSONObject(it).getString("status") != "RECEIVED" ||
+                            results.getJSONObject(it).getString("max_pain_status") != "RECEIVED" })
+                        "INCOMPLETE" else "RECEIVED_UNVERIFIED")
+                val dir = File(filesDir, BnfRawCapture.DIRECTORY).apply { mkdirs() }
+                val marker = File(dir, "${day}_universe_coverage.json")
+                // Coverage is an attempt report, not a claim that cloud upload/readback succeeded.
+                val tmp = File.createTempFile("coverage_", ".tmp", dir)
+                tmp.writeText(coverage.toString())
+                if (!tmp.renameTo(marker)) tmp.delete()
+                if (coverage.optString("status") == "RECEIVED_UNVERIFIED")
+                    prefs.edit().putString("bnf_universe_capture_complete_day", day).commit()
+            } catch (e: Exception) {
+                LogBuffer.add('E', TAG, "BNF_UNIVERSE_CAPTURE_FAILED: ${e.javaClass.simpleName}")
+            } finally { bnfUniverseInProgress.set(false) }
+        }
+    }
+
     private fun fetchSync(url: String, token: String): JSONObject? {
+        val startedMs = System.currentTimeMillis()
         val request = Request.Builder()
             .url(url)
             .addHeader("Authorization", "Bearer $token")
@@ -4248,6 +4310,11 @@ class MarketWatchService : Service() {
 
         return try {
             client.newCall(request).execute().use { response ->
+                val body = response.body?.bytes()
+                if (BnfRawCapture.eligible(url) && !BnfRawCapture.record(
+                        filesDir, url, startedMs, System.currentTimeMillis(), response.code, body)) {
+                    LogBuffer.add('E', TAG, "BNF_RAW_CAPTURE_FAILED: ${url.substringBefore('?')} status=${response.code}")
+                }
                 if (!response.isSuccessful) {
                     if (response.code == 401) {
                         token401Counter++
@@ -4260,10 +4327,12 @@ class MarketWatchService : Service() {
                     null
                 } else {
                     token401Counter = 0
-                    JSONObject(response.body?.string() ?: "{}")
+                    JSONObject(body?.toString(Charsets.UTF_8) ?: "{}")
                 }
             }
         } catch (e: Exception) {
+            if (BnfRawCapture.eligible(url)) BnfRawCapture.record(
+                filesDir, url, startedMs, System.currentTimeMillis(), 0, null, e.javaClass.simpleName)
             null
         }
     }
