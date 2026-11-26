@@ -5,6 +5,9 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+concurrency:
+  group: cloud-recovery-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   cloud-recovery:
     runs-on: ubuntu-latest

@@ -243,7 +243,7 @@ object CloudRecovery {
         }.filter { it.isFile }.mapNotNull { file ->
             val path = file.relativeTo(c.filesDir).invariantSeparatorsPath
             if (!CloudDataPolicy.portablePath(path)) null else {
-                require(file.canonicalPath == file.absolutePath) { "SYMLINK_NOT_BACKED_UP" }
+                require(CloudDataPolicy.ownedFile(c.filesDir, file)) { "SYMLINK_NOT_BACKED_UP" }
                 Source("files/$path", file = file)
             }
         }.toList()

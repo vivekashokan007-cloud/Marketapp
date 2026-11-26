@@ -2,9 +2,17 @@ package com.marketradar.app
 
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
 
 /** Recovery data policy. Credentials and process/device leases are never portable. */
 object CloudDataPolicy {
+    /** Android may expose the app root through /data/user/0 or another root alias.
+     * Permit that root alias while rejecting symlinks introduced beneath it.
+     */
+    fun ownedFile(root: File, file: File): Boolean = try {
+        val relative = file.relativeTo(root).invariantSeparatorsPath
+        CloudVault.validPath(relative) && file.canonicalPath == File(root.canonicalFile, relative).absolutePath
+    } catch (_: Exception) { false }
     private val secret = Regex("(^|[_-])(token|auth_token|access_token|refresh_token|password|secret|api_key|apikey|sandbox_token|authorization|cookie|bearer)([_-]|$)", RegexOption.IGNORE_CASE)
     fun secretKey(key: String) = secret.containsMatchIn(key) || key.startsWith("g1_") || key.startsWith("cloud_")
     fun portablePreference(key: String): Boolean = !secretKey(key) &&

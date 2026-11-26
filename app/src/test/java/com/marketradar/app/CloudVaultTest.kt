@@ -8,6 +8,18 @@ import java.nio.file.Files
 import java.io.ByteArrayOutputStream
 
 class CloudVaultTest {
+    @Test fun androidRootAliasesAreAllowedButChildSymlinksAreRejected() {
+        val parent = Files.createTempDirectory("android-root-alias").toFile()
+        try {
+            val real = java.io.File(parent,"real").apply { mkdirs() }
+            java.io.File(real,"state.json").writeText("state")
+            val alias = Files.createSymbolicLink(java.io.File(parent,"alias").toPath(),real.toPath()).toFile()
+            assertTrue(CloudDataPolicy.ownedFile(alias,java.io.File(alias,"state.json")))
+            val other = java.io.File(parent,"outside").apply { writeText("must not upload") }
+            val child = Files.createSymbolicLink(java.io.File(real,"child.json").toPath(),other.toPath()).toFile()
+            assertFalse(CloudDataPolicy.ownedFile(real,child))
+        } finally { parent.deleteRecursively() }
+    }
     @Test fun networkDelayAndWallClockChangesCannotExtendADeviceLease() {
         val reply = JSONObject().put("server_now","2026-11-26T03:00:00Z").put("lease_until","2026-11-26T03:02:00Z")
         assertEquals(116_000L,CloudLeaseClock.deadline(reply,1000,2000))
