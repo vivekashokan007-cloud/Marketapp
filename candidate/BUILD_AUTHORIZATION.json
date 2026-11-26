@@ -1,0 +1,12 @@
+{
+  "schema": "marketradar.candidate_build_authorization.v1",
+  "native_sha": "7582434ce12ca123c1cd29795c0ce09b79127871",
+  "pwa_sha": "c5148011378d11c754f830c8f1f66bef7f85ff1a",
+  "version_code": "543",
+  "version_name": "2.6.112",
+  "cert_sha256": "fb6042a2eb61045368e8d7b95db6f6d49b04d4b8da2e51b865ca77803a44b478",
+  "artifact_only": true,
+  "approved_by": "Vivek Ashokan P (Market Radar owner)",
+  "approval_reference": "26 November 2026: owner requested implementing all required app data persistence/recovery in Supabase before installing the update; existing Git deployment authorization persists. Signed candidate execution remains subject to the candidate-apk required owner review. No approval bypass or automatic release.",
+  "codex_final_check_reference": "Corrected native bridge test to assert cloud recovery lease gate before BNF/identity; focused bridge 9/9 pass. Complete PWA 363 pass one skip, packaging 22 pass, earlier final-source Android/Python/PostgreSQL CI 45755239829 passed prior to this contract test-only change. New exact-source CI must pass. Prior candidate 45755290959 failed on stale bridge assertion before signing. App recovery backend is deployed; phone data upload and actual restore remain unproven."
+}
