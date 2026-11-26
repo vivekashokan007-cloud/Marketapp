@@ -27,7 +27,7 @@ object BnfSourceUploader {
         } }, 5, 30, TimeUnit.SECONDS)
     }
 
-    private fun drain(c: Context) {
+    @Synchronized internal fun drain(c: Context) {
         val session = CloudSession(c)
         if (!session.signedIn()) return
         val dir = File(c.filesDir, BnfRawCapture.DIRECTORY)

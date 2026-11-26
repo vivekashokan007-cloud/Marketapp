@@ -35,6 +35,7 @@ class MarketRadarApp : Application() {
             }.onFailure { Log.w("BnfReferenceCapture", "REFERENCE_RETRY_AT_NEXT_POLL: ${it.javaClass.simpleName}") }
         }
         BnfSourceUploader.start(this)
+        BnfCaptureMaintenance.install(this)
         try {
             LogBuffer.init(this)
             val prefs = getSharedPreferences("market_radar", MODE_PRIVATE)
