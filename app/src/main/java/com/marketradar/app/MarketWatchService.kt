@@ -4288,6 +4288,7 @@ class MarketWatchService : Service() {
                 val masterKeys = (0 until masterOptions.length()).map { masterOptions.getJSONObject(it).getString("instrument_key") }.toSet()
                 optionKeys.addAll(masterKeys)
                 var observedSpot = 0.0
+                val chainKeys = sortedSetOf<String>()
                 val coverage = JSONObject().put("schema", "bnf_universe_daily_v1")
                     .put("instrument_master_status", if (reference == null) "MISSING" else "RECEIVED")
                     .put("monthly_weights_status", monthlyStatus)
@@ -4304,6 +4305,11 @@ class MarketWatchService : Service() {
                     val chain = fetchSync("https://api.upstox.com/v2/option/chain?instrument_key=$key&expiry_date=$encodedExpiry", token)
                     val chainRows = chain?.optJSONArray("data")
                     if (chainRows != null && chainRows.length() > 0) observedSpot = chainRows.getJSONObject(0).optDouble("underlying_spot_price", observedSpot)
+                    if (chainRows != null) for (ci in 0 until chainRows.length()) {
+                        val cr = chainRows.optJSONObject(ci) ?: continue
+                        for (side in listOf("call_options", "put_options"))
+                            cr.optJSONObject(side)?.optString("instrument_key")?.takeIf { it.startsWith("NSE_FO|") }?.let(chainKeys::add)
+                    }
                     val row = JSONObject().put("expiry", expiry)
                         .put("chain_status", if (chain?.optJSONArray("data") == null) "MISSING_DATA" else "RECEIVED")
                         .put("chain_rows", chain?.optJSONArray("data")?.length() ?: 0)
@@ -4322,6 +4328,9 @@ class MarketWatchService : Service() {
                     }
                     results.put(row)
                 }
+                coverage.put("chain_contract_count", chainKeys.size)
+                    .put("chain_omitted_keys", JSONArray((optionKeys - chainKeys).sorted()))
+                    .put("iv_units", JSONObject().put("v2_chain", "PERCENT").put("v3_option_greek", "DECIMAL"))
                 // The full quote endpoint accepts at most 500 keys. Query the entire discovered
                 // option universe, including contracts absent from the option-chain response.
                 val quoteBatches = JSONArray()

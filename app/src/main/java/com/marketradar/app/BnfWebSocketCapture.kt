@@ -17,6 +17,10 @@ import java.util.concurrent.TimeUnit
 class BnfWebSocketCapture(private val root: File) {
     private val executor = Executors.newSingleThreadScheduledExecutor()
     private val client = OkHttpClient.Builder().readTimeout(0, TimeUnit.MILLISECONDS).build()
+    private val authClient = OkHttpClient.Builder().connectTimeout(15, TimeUnit.SECONDS).readTimeout(15, TimeUnit.SECONDS).build()
+    private var desiredToken = ""
+    private var desiredKeys = emptyList<String>()
+    private var closed = false
     private var socket: WebSocket? = null
     private var generation = 0L
     private var connectedIdentity = ""
@@ -24,9 +28,19 @@ class BnfWebSocketCapture(private val root: File) {
     private var bytes = 0
     private var started = 0L
     private var lastAttempt = 0L
-    init { event("PROCESS_START_POSSIBLE_PRIOR_GAP", emptyList()); executor.scheduleWithFixedDelay({ synchronized(this) { runCatching { flush() } } }, 15, 15, TimeUnit.SECONDS) }
+    init {
+        event("PROCESS_START_POSSIBLE_PRIOR_GAP", emptyList())
+        executor.scheduleWithFixedDelay({ synchronized(this) {
+            runCatching {
+                flush()
+                if (!closed && socket == null && desiredToken.isNotBlank()) ensure(desiredToken, desiredKeys)
+            }
+        } }, 15, 15, TimeUnit.SECONDS)
+    }
 
     @Synchronized fun ensure(token: String, keys: List<String>) {
+        if (closed) return
+        desiredToken = token; desiredKeys = keys
         if (bytes >= 1024 * 1024) { flush(); if (bytes >= 1024 * 1024) return }
         val selected = keys.distinct().take(32)
         if (selected.isEmpty()) return
@@ -41,7 +55,7 @@ class BnfWebSocketCapture(private val root: File) {
             try {
                 val req = Request.Builder().url("https://api.upstox.com/v3/feed/market-data-feed/authorize")
                     .header("Authorization", "Bearer $token").header("Accept", "application/json").build()
-                val url = client.newCall(req).execute().use { r ->
+                val url = authClient.newCall(req).execute().use { r ->
                     require(r.isSuccessful)
                     JSONObject(r.body!!.string()).getJSONObject("data").getString("authorized_redirect_uri")
                 }
@@ -107,6 +121,7 @@ class BnfWebSocketCapture(private val root: File) {
         }
     }
     @Synchronized fun close() {
+        closed = true; desiredToken = ""; desiredKeys = emptyList()
         generation++; socket?.cancel(); socket = null
         flush(); executor.shutdown()
     }
