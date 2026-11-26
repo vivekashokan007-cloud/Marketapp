@@ -1,0 +1,12 @@
+{
+  "approval_reference": "26 Nov 2026 current owner instruction: prepare Supabase and necessary app changes for next live session. Signed candidate artifact only; no release.",
+  "approved_by": "Vivek Ashokan P (Market Radar owner)",
+  "artifact_only": true,
+  "cert_sha256": "fb6042a2eb61045368e8d7b95db6f6d49b04d4b8da2e51b865ca77803a44b478",
+  "codex_final_check_reference": "Uses existing SupabaseClient and source table, extends active chain table. Live schema checked. Packaging tests 22 pass. Workflow must pass complete native/PWA tests and signer checks before producing artifact. Full live coverage remains unverified.",
+  "native_sha": "563440edb9261bcf50c0bd6886c3d4b253ef5fe4",
+  "pwa_sha": "c5148011378d11c754f830c8f1f66bef7f85ff1a",
+  "schema": "marketradar.candidate_build_authorization.v1",
+  "version_code": "543",
+  "version_name": "2.6.112"
+}
