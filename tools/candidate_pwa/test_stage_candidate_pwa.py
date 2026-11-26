@@ -140,7 +140,7 @@ class CommittedPinTests(unittest.TestCase):
     review-validation run, which is why a green review never caught it.
     """
 
-    ACCEPTED_MARKETVIVI_SHA = "a66ad324d609da09cb2442fd74150d348a0653c1"
+    ACCEPTED_MARKETVIVI_SHA = "c5148011378d11c754f830c8f1f66bef7f85ff1a"
     ACCEPTED_APP_JS_SHA256 = \
         "859a7398cd5ac281daa936cc1fa431eed1d4bf86977edf2688e1138ce59da73d"
 
