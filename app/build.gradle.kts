@@ -197,4 +197,7 @@ dependencies {
 
 protobuf {
     protoc { artifact = "com.google.protobuf:protoc:3.25.5" }
+    generateProtoTasks {
+        all().forEach { task -> task.builtins { maybeCreate("java") } }
+    }
 }
