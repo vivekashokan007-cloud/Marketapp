@@ -1,0 +1,12 @@
+{
+  "approval_reference": "26 November 2026 current conversation: owner requested completing the entire agreed capture before another APK run, then explicitly said K proceed. Artifact-only final capture candidate; no release, main merge, or Pages publication.",
+  "approved_by": "Vivek Ashokan P (Market Radar owner)",
+  "artifact_only": true,
+  "cert_sha256": "fb6042a2eb61045368e8d7b95db6f6d49b04d4b8da2e51b865ca77803a44b478",
+  "codex_final_check_reference": "Final runtime validated by no-APK run 45864349488 at 3ad99a8, all capture tests and CloudVault tests passed including actual official NSE PDF in Android test runtime. Earlier capture run 45863852669 also passed. Native b7f6edd differs from 3ad99a8 only by the applied owner-read SQL migration. Supabase owner insert/readback, cross-owner exclusion and body-bound rollback checks passed; 60 manual samples retained. Completed reference master/futures discovery, all-constituent monthly publication parsing, official V3 Protobuf raw+decoded capture, background institutional retries, source status display. Packaging guards 22 passed. Full PWA/native suites and signer verification must pass in this workflow before assembly. Phone/network and live parity remain to be measured; no claim of a certified full live session.",
+  "native_sha": "b7f6eddbc25450b933dbc111e2bfd12b04b7539a",
+  "pwa_sha": "c5148011378d11c754f830c8f1f66bef7f85ff1a",
+  "schema": "marketradar.candidate_build_authorization.v1",
+  "version_code": "543",
+  "version_name": "2.6.112"
+}
