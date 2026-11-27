@@ -42,9 +42,12 @@ object CloudRecovery {
     // 27 Nov diagnostics: counts/bytes/durations only (see RecoveryDiagnostics).
     private val wakeups = RecoveryDiagnostics.Wakeups()
     private val storageWalk = RecoveryDiagnostics.Every(6 * 60 * 60 * 1000L)
+    private val skipLog = RecoveryDiagnostics.Every(10 * 60 * 1000L) // quiet passes: one stats line per 10 min
     @Volatile private var currentPass: RecoveryDiagnostics.PassStats? = null
     @Volatile private var lastPass: JSONObject? = null
     @Volatile private var lastStorage: JSONObject? = null
+    // Set only by a FULL pass that ended VERIFIED_CHECKPOINT with no mutation; cleared on any failure.
+    @Volatile private var verifiedBaseline: RecoveryPassGate.Baseline? = null
     private fun changed() {
         mutations.incrementAndGet()
         wakeups.mutationSignals.incrementAndGet()
@@ -291,6 +294,9 @@ object CloudRecovery {
         }.toList()
         return (files + preferenceFiles(c).map { Source("prefs/$it.json", bytes = typedPreferences(c, it)) }).sortedBy { it.path }
     }
+    private fun signature(sources: List<Source>): Map<String, String> = sources.associate { source ->
+        source.path to (source.file?.let { RecoveryPassGate.fileSignature(it) } ?: RecoveryPassGate.bytesSignature(source.bytes!!))
+    }.toSortedMap()
     private fun fingerprints(sources: List<Source>, heartbeat: () -> Unit = {}) =
         currentPass.let { stats -> sources.associate { heartbeat(); it.path to it.fingerprint(stats) }.toSortedMap() }
     private fun manifestFingerprints(manifest: JSONObject): Map<String, String> {
@@ -311,7 +317,8 @@ object CloudRecovery {
             currentPass = null
             val total = stats.finish(state.replace(": ", "/").replace(Regex("[^A-Za-z0-9_/]"), "_").take(80).ifBlank { "UNKNOWN" })
             lastPass = stats.toJson(total)
-            runCatching { LogBuffer.add('I', "CloudRecovery", stats.logLine(total)) }
+            if (stats.mode != "SKIP" || skipLog.due(android.os.SystemClock.elapsedRealtime()))
+                runCatching { LogBuffer.add('I', "CloudRecovery", stats.logLine(total)) }
             if (storageWalk.due(android.os.SystemClock.elapsedRealtime())) runCatching { logStorage(c) }
         }
     }
@@ -408,12 +415,38 @@ object CloudRecovery {
                 if (canMonitor() && !hadMonitorLease)
                     MarketOpenScheduler.maybeStartIngestionNow(c, "verified_local_checkpoint")
             }
+            // Quiet-pass gate: evaluated only after the claim above has renewed the
+            // lease and after restore/monitor-resume checks. SKIP never commits,
+            // prunes, restores or deletes; anything uncertain runs the FULL pass.
+            stats.stage("gate")
+            val gateSources = inventory(c)
+            val gateSignature = signature(gateSources)
+            val gate = RecoveryPassGate.decide(verifiedBaseline, RecoveryPassGate.Observation(
+                ready = ready, canMonitor = canMonitor(),
+                restorePending = File(c.noBackupFilesDir, "cloud_restore_pending").exists(),
+                webCaptureFailed = metadata.getBoolean("web_capture_failed", false),
+                revision = revision, localRevision = metadata.getLong("revision", 0L),
+                headManifestSha256 = head?.optString("manifest_sha256").orEmpty(),
+                localManifestSha256 = metadata.getString("checkpoint_sha256", "").orEmpty(),
+                mutation = mutations.get(), signature = gateSignature,
+                nowElapsed = android.os.SystemClock.elapsedRealtime()))
+            stats.gateReason = gate
+            if (gate == RecoveryPassGate.SKIP) {
+                stats.mode = "SKIP"
+                wakeups.pass("skipped_unchanged")
+                stats.portableFiles = gateSources.size.toLong()
+                stats.portableBytes = gateSources.sumOf { it.file?.length() ?: it.bytes?.size?.toLong() ?: 0L }
+                filesTotal = gateSources.size; filesChecked = gateSources.size
+                return
+            }
+            verifiedBaseline = null
             state = "CHECKING_PENDING_CACHE"
             stats.stage("inventory")
             observeFiles(c)
             val snapshotMutation = mutations.get()
             val sources = inventory(c)
             filesChecked = 0; filesTotal = sources.size
+            val baselineSignature = signature(sources) // stat taken before hashing: later edits force FULL
             stats.portableFiles = sources.size.toLong()
             stats.portableBytes = sources.sumOf { it.file?.length() ?: it.bytes?.size?.toLong() ?: 0L }
             stats.stage("hash_before")
@@ -486,6 +519,9 @@ object CloudRecovery {
                 before == fingerprints(inventory(c)) { transport.renewLease?.invoke() })
                 "VERIFIED_CHECKPOINT" else "LOCAL_CHANGES_PENDING_UPLOAD"
             if (webCaptured && snapshotMutation != mutations.get()) state = "LOCAL_CHANGES_PENDING_UPLOAD"
+            verifiedBaseline = if (state == "VERIFIED_CHECKPOINT" && snapshotMutation == mutations.get())
+                RecoveryPassGate.Baseline(snapshotMutation, baselineSignature, revision,
+                    metadata.getString("checkpoint_sha256", "").orEmpty(), android.os.SystemClock.elapsedRealtime()) else null
             if (webCaptured && canMonitor() && !legacyStarted) {
                 legacyStarted = true
                 PositionTickUploadRunner.onProcessStart(c, PositionTickDrainTrigger.APP_START)
@@ -495,6 +531,7 @@ object CloudRecovery {
             }
             if (webCaptured && canMonitor() && !hadMonitorLease) MarketOpenScheduler.maybeStartIngestionNow(c, "cloud_recovered")
         } catch (e: Exception) {
+            verifiedBaseline = null
             val detail = e.message.orEmpty().takeIf { it.matches(Regex("[A-Z0-9_]+")) } ?: e.javaClass.simpleName
             meta(c).edit().putString("last_error", detail).commit()
             state = "PENDING_OR_BLOCKED: $detail"
