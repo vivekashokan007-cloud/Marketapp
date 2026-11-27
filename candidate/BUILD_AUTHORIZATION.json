@@ -1,0 +1,12 @@
+{
+  "approval_reference": "27 November 2026 IST, owner reported the updated app blank during the initial recovery upload and requested a functional capture app in the ongoing troubleshooting conversation. Candidate retains the existing owner approval gate; artifact only, no release or main merge.",
+  "approved_by": "Vivek Ashokan P (Market Radar owner)",
+  "artifact_only": true,
+  "cert_sha256": "fb6042a2eb61045368e8d7b95db6f6d49b04d4b8da2e51b865ca77803a44b478",
+  "codex_final_check_reference": "Reviewed startup lock correction: AtomicBoolean idempotent start no longer acquires the monitor held by the network backup pass. Exact source f4474e5109e83ce80a718406bc494fa6b9d7bec1 compiled and targeted recovery/capture tests passed in run 45931160928 attempt 2, including CloudRecoveryStartupTest holding the backup monitor while Activity startup must return. Prior dd52551 verified resumable upload receipts and bounded concurrency retained. Full Python, web and both JVM suites remain required before signing. Same b543 version, PWA and release certificate; no Supabase schema, collector, Paper decision, monitoring lease or restoration verification changes.",
+  "native_sha": "f4474e5109e83ce80a718406bc494fa6b9d7bec1",
+  "pwa_sha": "c5148011378d11c754f830c8f1f66bef7f85ff1a",
+  "schema": "marketradar.candidate_build_authorization.v1",
+  "version_code": "543",
+  "version_name": "2.6.112"
+}
