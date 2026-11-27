@@ -356,7 +356,9 @@ object CloudRecovery {
                     source.path to entry
                 } }
                 pool.invokeAll(jobs).forEach { future ->
-                    val (path, entry) = future.get()
+                    val result = try { future.get() }
+                        catch (e: java.util.concurrent.ExecutionException) { throw (e.cause as? Exception ?: e) }
+                    val (path, entry) = result
                     entries.put(path, entry)
                 }
             } finally { pool.shutdownNow() }
