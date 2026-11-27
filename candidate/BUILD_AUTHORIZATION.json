@@ -1,0 +1,12 @@
+{
+  "schema": "marketradar.candidate_build_authorization.v1",
+  "native_sha": "3923170e30d458b7b0200c01795ee47b5e584f3f",
+  "pwa_sha": "c5148011378d11c754f830c8f1f66bef7f85ff1a",
+  "version_code": "543",
+  "version_name": "2.6.112",
+  "cert_sha256": "fb6042a2eb61045368e8d7b95db6f6d49b04d4b8da2e51b865ca77803a44b478",
+  "artifact_only": true,
+  "approved_by": "Vivek Ashokan P (Market Radar owner)",
+  "approval_reference": "27 November 2026 IST: owner requested an APK build with the many changes made in the live-session review branch. Artifact-only candidate; no main merge, release, Pages deployment, Supabase write or automatic phone update.",
+  "codex_final_check_reference": "Review head 3923170e30d458b7b0200c01795ee47b5e584f3f; the 12:14 IST phone log showed 32 fatal ForegroundServiceDidNotStartInTimeException entries. Service promotion now precedes cloud/backoff gates; Python restoration is deferred; a rejected start no longer self-heals. Source contract assertions and git diff check passed locally. The candidate workflow must run the full Python, PWA, debug and candidate JVM suites before signing; no phone acceptance is claimed. Other branch fixes cover BNF-only Brain notification, raw URL upload, fourteen-bank monthly breadth, and FII/DII source coverage."
+}
