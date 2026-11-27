@@ -279,7 +279,8 @@ object CloudRecovery {
         }.toList()
         return (files + preferenceFiles(c).map { Source("prefs/$it.json", bytes = typedPreferences(c, it)) }).sortedBy { it.path }
     }
-    private fun fingerprints(sources: List<Source>) = sources.associate { it.path to it.fingerprint() }.toSortedMap()
+    private fun fingerprints(sources: List<Source>, heartbeat: () -> Unit = {}) =
+        sources.associate { heartbeat(); it.path to it.fingerprint() }.toSortedMap()
     private fun manifestFingerprints(manifest: JSONObject): Map<String, String> {
         val entries = manifest.getJSONObject("entries")
         return entries.keys().asSequence().associateWith { entries.getJSONObject(it).getString("sha256") }.toSortedMap()
@@ -346,12 +347,37 @@ object CloudRecovery {
                 require(metadata.edit().putLong("revision", revision).putBoolean("initialized", true)
                     .putString("fingerprint", fingerprintMap(fingerprints(inventory(c)))).commit())
             } else if (ready && revision != localRevision) error("CLOUD_REVISION_CONFLICT")
+            // The existing install already has a verified checkpoint. After a
+            // successful owner/device/revision claim, new local files may upload
+            // in the background without withholding market polls until the full
+            // inventory finishes. Fresh installs and incomplete restores do not
+            // satisfy this admission. Monitoring still expires with the lease.
+            val localWebCaptured = c.getSharedPreferences("cloud_web_cache_v1", Context.MODE_PRIVATE).contains("storage")
+            if (CloudMonitorResume.eligible(
+                    metadata.getBoolean("initialized", false), localRevision, revision,
+                    device, remoteWriter, metadata.getString("checkpoint_sha256", "").orEmpty(),
+                    head?.optString("manifest_sha256").orEmpty(),
+                    oldManifest?.optJSONObject("entries")?.has("prefs/cloud_web_cache_v1.json") == true,
+                    localWebCaptured, metadata.getBoolean("web_capture_failed", false),
+                    File(c.noBackupFilesDir, "cloud_restore_pending").exists())) {
+                ready = true
+                webVerified = true
+                if (canMonitor() && !legacyStarted) {
+                    legacyStarted = true
+                    PositionTickUploadRunner.onProcessStart(c, PositionTickDrainTrigger.APP_START)
+                    DailyReviewScheduler.request(c, "verified_local_checkpoint")
+                    CaptureRuntime.ensure(c)
+                    CaptureRuntime.reconcile()
+                }
+                if (canMonitor() && !hadMonitorLease)
+                    MarketOpenScheduler.maybeStartIngestionNow(c, "verified_local_checkpoint")
+            }
             state = "CHECKING_PENDING_CACHE"
             observeFiles(c)
             val snapshotMutation = mutations.get()
             val sources = inventory(c)
             filesChecked = 0; filesTotal = sources.size
-            val before = fingerprints(sources)
+            val before = fingerprints(sources) { transport.renewLease?.invoke() }
             val entries = JSONObject()
             val oldEntries = oldManifest?.getJSONObject("entries") ?: JSONObject()
             val receiptCache = VerifiedRecoveryUploadCache(File(c.noBackupFilesDir, "cloud_verified_upload_cache_v1/$uid"))
@@ -365,6 +391,7 @@ object CloudRecovery {
                 val jobs = sources.map { source -> java.util.concurrent.Callable {
                     batchFailure.get()?.let { throw it }
                     try {
+                    transport.renewLease?.invoke()
                     val expected = before.getValue(source.path)
                     val old = oldEntries.optJSONObject(source.path)
                     val entry = if (old != null && old.optString("sha256") == expected) old
@@ -381,7 +408,7 @@ object CloudRecovery {
                     entries.put(path, entry)
                 }
             } finally { pool.shutdownNow() }
-            require(before == fingerprints(inventory(c))) { "CACHE_CHANGED_DURING_UPLOAD" }
+            require(before == fingerprints(inventory(c)) { transport.renewLease?.invoke() }) { "CACHE_CHANGED_DURING_UPLOAD" }
             if (oldManifest == null || before != manifestFingerprints(oldManifest)) {
                 state = "UPLOADING_CHECKPOINT"
                 val hash = vault.publishManifest(entries, BuildConfig.VERSION_CODE)
@@ -407,7 +434,8 @@ object CloudRecovery {
             require(metadata.edit().putString("fingerprint", fingerprintMap(expectedCache)).commit())
             val webCaptured = c.getSharedPreferences("cloud_web_cache_v1", Context.MODE_PRIVATE).contains("storage")
             webVerified = webCaptured && !metadata.getBoolean("web_capture_failed", false) && before.containsKey("prefs/cloud_web_cache_v1.json")
-            state = if (!webCaptured) "PWA_CAPTURE_REQUIRED" else if (snapshotMutation == mutations.get() && before == fingerprints(inventory(c)))
+            state = if (!webCaptured) "PWA_CAPTURE_REQUIRED" else if (snapshotMutation == mutations.get() &&
+                before == fingerprints(inventory(c)) { transport.renewLease?.invoke() })
                 "VERIFIED_CHECKPOINT" else "LOCAL_CHANGES_PENDING_UPLOAD"
             if (webCaptured && snapshotMutation != mutations.get()) state = "LOCAL_CHANGES_PENDING_UPLOAD"
             if (webCaptured && canMonitor() && !legacyStarted) {

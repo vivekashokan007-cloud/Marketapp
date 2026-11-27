@@ -22,7 +22,7 @@ jobs:
           packages: platform-tools
       - run: sdkmanager --install 'platforms;android-35' 'build-tools;35.0.0'
       - name: Compile and test capture without packaging an APK
-        run: ./gradlew :app:compileDebugKotlin :app:testDebugUnitTest --tests 'com.marketradar.app.Bnf*' --tests 'com.marketradar.app.PollNotificationTest' --tests 'com.marketradar.app.CloudVaultTest' --tests 'com.marketradar.app.VerifiedRecoveryUploadCacheTest' --tests 'com.marketradar.app.CloudRecoveryStartupTest' --stacktrace
+        run: ./gradlew :app:compileDebugKotlin :app:testDebugUnitTest --tests 'com.marketradar.app.Bnf*' --tests 'com.marketradar.app.PollNotificationTest' --tests 'com.marketradar.app.CloudVaultTest' --tests 'com.marketradar.app.VerifiedRecoveryUploadCacheTest' --tests 'com.marketradar.app.CloudRecoveryStartupTest' --tests 'com.marketradar.app.CloudMonitorResumeTest' --stacktrace
       - name: Preserve failing tests and compiler diagnostics
         if: always()
         uses: actions/upload-artifact@v4
