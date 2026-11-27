@@ -46,4 +46,32 @@ class VerifiedRecoveryUploadCacheTest {
             assertEquals(3, count.get())
         } finally { pool.shutdownNow(); root.deleteRecursively() }
     }
+    @Test fun receiptRequiresActualCloudReadbackAndRestoresOriginalBytes() {
+        val root = Files.createTempDirectory("real-receipt").toFile()
+        val objects = java.util.concurrent.ConcurrentHashMap<String, ByteArray>()
+        var corrupt = true
+        val writes = AtomicInteger()
+        val remote = object: CloudVault.Remote {
+            override fun put(hash: String, bytes: ByteArray) { writes.incrementAndGet(); objects.putIfAbsent(hash, bytes.copyOf()) }
+            override fun get(hash: String): ByteArray = if (corrupt) byteArrayOf(0) else objects.getValue(hash).copyOf()
+        }
+        val vault = CloudVault(remote)
+        val bytes = ByteArray(CloudVault.CHUNK + 17) { (it * 37).toByte() }
+        val hash = CloudVault.hash(bytes)
+        try {
+            assertThrows(IllegalArgumentException::class.java) {
+                VerifiedRecoveryUploadCache(root).entry(hash) { vault.store(bytes.inputStream()) }
+            }
+            assertFalse(File(root, "$hash.json").exists())
+            corrupt = false
+            VerifiedRecoveryUploadCache(root).entry(hash) { vault.store(bytes.inputStream()) }
+            val writesBeforeRestart = writes.get()
+            val restoredEntry = VerifiedRecoveryUploadCache(root).entry(hash) { error("VERIFIED_RECEIPT_NOT_REUSED") }
+            val out = java.io.ByteArrayOutputStream()
+            vault.restore(restoredEntry, out)
+            assertArrayEquals(bytes, out.toByteArray())
+            assertEquals(writesBeforeRestart, writes.get())
+        } finally { root.deleteRecursively() }
+    }
+
 }
