@@ -44,8 +44,8 @@ class CloudSetupActivity: Activity() {
                         runOnUiThread { note.text = "Check the confirmation email, then return here and sign in. No checkpoint is confirmed yet." }
                     } else {
                         if (!signup) session.signIn(e, p)
-                        CloudRecovery.runPass(applicationContext)
-                        runOnUiThread { note.text = "Account checked. Review checkpoint status below before continuing."; renderStatus() }
+                        CloudRecovery.request(applicationContext)
+                        runOnUiThread { note.text = "Signed in. Initial backup is running; review its progress below."; renderStatus() }
                     }
                 } catch (ex: Exception) {
                     runOnUiThread { note.text = ex.message?.takeIf { it.matches(Regex("[A-Z0-9_]+")) } ?: "Account check failed; retry after checking your connection." }
