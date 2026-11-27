@@ -18,6 +18,9 @@ const sha = d => execFileSync('git', ['-C', d, 'rev-parse', 'HEAD']).toString().
 const PYH = path.join(A, 'tools', 'paired_integration', 'paired_py.py');
 const tmp = mkdtempSync(path.join(os.tmpdir(), 'paired-'));
 const sl = path.join(tmp, 'single_leg_v1');
+// 27 Nov: the active index is BNF (NF retired: INDEX_RETIRED_BNF_ONLY). Same assertions as before, on BNF;
+// NF is additionally asserted to be refused at admission (check 3b) rather than silently dropped.
+const IX = 'BNF';
 const py = (...args) => execFileSync('python3', [PYH, ...args], { cwd: A }).toString().trim();
 
 const checks = [];
@@ -92,20 +95,25 @@ const missingAll = used.filter(n => typeof NB[n] !== 'function');
 // 2. card renders the Python-published proposal
 check('single-leg card renders the published Python plan and capital-unset warning', () => {
   const html = pctx.renderSingleLegCard(result);
-  const nf = result.single_leg_by_index.NF;
-  assert.ok(html.includes(`data-index="NF" data-decision-id="${nf.decision_id}" data-instrument-key="${nf.instrument_key}" onclick="admitSingleLegFromButton(this)"`), 'bound admit button');
+  const p = result.single_leg_by_index[IX];
+  assert.ok(html.includes(`data-index="${IX}" data-decision-id="${p.decision_id}" data-instrument-key="${p.instrument_key}" onclick="admitSingleLegFromButton(this)"`), 'bound admit button');
   assert.match(html, /not set/);
 });
-const NFID = () => [result.single_leg_by_index.NF.decision_id, result.single_leg_by_index.NF.instrument_key];
+const IXID = () => [result.single_leg_by_index[IX].decision_id, result.single_leg_by_index[IX].instrument_key];
 // 3. admission with capital UNSET -> named rejection from Python, surfaced
 check('capital unset -> CAPITAL_CONFIG_UNAVAILABLE via PENDING/status poll', () => {
-  const p = pctx.admitSingleLeg('NF', ...NFID()); assert.equal(p.status, 'PENDING'); drain();
+  const p = pctx.admitSingleLeg(IX, ...IXID()); assert.equal(p.status, 'PENDING'); drain();
   assert.match(alerts.at(-1) || '', /CAPITAL_CONFIG_UNAVAILABLE/);
+});
+// 3b. retired NF is refused by the real Python admission with the named reason (never admitted)
+check('retired NF admission is refused with INDEX_RETIRED_BNF_ONLY', () => {
+  const r = JSON.parse(py('admit', sl, 'pair-nf', '250000', resultPath, 'NF'));
+  assert.notEqual(r.status, 'ADMITTED'); assert.equal(r.reason, 'INDEX_RETIRED_BNF_ONLY');
 });
 // 4. capital set via the facade, then admission succeeds and the store read renders the position
 check('capital set -> ADMITTED; store read renders the simulated position', () => {
   assert.equal(JSON.parse(NB.setSingleLegCapital(250000)).status, 'OK');
-  const n = alerts.length; pctx.admitSingleLeg('NF', ...NFID()); drain();
+  const n = alerts.length; pctx.admitSingleLeg(IX, ...IXID()); drain();
   assert.equal(alerts.length, n, alerts.at(-1));
   const html = pctx.renderSingleLegCard(result);
   assert.match(html, /Local Paper positions/);
@@ -114,12 +122,12 @@ check('capital set -> ADMITTED; store read renders the simulated position', () =
 });
 // 4b. A1: a displayed identity that is no longer current is rejected at the first read with a clear report
 check('displayed identity replaced before first read -> DISPLAYED_PROPOSAL_CHANGED, requires a new tap', () => {
-  const n = alerts.length; const [d, k] = NFID();
-  pctx.admitSingleLeg('NF', d + '_old', k); drain();
+  const n = alerts.length; const [d, k] = IXID();
+  pctx.admitSingleLeg(IX, d + '_old', k); drain();
   assert.equal(alerts.length, n + 1); assert.match(alerts.at(-1), /proposal changed after you tapped \(decision_id\)/);
-  pctx.admitSingleLeg('NF', d, k + '_old'); drain();
+  pctx.admitSingleLeg(IX, d, k + '_old'); drain();
   assert.match(alerts.at(-1), /DISPLAYED_PROPOSAL_CHANGED:instrument_key/);
-  assert.equal(JSON.parse(NB.singleLegAdmitDisplayed('NF', '', '')).reason, 'DISPLAYED_IDENTITY_REQUIRED');
+  assert.equal(JSON.parse(NB.singleLegAdmitDisplayed(IX, '', '')).reason, 'DISPLAYED_IDENTITY_REQUIRED');
 });
 // 5. reconcile by request id through the facade
 check('request status reconciles by id after completion', () => {
@@ -135,16 +143,17 @@ check('restart: unknown id is fenced under the lock; later admit with that id ca
 });
 // 6. daily review report from the same store -> groups rendered per index
 let review = null;
-check('daily review groups (Python) render in the PWA card; BNF independent; no combined score', () => {
+check('daily review groups (Python) render in the PWA card; NF independent (no entries); no combined score', () => {
   review = JSON.parse(py('review', sl, resultPath));
-  const g = review.by_index.NF.paper_outcome_groups['ACTUAL_PAPER|index_single_leg_v1'].groups;
+  const g = review.by_index[IX].paper_outcome_groups['ACTUAL_PAPER|index_single_leg_v1'].groups;
   assert.equal(g.SINGLE_LEG_BUY.entries, 1);
   assert.equal(g.SINGLE_LEG_SELL.net_status, 'NO_OBSERVATIONS');
   vm.runInContext(`DAILY_REVIEW_CACHE = ${JSON.stringify({ latest: review })};`, pctx);
   const html = pctx.renderDailyReviewCard();
   assert.match(html, /SINGLE_LEG_BUY: entries 1/);
   assert.match(html, /SINGLE_LEG_SELL: entries 0/);
-  assert.equal(review.by_index.BNF.paper_outcome_groups['ACTUAL_PAPER|index_single_leg_v1'].groups.SINGLE_LEG_BUY.entries, 0);
+  const nfGroups = review.by_index.NF?.paper_outcome_groups?.['ACTUAL_PAPER|index_single_leg_v1']?.groups;
+  assert.equal(nfGroups ? nfGroups.SINGLE_LEG_BUY.entries : 0, 0);
   assert.doesNotMatch(JSON.stringify(Object.keys(review)), /combined/i);
 });
 
