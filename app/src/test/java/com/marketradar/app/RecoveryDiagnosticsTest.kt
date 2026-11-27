@@ -108,4 +108,20 @@ class RecoveryDiagnosticsTest {
         assertFalse(CloudDataPolicy.portablePath("forensics/logbuffer.jsonl"))
         assertFalse(src.contains("getSharedPreferences(\"cloud_recovery_diagnostics"))
     }
+
+    @Test fun dirtyGroupsNameOnlyTopLevelGroupsAndCountChangesAgainstTheVerifiedManifest() {
+        val previous = mapOf("files/single_leg_v1/positions.json" to "a", "files/cloud_history_outbox_v1/x_1.bin" to "b",
+            "prefs/market_radar.json" to "c", "files/cloud_session_v1/token_cache.json" to "d")
+        val current = mapOf("files/single_leg_v1/positions.json" to "a2", "prefs/market_radar.json" to "c",
+            "files/research_m0/session_private_name.jsonl" to "e", "files/cloud_session_v1/token_cache.json" to "d2")
+        val d = RecoveryDiagnostics.dirty(current, previous, { 100L })
+        assertEquals(1, d.added); assertEquals(2, d.modified); assertEquals(1, d.removed); assertEquals(300L, d.bytes)
+        assertTrue(d.groups.contains("files/single_leg_v1:a0m1r0"))
+        assertTrue(d.groups.contains("files/cloud_history_outbox_v1:a0m0r1"))
+        assertTrue(d.groups.contains("files/redacted:a0m1r0"))
+        for (leak in listOf("positions.json", "session_private_name", "token_cache", "cloud_session")) assertFalse(leak, d.groups.contains(leak))
+        val s = RecoveryDiagnostics.PassStats("worker") { 0L }; s.dirty = d
+        assertTrue(s.logLine(0).contains("dirty=a1/m2/r1/300b"))
+        assertEquals(0, RecoveryDiagnostics.dirty(previous, previous, { 1L }).let { it.added + it.modified + it.removed })
+    }
 }

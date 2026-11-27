@@ -451,6 +451,8 @@ object CloudRecovery {
             stats.portableBytes = sources.sumOf { it.file?.length() ?: it.bytes?.size?.toLong() ?: 0L }
             stats.stage("hash_before")
             val before = fingerprints(sources) { transport.renewLease?.invoke() }
+            val sizes = sources.associate { it.path to (it.file?.length() ?: it.bytes?.size?.toLong() ?: 0L) }
+            stats.dirty = RecoveryDiagnostics.dirty(before, oldManifest?.let { manifestFingerprints(it) } ?: emptyMap(), { sizes[it] ?: 0L })
             stats.stage("upload")
             val entries = JSONObject()
             val oldEntries = oldManifest?.getJSONObject("entries") ?: JSONObject()

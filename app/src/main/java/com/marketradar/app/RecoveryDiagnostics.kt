@@ -133,6 +133,7 @@ object RecoveryDiagnostics {
         @Volatile var gateReason = ""
         @Volatile var outcome = "RUNNING"
         @Volatile var committed = false
+        @Volatile var dirty: Dirty? = null
         @Synchronized fun stage(next: String) {
             val now = clock()
             stages[stage] = (stages[stage] ?: 0L) + (now - stageStart)
@@ -150,12 +151,35 @@ object RecoveryDiagnostics {
             .put("bytes_uploaded", bytesUploaded.get()).put("files_uploaded", filesUploaded.get())
             .put("files_reused_manifest", filesReusedManifest.get()).put("files_reused_receipt", filesReusedReceipt.get())
             .put("portable_files", portableFiles).put("portable_bytes", portableBytes)
+            .put("dirty", dirty?.let { JSONObject().put("added", it.added).put("modified", it.modified)
+                .put("removed", it.removed).put("bytes", it.bytes).put("groups", it.groups) } ?: JSONObject.NULL)
         @Synchronized fun logLine(totalMs: Long): String = "CLOUD_PASS_STATS trigger=$trigger mode=$mode gate=${gateReason.ifBlank { "-" }} " +
             "outcome=$outcome committed=$committed total_ms=$totalMs " +
             stages.filterKeys { it != "done" }.entries.joinToString(" ") { "${it.key}_ms=${it.value}" } +
             " hashed=${bytesHashed.get()}b/${filesHashed.get()}f uploaded=${bytesUploaded.get()}b/${filesUploaded.get()}f " +
             "reused_manifest=${filesReusedManifest.get()} reused_receipt=${filesReusedReceipt.get()} " +
-            "portable=${portableBytes}b/${portableFiles}f"
+            "portable=${portableBytes}b/${portableFiles}f" +
+            (dirty?.let { " dirty=a${it.added}/m${it.modified}/r${it.removed}/${it.bytes}b groups=${it.groups.ifBlank { "-" }}" } ?: "")
+    }
+
+    /** Which checkpoint groups differ from the previous verified manifest: `files/<top>` or `prefs/<name>`
+     * (sanitised), with added/modified/removed counts and bytes of added+modified entries. No file names below top level.
+     */
+    data class Dirty(val added: Int, val modified: Int, val removed: Int, val bytes: Long, val groups: String)
+    fun dirty(current: Map<String, String>, previous: Map<String, String>, sizeOf: (String) -> Long, maxGroups: Int = 8): Dirty {
+        fun group(path: String): String { val parts = path.split('/'); return parts[0] + "/" + safeName(parts.getOrElse(1) { "" }) }
+        val counts = LinkedHashMap<String, IntArray>(); var a = 0; var m = 0; var r = 0; var bytes = 0L
+        fun bump(path: String, i: Int) { counts.getOrPut(group(path)) { IntArray(3) }[i]++ }
+        current.forEach { (path, sha) ->
+            val old = previous[path]
+            if (old == null) { a++; bump(path, 0); bytes += sizeOf(path) }
+            else if (old != sha) { m++; bump(path, 1); bytes += sizeOf(path) }
+        }
+        previous.keys.forEach { if (it !in current) { r++; bump(it, 2) } }
+        val text = counts.entries.sortedByDescending { it.value.sum() }.take(maxGroups)
+            .joinToString(",") { "${it.key}:a${it.value[0]}m${it.value[1]}r${it.value[2]}" } +
+            (if (counts.size > maxGroups) ",+${counts.size - maxGroups}groups" else "")
+        return Dirty(a, m, r, bytes, text)
     }
 
     /** Process-lifetime wakeup counters (pass invocations by trigger, observer mutation signals). */
