@@ -342,11 +342,14 @@ object CloudRecovery {
             val receiptCache = VerifiedRecoveryUploadCache(File(c.noBackupFilesDir, "cloud_verified_upload_cache_v1/$uid"))
             val completed = java.util.concurrent.atomic.AtomicInteger()
             val pool = Executors.newFixedThreadPool(6)
+            val batchFailure = java.util.concurrent.atomic.AtomicReference<Exception>()
             try {
                 state = "UPLOADING_RECOVERY_DATA"
                 // Wait for all workers before publishing or failing this pass. Receipts from
                 // successful workers survive a later failure or a process restart.
                 val jobs = sources.map { source -> java.util.concurrent.Callable {
+                    batchFailure.get()?.let { throw it }
+                    try {
                     val expected = before.getValue(source.path)
                     val old = oldEntries.optJSONObject(source.path)
                     val entry = if (old != null && old.optString("sha256") == expected) old
@@ -354,6 +357,7 @@ object CloudRecovery {
                     require(entry.getString("sha256") == expected) { "CACHE_CHANGED_DURING_UPLOAD" }
                     synchronized(completed) { filesChecked = completed.incrementAndGet() }
                     source.path to entry
+                    } catch (e: Exception) { batchFailure.compareAndSet(null, e); throw e }
                 } }
                 pool.invokeAll(jobs).forEach { future ->
                     val result = try { future.get() }
