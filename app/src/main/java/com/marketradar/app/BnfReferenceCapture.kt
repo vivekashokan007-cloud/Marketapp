@@ -114,9 +114,7 @@ object BnfReferenceCapture {
                         require(BnfRawCapture.record(root, "marketradar://capture/reference", began,
                             System.currentTimeMillis(), 200, weights.toString().toByteArray()))
                         validatedPublications++
-                        val latest = File(dir, "weights_latest.json")
-                        val tmp = File.createTempFile("weights_", ".tmp", dir)
-                        try { tmp.writeText(weights.toString()); require(tmp.renameTo(latest)) } finally { tmp.delete() }
+                        BnfBreadthUniverse.saveLatest(dir, weights)
                     }
                 }
             }

@@ -9,6 +9,21 @@ import kotlin.math.abs
 internal object BnfBreadthUniverse {
     data class Stock(val symbol: String, val instrumentKey: String, val weight: Double)
 
+    /** Monthly report links need not arrive newest first. Never replace a newer publication with an older one. */
+    fun saveLatest(dir: File, weights: JSONObject): Boolean {
+        require(weights.getString("schema") == "bnf_monthly_weights_v1" && weights.getString("status") == "VALIDATED")
+        val published = LocalDate.parse(weights.getString("as_of_date"))
+        val latest = File(dir, "weights_latest.json")
+        if (latest.exists()) {
+            val existing = JSONObject(latest.readText())
+            require(existing.getString("schema") == "bnf_monthly_weights_v1" && existing.getString("status") == "VALIDATED")
+            if (LocalDate.parse(existing.getString("as_of_date")) > published) return false
+        }
+        val tmp = File.createTempFile("weights_", ".tmp", dir)
+        try { tmp.writeText(weights.toString()); require(tmp.renameTo(latest)) } finally { tmp.delete() }
+        return true
+    }
+
     fun load(root: File, day: String): List<Stock> {
         val dir = File(root, "bnf_reference_v1")
         val daily = JSONObject(File(dir, "$day.json").readText())

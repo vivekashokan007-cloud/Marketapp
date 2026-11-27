@@ -54,4 +54,16 @@ class BnfBreadthUniverseTest {
             assertThrows(IllegalArgumentException::class.java) { BnfBreadthUniverse.load(root, "2026-11-27") }
         } finally { root.deleteRecursively() }
     }
+
+    @Test fun unorderedMonthlyReportLinksCannotDowngradeTheLatestWeights() {
+        val dir = Files.createTempDirectory("bnf-latest-weights").toFile()
+        try {
+            val older = JSONObject().put("schema", "bnf_monthly_weights_v1").put("status", "VALIDATED")
+                .put("as_of_date", "2026-10-30")
+            val newer = JSONObject(older.toString()).put("as_of_date", "2026-11-26")
+            assertTrue(BnfBreadthUniverse.saveLatest(dir, newer))
+            assertFalse(BnfBreadthUniverse.saveLatest(dir, older))
+            assertEquals("2026-11-26", JSONObject(dir.resolve("weights_latest.json").readText()).getString("as_of_date"))
+        } finally { dir.deleteRecursively() }
+    }
 }
