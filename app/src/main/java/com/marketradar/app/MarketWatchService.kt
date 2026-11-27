@@ -254,16 +254,6 @@ class MarketWatchService : Service() {
         private const val DAY_EVAL_HANDOFF_DATE_KEY = "day_eval_handoff_date"
         private const val DAY_EVAL_HANDOFF_STALE_MS = 4 * 60 * 60 * 1000L
         
-        private const val KOTAK_KEY_PREF = "kotak_instrument_key"
-        private const val KOTAK_KEY_CURRENT = "NSE_EQ|INE237A01036"
-        private const val KOTAK_KEY_LEGACY = "NSE_EQ|INE237A01028"
-
-        private val BNF_STOCKS_BASE = listOf(
-            BreadthStock("HDFCBANK", "NSE_EQ|INE040A01034", "NSE_EQ:HDFCBANK", 0.2522),
-            BreadthStock("SBIN", "NSE_EQ|INE062A01020", "NSE_EQ:SBIN", 0.2042),
-            BreadthStock("ICICIBANK", "NSE_EQ|INE009A01021", "NSE_EQ:ICICIBANK", 0.1977),
-            BreadthStock("AXISBANK", "NSE_EQ|INE238A01034", "NSE_EQ:AXISBANK", 0.0865)
-        )
     }
 
     private data class SessionIntegritySummary(
@@ -309,33 +299,10 @@ class MarketWatchService : Service() {
         createNotificationChannel()
     }
 
-    private fun getCachedKotakKey(): String {
-        val cached = prefs.getString(KOTAK_KEY_PREF, KOTAK_KEY_CURRENT) ?: KOTAK_KEY_CURRENT
-        return if (cached.isNotBlank()) cached else KOTAK_KEY_CURRENT
-    }
-
-    private fun getBnfStocks(kotakKey: String = getCachedKotakKey()): List<BreadthStock> {
-        return listOf(BreadthStock("KOTAKBANK", kotakKey, "NSE_EQ:KOTAKBANK", 0.0781)) + BNF_STOCKS_BASE
-    }
-
-    private suspend fun resolveKotakKey(token: String): String {
-        val candidates = listOf(getCachedKotakKey(), KOTAK_KEY_CURRENT, KOTAK_KEY_LEGACY).distinct()
-        for (candidate in candidates) {
-            try {
-                val url = "https://api.upstox.com/v2/market-quote/quotes?instrument_key=$candidate"
-                val json = fetchSync(url, token) ?: continue
-                val data = json.optJSONObject("data") ?: continue
-                val hit = findQuoteByInstrument(data, candidate, "NSE_EQ:KOTAKBANK")
-                if (hit != null) {
-                    prefs.edit().putString(KOTAK_KEY_PREF, candidate).apply()
-                    LogBuffer.add('I', TAG, "KOTAK_KEY_RESOLVED: $candidate")
-                    return candidate
-                }
-            } catch (_: Exception) {
-            }
+    private fun getBnfStocks(): List<BreadthStock> =
+        BnfBreadthUniverse.load(filesDir, todayIstDate()).map {
+            BreadthStock(it.symbol, it.instrumentKey, "NSE_EQ:${it.symbol}", it.weight)
         }
-        return getCachedKotakKey()
-    }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (!CloudRecovery.canMonitor() && intent?.action != "STOP") { stopSelf(); return START_NOT_STICKY }
@@ -1058,11 +1025,13 @@ class MarketWatchService : Service() {
             updateForegroundNotification("Polling Market", "Fetching Quotes...")
 
             // A8: Parallelize independent HTTP calls
-            val kotakKey = resolveKotakKey(token)
-            val bnfStocks = getBnfStocks(kotakKey).joinToString(",") { it.requestKey }
+            val bnfStocks = runCatching { getBnfStocks() }.onFailure {
+                LogBuffer.add('W', TAG, "BNF_BREADTH_REFERENCE_UNAVAILABLE: ${it.javaClass.simpleName}")
+            }.getOrDefault(emptyList())
             val quotesUrl = "https://api.upstox.com/v2/market-quote/quotes?instrument_key=NSE_INDEX|Nifty Bank,NSE_INDEX|India VIX"
             val bnfUrl = "https://api.upstox.com/v2/option/chain?instrument_key=NSE_INDEX|Nifty Bank&expiry_date=$bnfExpiry"
-            val bnfStocksUrl = "https://api.upstox.com/v2/market-quote/quotes?instrument_key=$bnfStocks"
+            val bnfStocksUrl = if (bnfStocks.isEmpty()) null else
+                "https://api.upstox.com/v2/market-quote/quotes?instrument_key=${bnfStocks.joinToString(",") { it.requestKey }}"
 
             // Evidence batch 1 (Item C): device-local clock around the index quotes fetch only.
             var quotesFetchStartedAtMs = 0L
@@ -1092,7 +1061,7 @@ class MarketWatchService : Service() {
                         if (it != null) x1BnfChainFetchedAtMs = capBnfCompletedAtMs
                     }
                 }
-                val stocks = async(Dispatchers.IO) { fetchSync(bnfStocksUrl, token) }
+                val stocks = async(Dispatchers.IO) { bnfStocksUrl?.let { fetchSync(it, token) } }
                 Triple(quotes.await(), chain.await(), stocks.await())
             } }
             val (quotesJson, chainResponse, stocksResponse) = acquisition.value
@@ -1100,7 +1069,8 @@ class MarketWatchService : Service() {
             scheduleBnfUniverseCapture(today, token)
             val nf50Breadth = JSONObject()
             val bnfChainJson = chainResponse ?: JSONObject().put("data", JSONArray()).put("input_failure", "CHAIN_FETCH_FAILED")
-            val bnfStocksJson = stocksResponse ?: JSONObject().put("data", JSONObject()).put("input_failure", "BNF_BREADTH_FETCH_FAILED")
+            val bnfStocksJson = stocksResponse ?: JSONObject().put("data", JSONObject()).put("input_failure",
+                if (bnfStocks.isEmpty()) "BNF_BREADTH_REFERENCE_UNAVAILABLE" else "BNF_BREADTH_FETCH_FAILED")
             val nfChainJson = JSONObject().put("data", JSONArray()).put("retired", BnfScope.RETIRED)
 
             // Premium evidence capture, DEFAULT OFF. Placed deliberately here: immediately after
@@ -1163,34 +1133,17 @@ class MarketWatchService : Service() {
             }
 
             Log.d(TAG, "A8_PARALLEL_FETCH: quotes=${quotesJson != null} bnfChain=${bnfChainJson != null} bnfStocks=${bnfStocksJson != null}")
-            LogBuffer.add('D', TAG, "BREADTH_HTTP_URL: $bnfStocksUrl")
+            LogBuffer.add('D', TAG, "BREADTH_HTTP_URL: ${bnfStocksUrl ?: "REFERENCE_UNAVAILABLE"}")
 
             if (bnfStocksJson != null) {
                 try {
                     val breadthData = bnfStocksJson.optJSONObject("data")
-                    val kotakPresent = breadthData?.let {
-                        findQuoteByInstrument(it, kotakKey, "NSE_EQ:KOTAKBANK") != null
-                    } ?: false
-                    if (!kotakPresent) {
-                        val retryKey = if (kotakKey == KOTAK_KEY_CURRENT) KOTAK_KEY_LEGACY else KOTAK_KEY_CURRENT
-                        val kotakUrl = "https://api.upstox.com/v2/market-quote/quotes?instrument_key=$kotakKey,$retryKey"
-                        val kotakJson = fetchSync(kotakUrl, token)
-                        val kotakData = kotakJson?.optJSONObject("data")
-                        if (kotakData != null && breadthData != null) {
-                            val mergedKotak = kotakData.optJSONObject(kotakKey)
-                                ?: kotakData.optJSONObject(kotakKey.replace("|", ":"))
-                                ?: kotakData.optJSONObject(retryKey)
-                                ?: kotakData.optJSONObject(retryKey.replace("|", ":"))
-                            if (mergedKotak != null) {
-                                breadthData.put(kotakKey, mergedKotak)
-                                LogBuffer.add('I', TAG, "BREADTH_KOTAK_RETRY_MERGED: key=$kotakKey")
-                            } else {
-                                LogBuffer.add('W', TAG, "BREADTH_KOTAK_RETRY_EMPTY: key=$kotakKey")
-                            }
-                        } else {
-                            LogBuffer.add('W', TAG, "BREADTH_KOTAK_RETRY_NULL: key=$kotakKey")
+                    val kotakPresent = breadthData?.let { data ->
+                        bnfStocks.firstOrNull { it.symbol == "KOTAKBANK" }?.let {
+                            findQuoteByInstrument(data, it.requestKey, it.responseKey) != null
                         }
-                    }
+                    } ?: false
+                    if (!kotakPresent) LogBuffer.add('W', TAG, "BREADTH_KOTAK_MISSING_FROM_RESPONSE")
                 } catch (e: Exception) {
                     LogBuffer.add('W', TAG, "BREADTH_KOTAK_RETRY_ERROR: ${e.message}")
                 }
@@ -2011,6 +1964,7 @@ class MarketWatchService : Service() {
         } catch (e: Exception) {
             Log.e(TAG, "Breadth calc failed: ${e.message}")
             LogBuffer.add('E', TAG, "BREADTH_ERROR: ${e.message}")
+            result.put("status", "UNAVAILABLE").put("reason", "BNF_BREADTH_REFERENCE_OR_QUOTE_INVALID")
             result.put("pct", 50.0)
                 .put("weightedPct", 0.0)
                 .put("advancing", 0)
@@ -2018,7 +1972,7 @@ class MarketWatchService : Service() {
                 .put("neutral", 0)
                 .put("considered", 0)
                 .put("coverageWeight", 0.0)
-                .put("configuredWeight", getBnfStocks().sumOf { it.weight })
+                .put("configuredWeight", runCatching { getBnfStocks().sumOf { it.weight } }.getOrDefault(0.0))
                 .put("coveragePct", 0.0)
                 .put("results", JSONArray())
         }
