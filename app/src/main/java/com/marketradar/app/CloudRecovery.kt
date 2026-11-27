@@ -204,8 +204,7 @@ object CloudRecovery {
     }
     private fun preferenceFiles(c: Context): List<String> = File(c.applicationInfo.dataDir, "shared_prefs")
         .listFiles()?.map { it.name.removeSuffix(".xml") }?.filter {
-            it.endsWith(".bak").not() && it !in setOf(PREFS, "lifecycle_diagnostics") &&
-                !it.startsWith("androidx.") && !it.startsWith("com.google.")
+            it.endsWith(".bak").not() && CloudDataPolicy.portablePreferenceFile(it)
         }?.distinct()?.sorted() ?: emptyList()
     private fun typedPreferences(c: Context, name: String): ByteArray {
         val values = JSONObject()

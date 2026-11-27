@@ -6,6 +6,9 @@ import java.io.File
 
 /** Recovery data policy. Credentials and process/device leases are never portable. */
 object CloudDataPolicy {
+    fun portablePreferenceFile(name: String): Boolean =
+        name !in setOf("cloud_vault_v1", "lifecycle_diagnostics", "bnf_source_upload_status") &&
+            !name.startsWith("androidx.") && !name.startsWith("com.google.")
     /** Android may expose the app root through /data/user/0 or another root alias.
      * Permit that root alias while rejecting symlinks introduced beneath it.
      */

@@ -8,6 +8,12 @@ import java.nio.file.Files
 import java.io.ByteArrayOutputStream
 
 class CloudVaultTest {
+    @Test fun uploadProgressTelemetryCannotInvalidateTheRecoverySnapshot() {
+        assertFalse(CloudDataPolicy.portablePreferenceFile("bnf_source_upload_status"))
+        assertFalse(CloudDataPolicy.portablePreferenceFile("cloud_vault_v1"))
+        assertTrue(CloudDataPolicy.portablePreferenceFile("market_radar"))
+        assertTrue(CloudDataPolicy.portablePreferenceFile("cloud_web_cache_v1"))
+    }
     @Test fun androidRootAliasesAreAllowedButChildSymlinksAreRejected() {
         val parent = Files.createTempDirectory("android-root-alias").toFile()
         try {
