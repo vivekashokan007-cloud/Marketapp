@@ -125,18 +125,29 @@ object CloudRecovery {
         var renewLease: (() -> Unit)? = null
         private val cache = File(c.noBackupFilesDir, "cloud_manifest_cache")
         private val auth = CloudSession(c)
+        private val authLock = Any()
+        private var sessionCache: JSONObject? = null
+        private fun currentSession(): JSONObject = synchronized(authLock) {
+            val cached = sessionCache
+            if (cached != null && cached.optLong("expires_at") > System.currentTimeMillis()/1000 + 120) cached
+            else auth.session().also { sessionCache = it }
+        }
         private val client = OkHttpClient.Builder().connectTimeout(20, TimeUnit.SECONDS).readTimeout(60, TimeUnit.SECONDS)
             .authenticator { _, response ->
                 // One server-driven refresh covers clock skew without an authentication retry loop.
-                if (response.priorResponse != null) null else response.request.newBuilder()
-                    .header("Authorization", "Bearer " + auth.refreshAccessToken()).build()
+                if (response.priorResponse != null) null else synchronized(authLock) {
+                    val current = currentSession().getString("access_token")
+                    val token = if (response.request.header("Authorization") != "Bearer $current") current
+                        else auth.refreshAccessToken().also { sessionCache = auth.session() }
+                    response.request.newBuilder().header("Authorization", "Bearer $token").build()
+                }
             }.build()
         private fun request(path: String): Request.Builder {
-            val s = auth.session()
+            val s = currentSession()
             return Request.Builder().url(BuildConfig.SUPABASE_URL + path).header("apikey", BuildConfig.SUPABASE_ANON_KEY)
                 .header("Authorization", "Bearer " + s.getString("access_token"))
         }
-        fun uid(): String = auth.session().getJSONObject("user").getString("id")
+        fun uid(): String = currentSession().getJSONObject("user").getString("id")
         fun head(): JSONObject? {
             val req = request("/rest/v1/mr_cloud_heads?select=*&owner_id=eq." + uid()).get().build()
             val bytes = execute(req, 64 * 1024)
@@ -294,14 +305,15 @@ object CloudRecovery {
             head = transport.rpc("mr_cloud_claim", claim)
             leaseUntil = head.getLong("_lease_deadline_elapsed")
             var lastRenewal = android.os.SystemClock.elapsedRealtime()
-            transport.renewLease = {
+            val leaseRenewalLock = Any()
+            transport.renewLease = { synchronized(leaseRenewalLock) {
                 val now = android.os.SystemClock.elapsedRealtime()
                 if (now - lastRenewal >= 30_000) {
                     val renewed = transport.rpc("mr_cloud_claim", JSONObject().put("p_device", device).put("p_expected", revision))
                     leaseUntil = renewed.getLong("_lease_deadline_elapsed")
                     lastRenewal = now
                 }
-            }
+            } }
             if (!ready && oldManifest != null && (!metadata.getBoolean("initialized", false) || revision != localRevision ||
                         File(c.noBackupFilesDir, "cloud_restore_pending").exists())) {
                 state = "RESTORING_VERIFIED_CLOUD_STATE"
@@ -328,14 +340,27 @@ object CloudRecovery {
             val before = fingerprints(sources)
             val entries = JSONObject()
             val oldEntries = oldManifest?.getJSONObject("entries") ?: JSONObject()
-            for (source in sources) {
-                val old = oldEntries.optJSONObject(source.path)
-                state = if (old != null && old.optString("sha256") == before[source.path]) "CHECKING_PENDING_CACHE" else "UPLOADING_RECOVERY_DATA"
-                val entry = if (old != null && old.optString("sha256") == before[source.path]) old else vault.store(source.stream())
-                require(entry.getString("sha256") == before[source.path]) { "CACHE_CHANGED_DURING_UPLOAD" }
-                entries.put(source.path, entry)
-                filesChecked++
-            }
+            val receiptCache = VerifiedRecoveryUploadCache(File(c.noBackupFilesDir, "cloud_verified_upload_cache_v1/$uid"))
+            val completed = java.util.concurrent.atomic.AtomicInteger()
+            val pool = Executors.newFixedThreadPool(6)
+            try {
+                state = "UPLOADING_RECOVERY_DATA"
+                // Wait for all workers before publishing or failing this pass. Receipts from
+                // successful workers survive a later failure or a process restart.
+                val jobs = sources.map { source -> java.util.concurrent.Callable {
+                    val expected = before.getValue(source.path)
+                    val old = oldEntries.optJSONObject(source.path)
+                    val entry = if (old != null && old.optString("sha256") == expected) old
+                        else receiptCache.entry(expected) { vault.store(source.stream()) }
+                    require(entry.getString("sha256") == expected) { "CACHE_CHANGED_DURING_UPLOAD" }
+                    synchronized(completed) { filesChecked = completed.incrementAndGet() }
+                    source.path to entry
+                } }
+                pool.invokeAll(jobs).forEach { future ->
+                    val (path, entry) = future.get()
+                    entries.put(path, entry)
+                }
+            } finally { pool.shutdownNow() }
             require(before == fingerprints(inventory(c))) { "CACHE_CHANGED_DURING_UPLOAD" }
             if (oldManifest == null || before != manifestFingerprints(oldManifest)) {
                 state = "UPLOADING_CHECKPOINT"
