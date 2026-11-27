@@ -56,7 +56,7 @@ class CloudSetupActivity: Activity() {
         action("Create app account") { authenticate(true) }
         action("Retry cloud sync") { CloudRecovery.request(applicationContext); note.text = "Sync requested. Keep this screen open during first upload." }
         action("Continue to Paper app") {
-            if (CloudRecovery.canOpen()) { startActivity(Intent(this, MainActivity::class.java)); finish() }
+            if (CloudRecovery.canOpen(applicationContext)) { startActivity(Intent(this, MainActivity::class.java)); finish() }
             else note.text = "Finish sign-in and verified recovery first. Existing phone data has been retained."
         }
         action("Open local Paper cache — backup incomplete") {

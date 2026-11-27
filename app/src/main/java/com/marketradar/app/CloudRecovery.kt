@@ -63,7 +63,20 @@ object CloudRecovery {
     }
     private fun meta(c: Context) = c.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
     fun owner(c: Context): String = meta(c).getString("owner", "") ?: ""
-    fun canOpen(): Boolean = ready
+    /** A normal in-place update must not wait for the entire file inventory/upload
+     * before showing this phone's already verified Paper state. This is a UI gate
+     * only: canMonitor still requires a fresh cloud lease and verified web state.
+     * A new device or interrupted restore continues through CloudSetupActivity.
+     */
+    fun canOpen(c: Context): Boolean {
+        if (File(c.noBackupFilesDir, "cloud_restore_pending").exists()) return false
+        if (ready) return true
+        val m = meta(c)
+        return m.getBoolean("initialized", false) && owner(c).isNotBlank() &&
+            m.getLong("revision", 0L) > 0L &&
+            m.getString("verified_at", "").orEmpty().isNotBlank() &&
+            CloudVault.validHash(m.getString("checkpoint_sha256", "").orEmpty())
+    }
     fun openLocalPaperCache(c: Context): Boolean {
         if (File(c.noBackupFilesDir, "cloud_restore_pending").exists()) return false
         ready = true; leaseUntil = 0; webVerified = false

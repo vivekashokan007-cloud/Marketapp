@@ -201,7 +201,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        if (!CloudRecovery.canOpen()) {
+        if (!CloudRecovery.canOpen(applicationContext)) {
             startActivity(Intent(this, CloudSetupActivity::class.java))
             finish()
             return
