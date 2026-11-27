@@ -253,7 +253,8 @@ class MainActivity : AppCompatActivity() {
             
             setOnMenuItemClickListener { item ->
                 if (item.itemId == 2) {
-                    startActivity(Intent(this@MainActivity, CloudSetupActivity::class.java))
+                    startActivity(Intent(this@MainActivity, CloudSetupActivity::class.java)
+                        .putExtra(CloudSetupActivity.EXTRA_MANUAL_OPEN, true))
                     return@setOnMenuItemClickListener true
                 }
                 if (item.itemId == 1) {

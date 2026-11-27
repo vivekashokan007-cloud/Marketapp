@@ -12,6 +12,7 @@ import java.util.concurrent.Executors
 
 /** Native app-account setup. Secrets never pass through the JS bridge or exports. */
 class CloudSetupActivity: Activity() {
+    companion object { const val EXTRA_MANUAL_OPEN = "manual_cloud_setup" }
     private val io = Executors.newSingleThreadExecutor()
     private val handler = Handler(Looper.getMainLooper())
     private lateinit var status: TextView
@@ -21,6 +22,15 @@ class CloudSetupActivity: Activity() {
     }
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Android can restore this Activity itself after an APK update. A phone
+        // with an already verified local checkpoint should return to Paper even
+        // when the previously visible task was the recovery screen. Keep the
+        // explicit toolbar route available for inspecting backup status.
+        if (!intent.getBooleanExtra(EXTRA_MANUAL_OPEN, false) && CloudRecovery.canOpen(applicationContext)) {
+            startActivity(Intent(this, MainActivity::class.java))
+            finish()
+            return
+        }
         val layout = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(32, 32, 32, 32) }
         layout.addView(TextView(this).apply { text = "Market Radar cloud recovery"; textSize = 23f })
         layout.addView(TextView(this).apply {
