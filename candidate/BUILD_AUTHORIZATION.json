@@ -1,0 +1,12 @@
+{
+  "schema": "marketradar.candidate_build_authorization.v1",
+  "native_sha": "75d17f0dc0e9d7d37e0f7ee45eff29828fb86ff9",
+  "pwa_sha": "c5148011378d11c754f830c8f1f66bef7f85ff1a",
+  "version_code": "543",
+  "version_name": "2.6.112",
+  "cert_sha256": "fb6042a2eb61045368e8d7b95db6f6d49b04d4b8da2e51b865ca77803a44b478",
+  "artifact_only": true,
+  "approved_by": "Vivek Ashokan P (Market Radar owner)",
+  "approval_reference": "27 November 2026 IST: owner reported the recovery screen after the candidate update and requested correction of the recurring update problem. Owner had authorized candidate builds in this session. This is an artifact-only candidate with the existing GitHub required reviewer gate; no main merge, public release or automatic phone update.",
+  "codex_final_check_reference": "The reviewed parent 75d17f0dc0e9d7d37e0f7ee45eff29828fb86ff9 opens an existing verified local Paper checkpoint immediately on process or Activity restoration. Fresh devices and interrupted restores remain gated. A same-phone, same-owner, same-revision claimed lease permits monitoring during the long backup scan; the scan renews that lease. The no-APK review suite must pass before this authorization is pushed, and the candidate workflow must pass full native/PWA tests, signing and provenance checks before artifact creation. No phone acceptance is claimed."
+}
