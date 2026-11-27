@@ -32,6 +32,21 @@ class H1M1SourceContractTest {
     }
 
     @Test
+    fun foregroundService_rejectedCloudStartStillPromotesBeforeStopping() {
+        // The phone's 27 Nov crash loop was ForegroundServiceDidNotStartInTimeException.
+        // No Android runtime is available in this unit suite, so pin the ordering
+        // that satisfies Android's startForegroundService contract on every path.
+        val service = src("MarketWatchService.kt")
+        val create = service.substringAfter("override fun onCreate() {").substringBefore("private fun getBnfStocks()")
+        val start = service.substringAfter("override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {")
+            .substringBefore("private fun restoreNotificationAgentState()")
+        assertFalse(create.contains("Python.getInstance()"))
+        assertTrue(start.indexOf("startLiveForeground(NOTIFICATION_ID") in 0 until start.indexOf("!CloudRecovery.canMonitor()"))
+        assertTrue(start.indexOf("startLiveForeground(NOTIFICATION_ID") < start.indexOf("foregroundStartBackoffRemainingMs()"))
+        assertTrue(service.contains("if (!selfHealAllowed || !CloudRecovery.canMonitor()) return"))
+    }
+
+    @Test
     fun pollAndBridgePythonCalls_useEffectiveTimeout_withEvidenceBasedAnalyzeLimit() {
         val mw = src("MarketWatchService.kt")
         val nb = src("NativeBridge.kt")

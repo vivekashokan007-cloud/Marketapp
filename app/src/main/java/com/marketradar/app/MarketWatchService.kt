@@ -61,6 +61,7 @@ class MarketWatchService : Service() {
 
     private var pollingJob: Job? = null
     private val serviceStartInProgress = AtomicBoolean(false)
+    private var selfHealAllowed = true
     private val pollInProgress = AtomicBoolean(false)
     private val bnfUniverseInProgress = AtomicBoolean(false)
     private val pollSaveLock = Any()
@@ -271,19 +272,6 @@ class MarketWatchService : Service() {
         super.onCreate()
         prefs = getSharedPreferences("market_radar", Context.MODE_PRIVATE)
 
-        // Restore NotificationAgent state if available
-        try {
-            val savedState = prefs.getString("notification_agent_state", null)
-            if (savedState != null) {
-                val py = Python.getInstance()
-                val brain = py.getModule("brain")
-                brain.callAttr("reset_notification_agent", savedState)
-                Log.i(TAG, "AGENT_STATE_RESTORED")
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "AGENT_STATE_RESTORE_FAIL: ${e.message}")
-        }
-
         Log.i(TAG, "BL_A_CHECK_ENTERED: site=Service.onCreate")
         val now = System.currentTimeMillis()
         val lastServiceCreate = prefs.getLong("last_service_create_ms", 0L)
@@ -305,8 +293,26 @@ class MarketWatchService : Service() {
         }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (!CloudRecovery.canMonitor() && intent?.action != "STOP") { stopSelf(); return START_NOT_STICKY }
+        // Android's startForegroundService contract applies even when cloud recovery
+        // has not acquired its lease yet. A rejected start must first promote the
+        // service, then stop; otherwise Android kills the whole app after its deadline.
+        try {
+            startLiveForeground(NOTIFICATION_ID, createNotification("Service Starting", "Checking monitoring state..."))
+        } catch (t: Throwable) {
+            Log.e(TAG, "SERVICE_START_FOREGROUND_BLOCKED: ${t.javaClass.simpleName}: ${t.message}")
+            recordForegroundStartBlocked(t)
+            selfHealAllowed = false
+            stopSelf(startId)
+            return START_NOT_STICKY
+        }
+        if (!CloudRecovery.canMonitor() && intent?.action != "STOP") {
+            selfHealAllowed = false
+            LogBuffer.add('W', TAG, "SERVICE_START_DEFERRED_CLOUD_MONITOR_NOT_READY")
+            stopSelf(startId)
+            return START_NOT_STICKY
+        }
         if (intent?.action == "STOP") {
+            selfHealAllowed = false
             cancelPollAlarm()
             releaseLease()
             stopPolling()
@@ -314,6 +320,7 @@ class MarketWatchService : Service() {
         }
 
         if (foregroundStartBackoffRemainingMs() > 0L) {
+            selfHealAllowed = false
             val remainingMs = foregroundStartBackoffRemainingMs()
             Log.w(TAG, "SERVICE_START_BACKOFF_ACTIVE: remainingMs=$remainingMs")
             LogBuffer.add('W', TAG, "SERVICE_START_BACKOFF_ACTIVE: remainingMs=$remainingMs")
@@ -325,21 +332,13 @@ class MarketWatchService : Service() {
         Log.w(TAG, "LEASE_RESULT: claimed=${lease.claimed} reason=${lease.reason} gapMs=${lease.gapMs}")
         LogBuffer.add('W', TAG, "LEASE_RESULT: claimed=${lease.claimed} reason=${lease.reason} gapMs=${lease.gapMs}")
         if (!lease.claimed) {
+            selfHealAllowed = false
             stopSelf()
             return START_NOT_STICKY
         }
 
-        try {
-            startLiveForeground(NOTIFICATION_ID, createNotification("Service Starting", "Initializing poll loop..."))
-            clearForegroundStartBackoff()
-        } catch (t: Throwable) {
-            Log.e(TAG, "SERVICE_START_FOREGROUND_BLOCKED: ${t.javaClass.simpleName}: ${t.message}")
-            LogBuffer.add('E', TAG, "SERVICE_START_FOREGROUND_BLOCKED: ${t.javaClass.simpleName}: ${t.message}")
-            recordForegroundStartBlocked(t)
-            releaseLease()
-            stopSelf()
-            return START_NOT_STICKY
-        }
+        selfHealAllowed = true
+        clearForegroundStartBackoff()
         prefs.edit().putBoolean("service_running", true).commit() // NB5: use commit() for cross-process visibility
         PositionTickService.ensureRunning(this)
         maintainSessionWakeLock()
@@ -376,6 +375,7 @@ class MarketWatchService : Service() {
         
         serviceScope.launch {
             try {
+                restoreNotificationAgentState()
                 bootstrapFromSupabase()
                 // We need the token for OHLC/Futures Key resolution which are Startup tasks
                 val token = prefs.getString("auth_token", "") ?: ""
@@ -388,6 +388,18 @@ class MarketWatchService : Service() {
             }
         }
         return START_STICKY
+    }
+
+    private fun restoreNotificationAgentState() {
+        try {
+            val savedState = prefs.getString("notification_agent_state", null)
+            if (savedState != null) {
+                Python.getInstance().getModule("brain").callAttr("reset_notification_agent", savedState)
+                Log.i(TAG, "AGENT_STATE_RESTORED")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "AGENT_STATE_RESTORE_FAIL: ${e.message}")
+        }
     }
 
     private data class LeaseResult(val claimed: Boolean, val reason: String, val gapMs: Long = 0L)
@@ -5169,6 +5181,7 @@ class MarketWatchService : Service() {
     }
 
     private fun scheduleSelfHealRestart() {
+        if (!selfHealAllowed || !CloudRecovery.canMonitor()) return
         if (!prefs.getBoolean("service_running", false)) return
         if (!isMarketOpen()) return
         try {
