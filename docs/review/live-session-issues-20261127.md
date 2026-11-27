@@ -4,6 +4,33 @@
 
 Evidence labels: PHONE-OBSERVED (phone export or screen), SERVER (read-only Supabase), SYNTHETIC (unit test or box model), UNPROVEN. Log figures were recounted from the three CSV exports (13:30, 14:42, 17:53 IST; union 19,272 unique rows covering 11:43:06–17:53:25 IST). The rows below the "Historical (09:53–12:14 exports)" marker are kept for traceability and are not current errors.
 
+## R2 additions (Codex reply R1, 27 Nov ~21:20 IST)
+
+- **Unit correction.** The checkpoint inventory is 14,511 MiB = 15.22 GB (decimal), and Android's Storage screen shows 15.58 GB. So only about 0.36 GB is outside the portable checkpoint: the inventory is about 98% of app data. The earlier "~1.1 GB outside" figure was wrong.
+- **SERVER (read-only `storage.objects`, bucket `mr-private-state`, 1 owner):**
+  - 27,386 objects totalling 1,261.7 MiB, all created on 27 Nov. That is 16,861 objects under 64 KiB, 10,485 objects of 64 KiB–1 MiB, and 40 objects over 1 MiB (manifests, up to 4.68 MB).
+  - The initial upload was 07h 195.9 MiB and 08h 845.4 MiB. After the close it was 17h 19 objects (0.28 MiB) and 18h 6 objects.
+  - Manifests alternate between 4,668,509 B and 4,669,124 B (a 615 B difference, about 2 entries), often with no new chunk.
+  - Tiny 36/54 B chunks follow each process start.
+  - A 94,801 B chunk (head of a file over 1 MiB) plus a ~1 KB tail chunk recur at 16:22, 16:32, 16:52, 17:52, 17:56, 17:59 and 18:10. The file is UNPROVEN.
+  - The upload→manifest gap of 82–84 s means one full inventory hash takes about 83 s.
+- **Manifest headroom.** CloudVault caps a manifest at 8 MiB. The current 4.67 MB manifest covers about 11.9k files, so roughly 8k more files would hit the cap.
+- **Writer candidates (static; attribution needs the R2 diagnostic build):**
+  - `ClosedTradeLedger.boundedUnique` → `CloudArchive.preserveJson`
+  - `PaperCloseQuoteStore.writeAll` → preserveJson
+  - `preserveBeforeDiscard` callers: BrainResultStore, EvaluationLocalCache, ResearchCollector, CanonicalExportStore, SingleLegTradeTraceStore
+  - DAILY_REVIEW_CATCHUP at each of the 7 post-close process starts
+  - PWA `saveWeb`
+  - prune→commit (pruned archive files change the next manifest)
+- **Code (local `741edc5`):**
+  - `RecoveryBudget` limits hashing to a 10% duty cycle, with a gap between FULL passes of 5–15 min (persisted across restarts). Cached processes hash only from the WorkManager worker. The claim-only lease renewal stays on every 30 s tick.
+  - `commit_attempted` and `commit_confirmed` are now separate counts.
+  - The storage walk counts `visitFileFailed` and carries an incomplete reason. It runs on a MIN_PRIORITY daemon thread with a 20 s budget per root.
+  - `ChangeTrace` and `SignalCounter` provide writer attribution.
+  - Logs-tab export (`NativeBridge.getLogBuffer`) → `RECOVERY_DIAG_SNAPSHOT`.
+- **Paired check:** the baseline failed 7 checks because the fixture was a stale retired-NF one. `b5b914f` moves it to a real BNF plan and adds an NF-refusal assertion. Result: 9/9.
+- **Identity:** local `ace23ca` is 2.6.113 / b544, paired with local MarketVivi `dead1dfd` (identity only; parent c5148011). Unpushed.
+
 ## Current findings (corrected)
 
 | Finding | Evidence | Review-branch change | Status / acceptance |
