@@ -17,6 +17,7 @@ import java.util.UUID
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicBoolean
 
 /** Cloud backing for native files, typed preferences and PWA localStorage.
  * Local files remain the working cache/outbox; never delete unacknowledged work.
@@ -26,7 +27,7 @@ import java.util.concurrent.atomic.AtomicLong
 object CloudRecovery {
     private const val PREFS = "cloud_vault_v1"
     private val executor = Executors.newSingleThreadScheduledExecutor()
-    @Volatile private var started = false
+    private val started = AtomicBoolean(false)
     @Volatile private var ready = false
     @Volatile private var leaseUntil = 0L
     @Volatile private var state = "APP_SIGN_IN_REQUIRED"
@@ -85,9 +86,10 @@ object CloudRecovery {
                 .put("checked_at_ms", p.getLong("checked_at_ms", 0))
         }).toString()
 
-    @Synchronized fun start(context: Context) {
-        if (started) return
-        started = true
+    fun start(context: Context) {
+        // Never acquire runPass's monitor from an Activity. It can be held by
+        // a long initial backup; repeated startup calls only need this gate.
+        if (!started.compareAndSet(false, true)) return
         val c = context.applicationContext
         for (name in listOf("market_radar", "ev_v12_acceptance", "cloud_web_cache_v1")) {
             val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
