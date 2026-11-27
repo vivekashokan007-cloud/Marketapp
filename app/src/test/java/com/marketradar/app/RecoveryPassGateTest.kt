@@ -89,7 +89,9 @@ class RecoveryPassGateTest {
         assertTrue(after.contains("val before = fingerprints(sources) { transport.renewLease?.invoke() }"))
         assertTrue(after.contains("require(before == fingerprints(inventory(c)) { transport.renewLease?.invoke() }) { \"CACHE_CHANGED_DURING_UPLOAD\" }"))
         assertTrue(after.contains("\"HEAD_READBACK_MISMATCH\""))
-        assertTrue(after.contains("before == fingerprints(inventory(c)) { transport.renewLease?.invoke() })\n                \"VERIFIED_CHECKPOINT\""))
+        // R2: the post-commit status label uses the pre-hash stat signatures (no third full inventory read).
+        assertTrue(after.contains("expectedSignature == signature(inventory(c)))\n                \"VERIFIED_CHECKPOINT\""))
+        assertFalse(after.contains("before == fingerprints(inventory(c)) { transport.renewLease?.invoke() })\n                \"VERIFIED_CHECKPOINT\""))
         // A baseline exists only after a verified, mutation-free FULL pass; failures clear it.
         assertTrue(body.contains("verifiedBaseline = if (state == \"VERIFIED_CHECKPOINT\" && snapshotMutation == mutations.get())"))
         assertTrue(after.indexOf("verifiedBaseline = null") < after.indexOf("val before = fingerprints(sources)"))

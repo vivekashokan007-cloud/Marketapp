@@ -41,14 +41,48 @@ object CloudRecovery {
     private val preferenceListeners = mutableListOf<SharedPreferences.OnSharedPreferenceChangeListener>()
     // 27 Nov diagnostics: counts/bytes/durations only (see RecoveryDiagnostics).
     private val wakeups = RecoveryDiagnostics.Wakeups()
+    private val signals = RecoveryDiagnostics.SignalCounter()
+    private val changeTrace = RecoveryDiagnostics.ChangeTrace()
     private val storageWalk = RecoveryDiagnostics.Every(6 * 60 * 60 * 1000L)
+    private val exportSnapshot = RecoveryDiagnostics.Every(60_000L)
+    @Volatile private var lastStorageElapsed = 0L
+    // The storage walk never runs on [executor] or under runPass's monitor: lease renewal (the 30 s
+    // claim) and automatic monitoring can never wait behind it. One walk at a time, lowest priority.
+    private val diagExecutor = Executors.newSingleThreadExecutor { r ->
+        Thread(r, "cloud-recovery-diag").apply { isDaemon = true; priority = Thread.MIN_PRIORITY } }
+    private val storageWalkRunning = AtomicBoolean(false)
+
+    // R2 seams. Production values are the defaults; JVM tests substitute an in-memory remote and clocks.
+    internal interface Remote : CloudVault.Remote {
+        var renewLease: (() -> Unit)?
+        fun uid(): String
+        fun head(): JSONObject?
+        fun rpc(name: String, body: JSONObject): JSONObject
+    }
+    internal var remoteFactory: (Context) -> Remote = { Transport(it) }
+    internal var signedIn: (Context) -> Boolean = { CloudSession(it).signedIn() }
+    internal var elapsed: () -> Long = { android.os.SystemClock.elapsedRealtime() }
+    internal var wallClock: () -> Long = { System.currentTimeMillis() }
+    /** True while the process is cached (no visible activity, no foreground service). */
+    internal var background: () -> Boolean = {
+        try {
+            val info = android.app.ActivityManager.RunningAppProcessInfo()
+            android.app.ActivityManager.getMyMemoryState(info)
+            info.importance >= android.app.ActivityManager.RunningAppProcessInfo.IMPORTANCE_CACHED
+        } catch (_: Throwable) { false }
+    }
+    internal var legacySideEffects = true
+    /** JVM tests only: Robolectric's FileObserver shadow opens one inotify instance per directory and exhausts the
+     * per-user limit across tests. With observers off, changes are still caught by the stat/SHA signatures. */
+    internal var fileObservers = true
     private val skipLog = RecoveryDiagnostics.Every(10 * 60 * 1000L) // quiet passes: one stats line per 10 min
     @Volatile private var currentPass: RecoveryDiagnostics.PassStats? = null
     @Volatile private var lastPass: JSONObject? = null
     @Volatile private var lastStorage: JSONObject? = null
     // Set only by a FULL pass that ended VERIFIED_CHECKPOINT with no mutation; cleared on any failure.
     @Volatile private var verifiedBaseline: RecoveryPassGate.Baseline? = null
-    private fun changed() {
+    private fun changed(source: String = "unknown") {
+        signals.add(source)
         mutations.incrementAndGet()
         wakeups.mutationSignals.incrementAndGet()
         if (ready) state = "LOCAL_CHANGES_PENDING_UPLOAD"
@@ -56,6 +90,7 @@ object CloudRecovery {
     private fun observeFiles(c: Context) {
         observers.values.forEach { it.stopWatching() }
         observers.clear()
+        if (!fileObservers) return
         c.filesDir.walkTopDown().onEnter { dir -> dir == c.filesDir ||
             CloudDataPolicy.portablePath(dir.relativeTo(c.filesDir).invariantSeparatorsPath) }
             .filter { it.isDirectory }.forEach { directory ->
@@ -65,7 +100,7 @@ object CloudRecovery {
                     override fun onEvent(event: Int, path: String?) {
                         if (path == null) return
                         val relative = File(directory, path).relativeTo(c.filesDir).invariantSeparatorsPath
-                        if (CloudDataPolicy.portablePath(relative)) changed()
+                        if (CloudDataPolicy.portablePath(relative)) changed("files/" + RecoveryDiagnostics.safeName(relative.substringBefore('/')))
                     }
                 }
                 observers[directory.absolutePath] = observer
@@ -94,7 +129,7 @@ object CloudRecovery {
         state = "LOCAL_PAPER_CACHE_NOT_BACKED_UP"
         return true
     }
-    fun canMonitor(): Boolean = ready && webVerified && leaseUntil > android.os.SystemClock.elapsedRealtime() + 5000
+    fun canMonitor(): Boolean = ready && webVerified && leaseUntil > elapsed() + 5000
     fun status(c: Context): String = JSONObject().put("state", if (meta(c).getBoolean("web_capture_failed", false)) "WEB_STATE_CAPTURE_FAILED" else state).put("ready", ready)
         .put("monitor_ready", canMonitor()).put("verified_at", meta(c).getString("verified_at", ""))
         .put("revision", meta(c).getLong("revision", 0)).put("last_error", meta(c).getString("last_error", ""))
@@ -119,7 +154,7 @@ object CloudRecovery {
         val c = context.applicationContext
         for (name in listOf("market_radar", "ev_v12_acceptance", "cloud_web_cache_v1")) {
             val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
-                if (key == null || CloudDataPolicy.portablePreference(key)) changed()
+                if (key == null || CloudDataPolicy.portablePreference(key)) changed("prefs/$name:" + RecoveryDiagnostics.safeName(key ?: "(cleared)"))
             }
             preferenceListeners.add(listener)
             c.getSharedPreferences(name, Context.MODE_PRIVATE).registerOnSharedPreferenceChangeListener(listener)
@@ -138,19 +173,19 @@ object CloudRecovery {
         val prefs = c.getSharedPreferences("cloud_web_cache_v1", Context.MODE_PRIVATE)
         if (meta(c).getBoolean("web_capture_failed", false)) meta(c).edit().putBoolean("web_capture_failed", false).commit()
         if (prefs.getString("storage", null) == clean) true else {
-            changed()
+            changed("web/saveWeb")
             require(prefs.edit().putString("storage", clean).commit()) { "WEB_CACHE_WRITE_FAILED" }
             true
         }
     } catch (_: Exception) {
-        changed(); webVerified = false
+        changed("web/saveWeb_failed"); webVerified = false
         meta(c).edit().putBoolean("web_capture_failed", true).commit()
         false
     }
     fun web(c: Context): String = c.getSharedPreferences("cloud_web_cache_v1", Context.MODE_PRIVATE).getString("storage", "null") ?: "null"
 
-    private class Transport(c: Context): CloudVault.Remote {
-        var renewLease: (() -> Unit)? = null
+    private class Transport(c: Context): Remote {
+        override var renewLease: (() -> Unit)? = null
         private val cache = File(c.noBackupFilesDir, "cloud_manifest_cache")
         private val auth = CloudSession(c)
         private val authLock = Any()
@@ -175,18 +210,18 @@ object CloudRecovery {
             return Request.Builder().url(BuildConfig.SUPABASE_URL + path).header("apikey", BuildConfig.SUPABASE_ANON_KEY)
                 .header("Authorization", "Bearer " + s.getString("access_token"))
         }
-        fun uid(): String = currentSession().getJSONObject("user").getString("id")
-        fun head(): JSONObject? {
+        override fun uid(): String = currentSession().getJSONObject("user").getString("id")
+        override fun head(): JSONObject? {
             val req = request("/rest/v1/mr_cloud_heads?select=*&owner_id=eq." + uid()).get().build()
             val bytes = execute(req, 64 * 1024)
             val rows = JSONArray(String(bytes, Charsets.UTF_8))
             return if (rows.length() == 0) null else rows.getJSONObject(0)
         }
-        fun rpc(name: String, body: JSONObject): JSONObject {
-            val sent = android.os.SystemClock.elapsedRealtime()
+        override fun rpc(name: String, body: JSONObject): JSONObject {
+            val sent = elapsed()
             val response = JSONObject(String(execute(request("/rest/v1/rpc/$name")
                 .post(body.toString().toRequestBody("application/json".toMediaType())).build(), 64 * 1024), Charsets.UTF_8))
-            return response.put("_lease_deadline_elapsed", CloudLeaseClock.deadline(response, sent, android.os.SystemClock.elapsedRealtime()))
+            return response.put("_lease_deadline_elapsed", CloudLeaseClock.deadline(response, sent, elapsed()))
         }
         override fun put(hash: String, bytes: ByteArray) {
             renewLease?.invoke()
@@ -310,19 +345,39 @@ object CloudRecovery {
             preferences = { name, file -> restorePreferences(c, name, file) })
     }
     @Synchronized fun runPass(c: Context, trigger: String = "worker") {
-        val stats = RecoveryDiagnostics.PassStats(trigger) { android.os.SystemClock.elapsedRealtime() }
+        val stats = RecoveryDiagnostics.PassStats(trigger) { elapsed() }
         currentPass = stats
         wakeups.pass(trigger)
+        stats.signals = signals.drain()
         try { runPassMeasured(c, stats) } finally {
             currentPass = null
             val total = stats.finish(state.replace(": ", "/").replace(Regex("[^A-Za-z0-9_/]"), "_").take(80).ifBlank { "UNKNOWN" })
             lastPass = stats.toJson(total)
-            if (stats.mode != "SKIP" || skipLog.due(android.os.SystemClock.elapsedRealtime()))
+            // Any pass that started hashing the inventory (success or failure) starts the cooldown,
+            // so a failing/retrying pass is bounded exactly like a successful one. Non-portable prefs.
+            if (stats.hashingStarted) runCatching { meta(c).edit().putLong(BUDGET_END, wallClock())
+                .putLong(BUDGET_DURATION, total).apply() }
+            if ((stats.mode != "SKIP" && stats.mode != "DEFER") || skipLog.due(elapsed()))
                 runCatching { LogBuffer.add('I', "CloudRecovery", stats.logLine(total)) }
-            if (storageWalk.due(android.os.SystemClock.elapsedRealtime())) runCatching { logStorage(c) }
+            if (storageWalk.due(elapsed())) requestStorageWalk(c)
         }
     }
-    /** Read-only, bounded storage attribution for the 15.58 GB question. Relative top-level names only. */
+    private const val BUDGET_END = "budget_full_end_wall_ms"
+    private const val BUDGET_DURATION = "budget_full_duration_ms"
+    private fun budgetHistory(c: Context): RecoveryBudget.History? = meta(c).let { m ->
+        val end = m.getLong(BUDGET_END, 0L)
+        if (end <= 0L) null else RecoveryBudget.History(end, m.getLong(BUDGET_DURATION, 0L))
+    }
+    /** Queue one bounded storage walk on the low-priority diagnostics thread. Never blocks the caller. */
+    internal fun requestStorageWalk(c: Context): Boolean {
+        if (!storageWalkRunning.compareAndSet(false, true)) return false
+        return try {
+            diagExecutor.execute { try { logStorage(c) } catch (_: Throwable) { } finally { storageWalkRunning.set(false) } }
+            true
+        } catch (_: Throwable) { storageWalkRunning.set(false); false }
+    }
+    /** Read-only, bounded storage attribution for the 15.58 GB question. Relative top-level names only.
+     * Bounds: <= MAX_WALK_ENTRIES entries and WALK_BUDGET_MS per root; unreadable entries counted. */
     private fun logStorage(c: Context) {
         val data = RecoveryDiagnostics.topLevelUsage(File(c.applicationInfo.dataDir), "data")
         val files = RecoveryDiagnostics.topLevelUsage(c.filesDir, "files")
@@ -331,14 +386,50 @@ object CloudRecovery {
         listOf(data.logLine(), files.logLine(), noBackup.logLine(), outbox.logLine()).forEach { LogBuffer.add('I', "CloudRecovery", it) }
         lastStorage = JSONObject().put("data", data.toJson()).put("files", files.toJson())
             .put("no_backup", noBackup.toJson()).put("raw_outbox", outbox.toJson())
+        lastStorageElapsed = elapsed()
     }
+    /** Phone route (pinned PWA c5148011, Logs tab -> CSV/TXT export calls NativeBridge.getLogBuffer): at most once a
+     * minute, appends one bounded RECOVERY_DIAG_SNAPSHOT line and, if the storage breakdown is missing or older than
+     * 30 min, queues a fresh walk (its STORAGE_BREAKDOWN lines appear on the next refresh/export). Never blocks. */
+    fun exportDiagnostics(c: Context) {
+        val now = elapsed()
+        if (!exportSnapshot.due(now)) return
+        val m = meta(c)
+        val snapshot = JSONObject().put("schema", "mr.recovery_diag.v1").put("state", state).put("ready", ready)
+            .put("monitor_ready", canMonitor()).put("revision", m.getLong("revision", 0))
+            .put("verified_files", m.getInt("verified_files", 0)).put("verified_bytes", m.getLong("verified_bytes", 0))
+            .put("budget_last_full_ms", m.getLong(BUDGET_DURATION, 0)).put("budget_last_full_end_ms", m.getLong(BUDGET_END, 0))
+            .put("last_pass", lastPass ?: JSONObject.NULL).put("wakeups", wakeups.toJson())
+            .put("storage", lastStorage ?: JSONObject.NULL)
+        val text = snapshot.toString()
+        LogBuffer.add('I', "CloudRecovery", "RECOVERY_DIAG_SNAPSHOT " +
+            (if (text.length <= MAX_SNAPSHOT_CHARS) text else text.take(MAX_SNAPSHOT_CHARS) + "...TRUNCATED"))
+        if (lastStorage == null || now - lastStorageElapsed > 30 * 60_000L) requestStorageWalk(c)
+    }
+    private const val MAX_SNAPSHOT_CHARS = 12_000
+    /** One-glance status for the native About dialog. In-memory values only; touches no files. */
+    fun aboutSummary(c: Context): String = try {
+        val p = lastPass
+        val m = meta(c)
+        val files = lastStorage?.optJSONObject("files")
+        buildString {
+            append("\n\nRecovery: rev ").append(m.getLong("revision", 0)).append(" · ").append(state.take(40))
+            append("\ncheckpoint: ").append(m.getInt("verified_files", 0)).append(" files / ")
+                .append(m.getLong("verified_bytes", 0) / (1024 * 1024)).append(" MiB")
+            if (p != null) append("\nlast pass: ").append(p.optString("mode")).append(" ")
+                .append(p.optLong("total_ms") / 1000).append(" s, hashed ")
+                .append(p.optLong("bytes_hashed") / (1024 * 1024)).append(" MiB, ").append(p.optString("budget").ifBlank { p.optString("gate_reason") }.take(32))
+            if (files != null) append("\nfiles dir: ").append(files.optLong("bytes") / (1024 * 1024)).append(" MiB")
+                .append(if (files.optBoolean("incomplete")) " (INCOMPLETE)" else "")
+            else append("\nstorage breakdown: not measured yet (open Logs tab)")
+        }
+    } catch (_: Throwable) { "" }
     private fun runPassMeasured(c: Context, stats: RecoveryDiagnostics.PassStats) {
         val hadMonitorLease = canMonitor()
         try {
             stats.stage("claim")
-            val session = CloudSession(c)
-            if (!session.signedIn()) { state = "APP_SIGN_IN_REQUIRED"; return }
-            val transport = Transport(c)
+            if (!signedIn(c)) { state = "APP_SIGN_IN_REQUIRED"; return }
+            val transport = remoteFactory(c)
             val uid = transport.uid()
             val metadata = meta(c)
             require(owner(c).isBlank() || owner(c) == uid) { "DIFFERENT_APP_ACCOUNT" }
@@ -361,10 +452,10 @@ object CloudRecovery {
             val claim = JSONObject().put("p_device", device).put("p_expected", revision)
             head = transport.rpc("mr_cloud_claim", claim)
             leaseUntil = head.getLong("_lease_deadline_elapsed")
-            var lastRenewal = android.os.SystemClock.elapsedRealtime()
+            var lastRenewal = elapsed()
             val leaseRenewalLock = Any()
             transport.renewLease = { synchronized(leaseRenewalLock) {
-                val now = android.os.SystemClock.elapsedRealtime()
+                val now = elapsed()
                 if (now - lastRenewal >= 30_000) {
                     val renewed = transport.rpc("mr_cloud_claim", JSONObject().put("p_device", device).put("p_expected", revision))
                     leaseUntil = renewed.getLong("_lease_deadline_elapsed")
@@ -405,14 +496,14 @@ object CloudRecovery {
                     File(c.noBackupFilesDir, "cloud_restore_pending").exists())) {
                 ready = true
                 webVerified = true
-                if (canMonitor() && !legacyStarted) {
+                if (canMonitor() && !legacyStarted && legacySideEffects) {
                     legacyStarted = true
                     PositionTickUploadRunner.onProcessStart(c, PositionTickDrainTrigger.APP_START)
                     DailyReviewScheduler.request(c, "verified_local_checkpoint")
                     CaptureRuntime.ensure(c)
                     CaptureRuntime.reconcile()
                 }
-                if (canMonitor() && !hadMonitorLease)
+                if (canMonitor() && !hadMonitorLease && legacySideEffects)
                     MarketOpenScheduler.maybeStartIngestionNow(c, "verified_local_checkpoint")
             }
             // Quiet-pass gate: evaluated only after the claim above has renewed the
@@ -429,7 +520,7 @@ object CloudRecovery {
                 headManifestSha256 = head?.optString("manifest_sha256").orEmpty(),
                 localManifestSha256 = metadata.getString("checkpoint_sha256", "").orEmpty(),
                 mutation = mutations.get(), signature = gateSignature,
-                nowElapsed = android.os.SystemClock.elapsedRealtime()))
+                nowElapsed = elapsed()))
             stats.gateReason = gate
             if (gate == RecoveryPassGate.SKIP) {
                 stats.mode = "SKIP"
@@ -437,6 +528,28 @@ object CloudRecovery {
                 stats.portableFiles = gateSources.size.toLong()
                 stats.portableBytes = gateSources.sumOf { it.file?.length() ?: it.bytes?.size?.toLong() ?: 0L }
                 filesTotal = gateSources.size; filesChecked = gateSources.size
+                return
+            }
+            // Bounded recovery work while changes keep arriving (RecoveryBudget). Evaluated after the claim,
+            // so a deferred pass has renewed the lease and re-checked ownership/revision like any other.
+            val budget = RecoveryBudget.decide(RecoveryBudget.Input(
+                correctnessReason = RecoveryBudget.correctnessReason(ready = ready, canMonitor = canMonitor(),
+                    restorePending = File(c.noBackupFilesDir, "cloud_restore_pending").exists(),
+                    webCaptureFailed = metadata.getBoolean("web_capture_failed", false),
+                    initialized = metadata.getBoolean("initialized", false),
+                    revision = revision, localRevision = metadata.getLong("revision", 0L),
+                    headManifestSha256 = head?.optString("manifest_sha256").orEmpty(),
+                    localManifestSha256 = metadata.getString("checkpoint_sha256", "").orEmpty()),
+                history = budgetHistory(c), nowWallMs = wallClock(), background = background(), trigger = stats.trigger))
+            stats.budget = budget
+            if (budget != RecoveryBudget.RUN) {
+                stats.mode = "DEFER"
+                wakeups.pass("deferred")
+                stats.portableFiles = gateSources.size.toLong()
+                stats.portableBytes = gateSources.sumOf { it.file?.length() ?: it.bytes?.size?.toLong() ?: 0L }
+                // Never claims a checkpoint it did not verify; local files stay as the durable pending copy.
+                // A due scrub with no observed change keeps the existing label.
+                if (gate != "SCRUB_DUE") state = "LOCAL_CHANGES_PENDING_UPLOAD"
                 return
             }
             verifiedBaseline = null
@@ -450,9 +563,11 @@ object CloudRecovery {
             stats.portableFiles = sources.size.toLong()
             stats.portableBytes = sources.sumOf { it.file?.length() ?: it.bytes?.size?.toLong() ?: 0L }
             stats.stage("hash_before")
+            stats.hashingStarted = true
             val before = fingerprints(sources) { transport.renewLease?.invoke() }
             val sizes = sources.associate { it.path to (it.file?.length() ?: it.bytes?.size?.toLong() ?: 0L) }
             stats.dirty = RecoveryDiagnostics.dirty(before, oldManifest?.let { manifestFingerprints(it) } ?: emptyMap(), { sizes[it] ?: 0L })
+            stats.writers = runCatching { changeTrace.observe(before, sources.filter { it.bytes != null }.associate { it.path to it.bytes!! }) }.getOrNull()
             stats.stage("upload")
             val entries = JSONObject()
             val oldEntries = oldManifest?.getJSONObject("entries") ?: JSONObject()
@@ -491,13 +606,14 @@ object CloudRecovery {
             stats.stage("commit")
             if (oldManifest == null || before != manifestFingerprints(oldManifest)) {
                 state = "UPLOADING_CHECKPOINT"
-                stats.committed = true
+                stats.commitAttempted = true
                 val hash = vault.publishManifest(entries, BuildConfig.VERSION_CODE)
                 transport.rpc("mr_cloud_claim", claim) // renew/check lease after a large initial upload
                 head = transport.rpc("mr_cloud_commit", JSONObject(claim.toString()).put("p_manifest", hash))
                 val check = transport.head() ?: error("HEAD_READBACK_MISSING")
                 require(check.getString("manifest_sha256") == hash && check.getLong("revision") == revision + 1) { "HEAD_READBACK_MISMATCH" }
                 revision = check.getLong("revision")
+                stats.commitConfirmed = true
             }
             val checkTime = head!!.optString("committed_at")
             val verifiedBytes = entries.keys().asSequence().sumOf { entries.getJSONObject(it).getLong("size") }
@@ -517,21 +633,27 @@ object CloudRecovery {
             stats.stage("state_check")
             val webCaptured = c.getSharedPreferences("cloud_web_cache_v1", Context.MODE_PRIVATE).contains("storage")
             webVerified = webCaptured && !metadata.getBoolean("web_capture_failed", false) && before.containsKey("prefs/cloud_web_cache_v1.json")
+            // R2: the label no longer re-reads the whole inventory a third time. `before` was SHA-256 verified
+            // twice (before upload and after upload, unchanged); this check covers only the commit/prune window,
+            // using the same stat signatures taken BEFORE hashing (preferences: SHA-256 of their bytes), minus
+            // archive files prune just removed. It is a status label: it authorises no commit, upload or delete,
+            // and any difference reports pending changes (the next FULL pass re-hashes everything).
+            val expectedSignature = baselineSignature.filterKeys { path -> expectedCache.containsKey(path) }
             state = if (!webCaptured) "PWA_CAPTURE_REQUIRED" else if (snapshotMutation == mutations.get() &&
-                before == fingerprints(inventory(c)) { transport.renewLease?.invoke() })
+                expectedSignature == signature(inventory(c)))
                 "VERIFIED_CHECKPOINT" else "LOCAL_CHANGES_PENDING_UPLOAD"
             if (webCaptured && snapshotMutation != mutations.get()) state = "LOCAL_CHANGES_PENDING_UPLOAD"
             verifiedBaseline = if (state == "VERIFIED_CHECKPOINT" && snapshotMutation == mutations.get())
                 RecoveryPassGate.Baseline(snapshotMutation, baselineSignature, revision,
-                    metadata.getString("checkpoint_sha256", "").orEmpty(), android.os.SystemClock.elapsedRealtime()) else null
-            if (webCaptured && canMonitor() && !legacyStarted) {
+                    metadata.getString("checkpoint_sha256", "").orEmpty(), elapsed()) else null
+            if (webCaptured && canMonitor() && !legacyStarted && legacySideEffects) {
                 legacyStarted = true
                 PositionTickUploadRunner.onProcessStart(c, PositionTickDrainTrigger.APP_START)
                 DailyReviewScheduler.request(c, "cloud_recovered")
                 CaptureRuntime.ensure(c)
                 CaptureRuntime.reconcile()
             }
-            if (webCaptured && canMonitor() && !hadMonitorLease) MarketOpenScheduler.maybeStartIngestionNow(c, "cloud_recovered")
+            if (webCaptured && canMonitor() && !hadMonitorLease && legacySideEffects) MarketOpenScheduler.maybeStartIngestionNow(c, "cloud_recovered")
         } catch (e: Exception) {
             verifiedBaseline = null
             val detail = e.message.orEmpty().takeIf { it.matches(Regex("[A-Z0-9_]+")) } ?: e.javaClass.simpleName

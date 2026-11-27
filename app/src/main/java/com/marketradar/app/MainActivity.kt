@@ -1037,7 +1037,7 @@ class MainActivity : AppCompatActivity() {
                 // a CANDIDATE build and appear only on debug/release.
                 (if (BuildConfig.PWA_CANDIDATE) "\n\nCANDIDATE build (bundled PWA, not a release)\nnative ${BuildConfig.SOURCE_HEAD}\n" +
                     "pwa ${BuildConfig.PWA_SOURCE_HEAD}\nbundle ${if (candidatePwa?.verified == true) "verified" else "FAILED"}" else "") +
-                premiumCaptureStatusText())
+                premiumCaptureStatusText() + CloudRecovery.aboutSummary(this))
             .setNeutralButton("Check for Update") { _, _ -> 
                 checkForUpdates(true)
             }

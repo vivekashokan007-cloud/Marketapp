@@ -2352,6 +2352,9 @@ class NativeBridge(private val context: Context) {
 
     @JavascriptInterface
     fun getLogBuffer(filterJson: String?): String {
+        // R2 phone route: the pinned PWA's Logs tab (refresh, CSV/TXT export, share) reads this buffer, so the
+        // recovery diagnostics are appended here (rate-limited, bounded, never blocking). See CloudRecovery.exportDiagnostics.
+        runCatching { CloudRecovery.exportDiagnostics(context) }
         val filter = if (filterJson.isNullOrBlank()) null else {
             try { JSONObject(filterJson).optString("filter", null) }
             catch (e: Exception) { null }

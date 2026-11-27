@@ -24,7 +24,10 @@ import java.util.concurrent.TimeUnit
  * mtime and file key that also escapes the observer is detected only by the scrub.
  */
 object RecoveryPassGate {
-    const val SCRUB_INTERVAL_MS = 30 * 60 * 1000L
+    // R2: 6 h (was 30 min). A scrub is a full re-hash of the whole inventory (~14 GiB on the phone); it only
+    // catches rewrites that keep size, mtime and file key AND escape the observer. FULL passes are additionally
+    // bounded by RecoveryBudget.
+    const val SCRUB_INTERVAL_MS = 6 * 60 * 60 * 1000L
     const val SKIP = "SKIP_UNCHANGED"
 
     data class Baseline(val mutation: Long, val signature: Map<String, String>, val revision: Long,

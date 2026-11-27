@@ -124,4 +124,84 @@ class RecoveryDiagnosticsTest {
         assertTrue(s.logLine(0).contains("dirty=a1/m2/r1/300b"))
         assertEquals(0, RecoveryDiagnostics.dirty(previous, previous, { 1L }).let { it.added + it.modified + it.removed })
     }
+
+    // ---- R2 corrections ----
+    @Test fun unreadableEntriesAreCountedAndMarkTheBreakdownIncomplete() {
+        val root = tree()
+        val locked = File(root, "locked_dir").apply { mkdirs(); File(this, "x").writeText("1") }
+        try {
+            assertTrue(locked.setReadable(false, false) && locked.setExecutable(false, false))
+            val b = RecoveryDiagnostics.topLevelUsage(root, "t")
+            if (System.getProperty("user.name") != "root") { // root bypasses permissions; nothing would fail
+                assertTrue(b.failures >= 1); assertTrue(b.incomplete)
+                assertTrue(b.incompleteReason.contains("UNREADABLE_ENTRIES"))
+                assertTrue(b.logLine().contains("incomplete=UNREADABLE_ENTRIES"))
+                assertTrue(b.toJson().getBoolean("incomplete"))
+            }
+            val ok = RecoveryDiagnostics.topLevelUsage(tree(), "t")
+            assertFalse(ok.incomplete); assertEquals(0L, ok.failures); assertTrue(ok.logLine().contains("incomplete=no"))
+        } finally { locked.setReadable(true, false); locked.setExecutable(true, false) }
+    }
+
+    @Test fun walkStopsAtItsTimeBudgetAndSaysSo() {
+        val root = createTempDir("budget")
+        for (i in 0 until 2_000) File(root, "g${i % 4}/f$i").apply { parentFile!!.mkdirs(); writeText("x") }
+        var fakeNs = 0L
+        val b = RecoveryDiagnostics.topLevelUsage(root, "t", budgetMs = 1_000, nanoTime = { fakeNs += 100_000_000; fakeNs }) // each clock read = 100 ms
+        assertTrue(b.incomplete); assertTrue(b.incompleteReason.contains("TIME_BUDGET"))
+        assertTrue(b.totalFiles < 2_000)
+        val full = RecoveryDiagnostics.topLevelUsage(root, "t")
+        assertFalse(full.incomplete); assertEquals(2_000L, full.totalFiles)
+        // Real-clock bound on a large tree (20,000 files): well inside the 20 s budget.
+        for (i in 0 until 18_000) File(root, "h${i % 30}/f$i").apply { parentFile!!.mkdirs(); writeText("x") }
+        val t0 = System.nanoTime(); val big = RecoveryDiagnostics.topLevelUsage(root, "t"); val ms = (System.nanoTime() - t0) / 1_000_000
+        assertFalse(big.incomplete); assertEquals(20_000L, big.totalFiles)
+        println("R2_MEASURE scenario=walk_20000_files walk_ms=$ms budget_ms=${RecoveryDiagnostics.WALK_BUDGET_MS}")
+        assertTrue("walk took $ms ms", ms < RecoveryDiagnostics.WALK_BUDGET_MS)
+    }
+
+    @Test fun commitAttemptIsDistinctFromAConfirmedCheckpoint() {
+        val s = RecoveryDiagnostics.PassStats("t") { 0L }
+        s.commitAttempted = true
+        assertTrue(s.toJson(0).getBoolean("commit_attempted")); assertFalse(s.toJson(0).getBoolean("commit_confirmed"))
+        assertTrue(s.logLine(0).contains("commit_attempted=true commit_confirmed=false"))
+        assertFalse(s.toJson(0).has("committed"))
+        val src = listOf(File("src/main/java/com/marketradar/app/CloudRecovery.kt"),
+            File("app/src/main/java/com/marketradar/app/CloudRecovery.kt")).first { it.exists() }.readText()
+        val commit = src.substringAfter("stats.commitAttempted = true").substringBefore("stats.commitConfirmed = true")
+        assertTrue(commit.contains("vault.publishManifest(")); assertTrue(commit.contains("\"mr_cloud_commit\""))
+        assertTrue(commit.contains("\"HEAD_READBACK_MISMATCH\""))   // confirmed only after the head readback matched
+    }
+
+    @Test fun changeTraceNamesWriterClassesRevertsAndPreferenceKeysWithoutValues() {
+        val t = RecoveryDiagnostics.ChangeTrace()
+        val prefs1 = """{"open_trades":{"type":"string","value":"[]"},"ui":{"type":"string","value":"{\"tab\":\"a\",\"scroll\":1}"}}""".toByteArray()
+        val prefs2 = """{"open_trades":{"type":"string","value":"[]"},"ui":{"type":"string","value":"{\"tab\":\"a\",\"scroll\":2}"}}""".toByteArray()
+        val base = mapOf("files/research_m0/2026-11-27/row_0001.jsonl" to "h1", "files/status/tick.json" to "t1", "prefs/market_radar.json" to "p1")
+        assertFalse(t.observe(base, mapOf("prefs/market_radar.json" to prefs1)).primed)
+        val arch = "files/cloud_history_outbox_v1/0123456789abcdef_" + "e".repeat(64) + ".bin"
+        val r1 = t.observe(base + mapOf("files/status/tick.json" to "t2", "prefs/market_radar.json" to "p2", arch to "a1"),
+            mapOf("prefs/market_radar.json" to prefs2))
+        assertEquals(3, r1.changed); assertEquals(0, r1.reverted)
+        assertTrue(r1.classes, r1.classes.contains("files/status/tick.json=1"))
+        assertTrue(r1.classes, r1.classes.contains("files/cloud_history_outbox_v1/H_H.bin=1"))
+        assertEquals(setOf("market_radar:ui", "market_radar:ui.scroll"), r1.prefKeys.split(",").toSet()) // key and JSON sub-key names only
+        // The archive copy is pruned, then re-created with identical content: a revert, the A/B manifest flip.
+        val r2 = t.observe(base + mapOf("files/status/tick.json" to "t1", "prefs/market_radar.json" to "p2"), mapOf("prefs/market_radar.json" to prefs2))
+        assertTrue(r2.classes.contains(":removed")); assertEquals(1, r2.reverted) // tick.json back to t1
+        val r3 = t.observe(base + mapOf("files/status/tick.json" to "t1", "prefs/market_radar.json" to "p2", arch to "a1"), emptyMap())
+        assertEquals(1, r3.reverted)
+        for (r in listOf(r1, r2, r3)) { val all = r.toJson().toString()
+            assertFalse(all.contains("[]")); assertFalse(all.contains("scroll\":")); assertFalse(all.contains("2026-11-27")) }
+        assertEquals("prefs/redacted", RecoveryDiagnostics.nameClass("prefs/auth_token_store.json"))
+        assertEquals("files/research_m0/.../row_N.jsonl", RecoveryDiagnostics.nameClass("files/research_m0/2026-11-27/row_0001.jsonl"))
+    }
+
+    @Test fun signalCounterIsBoundedAndDrains() {
+        val s = RecoveryDiagnostics.SignalCounter(maxKeys = 3)
+        repeat(5) { s.add("prefs/market_radar:open_trades") }; s.add("files/status"); s.add("web/saveWeb"); s.add("files/x"); s.add("files/y")
+        val text = s.drain()
+        assertTrue(text, text.startsWith("prefs/market_radar:open_trades=5")); assertTrue(text, text.contains("other=2"))
+        assertEquals("", s.drain())
+    }
 }
