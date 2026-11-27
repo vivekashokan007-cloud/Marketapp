@@ -1849,7 +1849,7 @@ class MarketWatchService : Service() {
 
             updateForegroundNotification(
                 "Watching Market",
-                "BNF: ${poll.getDouble("bnf")} | NF: ${poll.getDouble("nf")} | VIX: ${poll.getDouble("vix")}"
+                PollNotification.body(poll)
             )
         }
     }
