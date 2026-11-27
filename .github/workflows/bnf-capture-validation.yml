@@ -1,7 +1,7 @@
 name: BNF capture validation (no APK)
 on:
   push:
-    branches: ['review/bnf-complete-capture-20261126', 'review/recovery-throughput-20261127', 'review/recovery-startup-ui-20261127']
+    branches: ['review/bnf-complete-capture-20261126', 'review/recovery-throughput-20261127', 'review/recovery-startup-ui-20261127', 'review/live-session-defects-20261127']
 permissions:
   contents: read
 jobs:
