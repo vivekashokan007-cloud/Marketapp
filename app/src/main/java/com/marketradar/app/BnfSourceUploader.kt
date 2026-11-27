@@ -48,7 +48,8 @@ object BnfSourceUploader {
                         verified++
                     } finally { temp.delete() }
                 } catch (e: Exception) {
-                    LogBuffer.add('E', "BnfSourceUploader", "DIRECT_CAPTURE_PENDING id=$id reason=${e.javaClass.simpleName}")
+                    val reason = e.message?.takeIf { it.matches(Regex("CAPTURE_[A-Z0-9_]+")) } ?: e.javaClass.simpleName
+                    LogBuffer.add('E', "BnfSourceUploader", "DIRECT_CAPTURE_PENDING id=$id reason=$reason")
                     // Keep the original file for the next pass. Continue other captures.
                 }
             }
@@ -59,31 +60,33 @@ object BnfSourceUploader {
 
     private fun uploadAndVerify(session: CloudSession, metaFile: File, id: String) {
         val meta = JSONObject(metaFile.readText())
-        require(meta.getString("schema") == BnfRawCapture.DIRECTORY)
+        require(meta.getString("schema") == BnfRawCapture.DIRECTORY) { "CAPTURE_SCHEMA_MISMATCH" }
         val url = meta.getString("url")
-        require(BnfRawCapture.eligible(url))
+        require(BnfRawCapture.eligible(url)) { "CAPTURE_URL_INELIGIBLE" }
         val bodyFile = meta.optString("body_file", "").takeUnless { it == "null" || it.isBlank() }
         val compressed = bodyFile?.let { name ->
-            require(name == "$id.body.gz")
-            File(metaFile.parentFile, name).readBytes().also { require(it.size in 1..4194304) }
+            require(name == "$id.body.gz") { "CAPTURE_BODY_FILE_MISMATCH" }
+            val body = File(metaFile.parentFile, name)
+            require(body.length() in 1L..4194304L) { "CAPTURE_GZIP_SIZE_LIMIT" }
+            body.readBytes().also { require(it.size in 1..4194304) { "CAPTURE_GZIP_SIZE_LIMIT" } }
         }
         var document: JSONObject? = null
         if (compressed != null) {
             val expected = meta.getInt("body_bytes")
-            require(expected in 0..(16 * 1024 * 1024))
+            require(expected in 0..(16 * 1024 * 1024)) { "CAPTURE_RAW_SIZE_LIMIT" }
             val raw = GZIPInputStream(compressed.inputStream()).use { gzip ->
                 ByteArrayOutputStream().also { output ->
                     val buffer = ByteArray(8192)
                     while (true) {
                         val n = gzip.read(buffer)
                         if (n < 0) break
-                        require(output.size() + n <= expected)
+                        require(output.size() + n <= expected) { "CAPTURE_RAW_LENGTH_OVERFLOW" }
                         output.write(buffer, 0, n)
                     }
                 }.toByteArray()
             }
-            require(raw.size == expected)
-            require(CloudVault.hash(raw) == meta.getString("body_sha256"))
+            require(raw.size == expected) { "CAPTURE_RAW_LENGTH_MISMATCH" }
+            require(CloudVault.hash(raw) == meta.getString("body_sha256")) { "CAPTURE_BODY_HASH_MISMATCH" }
             document = runCatching { JSONObject(String(raw, Charsets.UTF_8)) }.getOrNull()
         }
         val started = meta.getLong("request_started_ms")
