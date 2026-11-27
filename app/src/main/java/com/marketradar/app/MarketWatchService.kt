@@ -4353,6 +4353,7 @@ class MarketWatchService : Service() {
                         greekBatches.length() == 0 ||
                         (0 until greekBatches.length()).any { greekBatches.getJSONObject(it).getString("status") != "RECEIVED" } ||
                         context?.optJSONObject("data")?.length() != contextKeys.size ||
+                        coverage.optString("fii_status") != "RECEIVED" || coverage.optString("dii_status") != "RECEIVED" ||
                         nfoStatus?.optJSONObject("data") == null || nseStatus?.optJSONObject("data") == null ||
                         timings?.optJSONArray("data") == null ||
                         (0 until results.length()).any { rowIndex ->
