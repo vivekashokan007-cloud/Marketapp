@@ -388,7 +388,7 @@ object CloudRecovery {
             .put("no_backup", noBackup.toJson()).put("raw_outbox", outbox.toJson())
         lastStorageElapsed = elapsed()
     }
-    /** Phone route (pinned PWA c5148011, Logs tab -> CSV/TXT export calls NativeBridge.getLogBuffer): at most once a
+    /** Phone route (pinned PWA c5148011 and candidate dead1df share log-viewer.js byte-for-byte; Logs tab -> CSV/TXT export calls NativeBridge.getLogBuffer): at most once a
      * minute, appends one bounded RECOVERY_DIAG_SNAPSHOT line and, if the storage breakdown is missing or older than
      * 30 min, queues a fresh walk (its STORAGE_BREAKDOWN lines appear on the next refresh/export). Never blocks. */
     fun exportDiagnostics(c: Context) {

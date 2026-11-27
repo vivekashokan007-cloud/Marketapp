@@ -677,10 +677,10 @@ class PM1_Unchanged(unittest.TestCase):
             self.assertEqual(B.digest(), '566254a5b5af249a0af02e419976c9736bdc00c08be7ad40275073663d7298cd')
 
     def test_version_identity(self):
-        self.assertEqual(brain.BRAIN_VERSION, '2.6.112')
+        self.assertEqual(brain.BRAIN_VERSION, '2.6.113')
         g = open(os.path.join(os.path.dirname(__file__), '..', '..', '..', '..', 'build.gradle.kts')).read()
-        self.assertIn('versionCode = 543', g)
-        self.assertIn('versionName = "2.6.112"', g)
+        self.assertIn('versionCode = 544', g)
+        self.assertIn('versionName = "2.6.113"', g)
 
 
 BEHAVIOUR_DIGEST_A763DC4 = '2c62a2d7b11da627e7605efb00421672de384c0408bcc76621bfcfc13c5f7402'
