@@ -9,6 +9,7 @@ import java.util.concurrent.ConcurrentHashMap
  * A receipt is reusable evidence, not a committed checkpoint or a device lease.
  */
 class VerifiedRecoveryUploadCache(private val root: File) {
+    init { root.mkdirs(); require(root.isDirectory) { "RECEIPT_DIRECTORY_UNAVAILABLE" } }
     private val locks = ConcurrentHashMap<String, Any>()
     fun entry(expectedHash: String, uploadAndVerify: () -> JSONObject): JSONObject {
         require(CloudVault.validHash(expectedHash))
