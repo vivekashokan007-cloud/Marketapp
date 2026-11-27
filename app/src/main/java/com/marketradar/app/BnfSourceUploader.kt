@@ -5,7 +5,6 @@ import com.marketradar.app.util.LogBuffer
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.io.File
-import java.net.URI
 import java.time.Instant
 import java.time.ZoneId
 import java.util.concurrent.Executors
@@ -90,13 +89,8 @@ object BnfSourceUploader {
         val started = meta.getLong("request_started_ms")
         val received = meta.getLong("request_completed_ms")
         val status = meta.getInt("http_status")
-        val urlUri = URI(url)
-        val params = JSONObject()
-        urlUri.rawQuery?.split('&')?.forEach { part ->
-            val pair = part.split('=', limit = 2)
-            params.put(java.net.URLDecoder.decode(pair[0], "UTF-8"),
-                java.net.URLDecoder.decode(pair.getOrElse(1) { "" }, "UTF-8"))
-        }
+        val source = BnfSourceUrl.parse(url)
+        val params = source.params
         val notes = JSONObject().put("url", url).put("capture_schema", BnfRawCapture.DIRECTORY)
             .put("native_sha", BuildConfig.SOURCE_HEAD).put("app_version", BuildConfig.VERSION_NAME)
         for (name in listOf("schema", "source_url", "as_of_date", "status", "source_sha256", "master_decoded_sha256"))
@@ -105,7 +99,7 @@ object BnfSourceUploader {
             notes.put("missing_reason", "UPSTOX_DATA_NULL")
         val owner = session.session().getJSONObject("user").getString("id")
         val row = JSONObject().put("capture_id", id).put("owner_id", owner)
-            .put("source", if (urlUri.scheme == "marketradar") "market_radar" else "upstox").put("endpoint", urlUri.path)
+            .put("source", source.source).put("endpoint", source.endpoint)
             .put("request_params", params)
             .put("instrument_key", params.opt("instrument_key") ?: JSONObject.NULL)
             .put("contract_expiry", params.opt("expiry_date") ?: params.opt("expiry") ?: JSONObject.NULL)
