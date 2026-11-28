@@ -39,6 +39,13 @@ Evidence labels: PHONE-OBSERVED (phone export or screen), SERVER (read-only Supa
 - **Storage attribution.** Read-only SQL can see head/checkpoint metadata and `storage.objects` sizes, but not manifest entry paths: no `http`/`pg_net`/`aws_s3` extension, no storage-download MCP tool, and object bodies are not in Postgres. Per-directory bytes still need the phone diagnostic export. Latest head: revision 49, manifest 4,668,990 B, committed 05:13:46 IST 28 Nov. Bucket now 27,393 objects / 1,279.6 MiB.
 - **Identity.** 2.6.113 / b544 kept: still unpushed and unused on GitHub (remote review branch is still `75d17f0`).
 
+## R4 additions (Codex reply R3, 28 Nov ~13:18 IST)
+
+- **Recovery gate.** The blanket `gateMutation` override in `CloudRecovery.runPassMeasured` is removed. The gate uses the real `mutations.get()` together with the stat signature. A same-length rewrite that restores mtime keeps the signature, so only the mutation/FileObserver signal can force FULL. No prune-mutation optimisation: an acknowledged prune may cost one extra safe pass when observers fire. `expectedSignature` remains the post-prune baseline.
+- **Archive copy identity.** `CloudArchive.preserveBeforeDiscard` hashes the copied bytes and uses that digest and length for the payload name and metadata. Success requires hash-before, the copied digest, and hash-after to agree. An early ack succeeds only if a confirm hash still equals the early hash. A concurrent rewrite fails and keeps the source. Size/mtime is never treated as proof of content. Save-before-trim still holds on any exception (`cleanupEnabled` remains false).
+- **Identity.** 2.6.113 / b544 kept: still unpushed and unused on GitHub as of 28 Nov afternoon IST (remote review branch is still `75d17f0`; highest published candidate remains b543 / 2.6.112). MarketVivi `dead1dfd` is unchanged.
+
+
 ## Current findings (corrected)
 
 | Finding | Evidence | Review-branch change | Status / acceptance |

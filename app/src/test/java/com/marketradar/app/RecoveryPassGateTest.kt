@@ -95,6 +95,10 @@ class RecoveryPassGateTest {
         // A baseline exists only after a verified, mutation-free FULL pass; failures clear it.
         assertTrue(body.contains("verifiedBaseline = if (state == \"VERIFIED_CHECKPOINT\" && snapshotMutation == mutations.get())"))
         assertTrue(body.contains("Baseline(snapshotMutation, expectedSignature, revision,"))
+        // R4: the gate uses the real mutation counter; no blanket override when signatures match.
+        assertFalse(body.contains("gateMutation"))
+        assertTrue(body.contains("mutation = mutations.get(), signature = gateSignature"))
+
         assertTrue(after.indexOf("verifiedBaseline = null") < after.indexOf("val before = fingerprints(sources)"))
         assertTrue(body.substringAfterLast("} catch (e: Exception) {").trimStart().startsWith("verifiedBaseline = null"))
         assertTrue(body.indexOf("val baselineSignature = signature(sources)") < body.indexOf("val before = fingerprints(sources)"))

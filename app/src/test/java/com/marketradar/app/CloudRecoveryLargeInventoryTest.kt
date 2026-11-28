@@ -12,6 +12,9 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
 import java.io.File
+import java.nio.file.Files
+import java.nio.file.LinkOption
+import java.nio.file.attribute.BasicFileAttributes
 import java.time.Instant
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
@@ -355,5 +358,64 @@ class CloudRecoveryLargeInventoryTest {
         assertEquals(before + 2, lines("RECOVERY_DIAG_SNAPSHOT").size)
         val about = CloudRecovery.aboutSummary(c)
         assertTrue(about, about.contains("Recovery: rev 1") && about.contains("last pass: DEFER") && about.contains("files dir: "))
+    }
+
+    /** Same-length rewrite with the original mtime restored: the stat signature is unchanged, so only the mutation counter is dirty. */
+    private fun rewriteKeepingSignature(file: File, newBytes: ByteArray) {
+        val path = file.toPath()
+        val before = Files.readAttributes(path, BasicFileAttributes::class.java, LinkOption.NOFOLLOW_LINKS)
+        assertEquals(before.size(), newBytes.size.toLong())
+        val sig = RecoveryPassGate.fileSignature(file)
+        file.writeBytes(newBytes)
+        Files.setLastModifiedTime(path, before.lastModifiedTime())
+        assertEquals("signature must stay the same so only the mutation signal is dirty", sig, RecoveryPassGate.fileSignature(file))
+    }
+
+    @Test fun sameLengthRewriteWithRestoredMtimeCannotSkipAndIsLaterVerified() {
+        initialBackup()
+        val file = File(c.filesDir, "status/tick.json")
+        val original = file.readBytes()
+        val updated = ByteArray(original.size) { i -> if (i == 0) (original[0] + 1).toByte() else original[i] }
+        rewriteKeepingSignature(file, updated)
+        CloudRecovery.deliverMutation("files/status")
+        val first = tick()
+        assertNotEquals(RecoveryPassGate.SKIP, first.gate)
+        assertNotEquals("SKIP", first.mode)
+        val later = (1..12).map { tick() }
+        val confirmed = (listOf(first) + later).firstOrNull { it.mode == "FULL" && it.confirmed }
+        assertNotNull(confirmed)
+        report("same_length_mtime_restored", listOf(first) + later)
+        val entries = JSONObject(String(cloud.objects.getValue(cloud.manifest!!))).getJSONObject("entries")
+        assertEquals(CloudVault.hash(updated), entries.getJSONObject("files/status/tick.json").getString("sha256"))
+        assertPendingWorkIntact()
+    }
+
+    @Test fun unrelatedWriteDuringPruneStaysDirty() {
+        initialBackup()
+        val dir = File(c.filesDir, CloudArchive.DIRECTORY).apply { mkdirs() }
+        File(dir, "a_1.bin").writeText("archived-history")
+        File(dir, "a_1.json").writeText("{\"source_path\":\"x\"}")
+        (1..10).forEach { tick() }
+        assertFalse(File(dir, "a_1.bin").exists())
+        File(dir, "a_1.bin").writeText("archived-history") // leftover, as if prune was interrupted
+        val file = File(c.filesDir, "status/tick.json")
+        val original = file.readBytes()
+        val updated = ByteArray(original.size) { i -> if (i == 0) (original[0] + 2).toByte() else original[i] }
+        CloudArchive.testDuringPrune = {
+            rewriteKeepingSignature(file, updated)
+            CloudRecovery.deliverMutation("files/status")
+        }
+        val first = tick()
+        assertFalse(File(dir, "a_1.bin").exists()) // prune still finished
+        assertNotEquals(RecoveryPassGate.SKIP, first.gate)
+        assertNotEquals("SKIP", first.mode)
+        val later = (1..12).map { tick() }
+        val confirmed = (listOf(first) + later).firstOrNull { it.mode == "FULL" && it.confirmed }
+        assertNotNull(confirmed)
+        report("unrelated_write_during_prune", listOf(first) + later)
+        val entries = JSONObject(String(cloud.objects.getValue(cloud.manifest!!))).getJSONObject("entries")
+        assertEquals(CloudVault.hash(updated), entries.getJSONObject("files/status/tick.json").getString("sha256"))
+        assertTrue(entries.has("files/${CloudArchive.DIRECTORY}/a_1.bin"))
+        assertPendingWorkIntact()
     }
 }

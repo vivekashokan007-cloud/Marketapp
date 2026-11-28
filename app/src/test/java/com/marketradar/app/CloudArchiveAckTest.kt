@@ -74,4 +74,77 @@ class CloudArchiveAckTest {
         assertEquals(0, dir.listFiles()?.size ?: 0)
         assertTrue(src.exists()) // the caller decides whether to delete the original
     }
+
+    private fun archiveBin(dir: File, sha: String) = dir.listFiles()!!.single { it.name.endsWith("_$sha.bin") }
+    private fun archiveMeta(dir: File, sha: String) = dir.listFiles()!!.single { it.name.endsWith("_$sha.json") }
+
+    @Test fun mutationBetweenEarlyHashAndCopyFailsAndKeepsTheSource() {
+        CloudArchive.install(files, noBackup)
+        val src = File(files, "research_m0/row.jsonl").apply { parentFile!!.mkdirs(); writeText("snapshot-v1") }
+        val intended = src.readBytes()
+        CloudArchive.testAfterEarlyHash = { it.writeText("snapshot-v2") }
+        assertFalse(CloudArchive.preserveBeforeDiscard(src))
+        assertEquals("snapshot-v2", src.readText()) // source retained
+        val dir = File(files, CloudArchive.DIRECTORY)
+        assertEquals(0, dir.listFiles()?.size ?: 0)
+        assertFalse(intended.contentEquals(src.readBytes()))
+    }
+
+    @Test fun mutationDuringCopyFailsAndKeepsTheSource() {
+        CloudArchive.install(files, noBackup)
+        val src = File(files, "research_m0/row.jsonl").apply { parentFile!!.mkdirs(); writeBytes(ByteArray(80_000) { 0x41 }) }
+        CloudArchive.testDuringCopy = { it.writeBytes(ByteArray(80_000) { 0x42 }) }
+        assertFalse(CloudArchive.preserveBeforeDiscard(src))
+        assertTrue(src.exists())
+        assertTrue(src.readBytes().all { it == 0x42.toByte() })
+        val dir = File(files, CloudArchive.DIRECTORY)
+        assertEquals(0, dir.listFiles()?.size ?: 0)
+    }
+
+    @Test fun preexistingPayloadForTheEarlyHashDoesNotCountAsSuccessAfterARewrite() {
+        CloudArchive.install(files, noBackup)
+        val src = File(files, "research_m0/row.jsonl").apply { parentFile!!.mkdirs(); writeText("snapshot-v1") }
+        assertTrue(CloudArchive.preserveBeforeDiscard(src))
+        val dir = File(files, CloudArchive.DIRECTORY)
+        val early = CloudVault.hash("snapshot-v1".toByteArray())
+        val payload = archiveBin(dir, early)
+        assertTrue(payload.exists())
+        val originalPayload = payload.readBytes()
+        CloudArchive.testAfterEarlyHash = { it.writeText("snapshot-v2") }
+        assertFalse(CloudArchive.preserveBeforeDiscard(src))
+        assertEquals("snapshot-v2", src.readText())
+        assertArrayEquals(originalPayload, payload.readBytes()) // leftover v1 archive is unchanged
+        assertFalse(dir.listFiles()!!.any { it.name.contains(CloudVault.hash("snapshot-v2".toByteArray())) })
+    }
+
+    @Test fun acknowledgedLookupWithAConcurrentRewriteFailsAndKeepsTheSource() {
+        CloudArchive.install(files, noBackup)
+        val src = File(files, "research_m0/row.jsonl").apply { parentFile!!.mkdirs(); writeText("snapshot-v1") }
+        val early = CloudVault.hash(src.readBytes())
+        CloudArchive.recordAcknowledged(early)
+        CloudArchive.testAfterEarlyHash = { it.writeText("snapshot-v2") }
+        assertFalse(CloudArchive.preserveBeforeDiscard(src))
+        assertEquals("snapshot-v2", src.readText())
+        val dir = File(files, CloudArchive.DIRECTORY)
+        assertEquals(0, dir.listFiles()?.size ?: 0)
+    }
+
+    @Test fun successfulPreserveBodyDigestAndLengthMatchIdentityAndMetadata() {
+        CloudArchive.install(files, noBackup)
+        val bytes = "exact-snapshot-bytes".toByteArray()
+        val src = File(files, "research_m0/row.jsonl").apply { parentFile!!.mkdirs(); writeBytes(bytes) }
+        assertTrue(CloudArchive.preserveBeforeDiscard(src))
+        assertTrue(src.exists())
+        val sha = CloudVault.hash(bytes)
+        val dir = File(files, CloudArchive.DIRECTORY)
+        val payload = archiveBin(dir, sha)
+        val meta = org.json.JSONObject(archiveMeta(dir, sha).readText())
+        assertArrayEquals(bytes, payload.readBytes())
+        assertEquals(sha, CloudVault.hash(payload.readBytes()))
+        assertEquals(bytes.size.toLong(), payload.length())
+        assertEquals(sha, meta.getString("sha256"))
+        assertEquals(bytes.size.toLong(), meta.getLong("bytes"))
+        assertEquals("research_m0/row.jsonl", meta.getString("source_path"))
+        assertTrue(payload.name.endsWith("_$sha.bin"))
+    }
 }

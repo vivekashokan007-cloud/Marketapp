@@ -87,6 +87,8 @@ object CloudRecovery {
         wakeups.mutationSignals.incrementAndGet()
         if (ready) state = "LOCAL_CHANGES_PENDING_UPLOAD"
     }
+    /** Test seam: the same counter FileObserver events use. Does not invent a signature change. */
+    internal fun deliverMutation(source: String = "files/test") { changed(source) }
     private fun observeFiles(c: Context) {
         observers.values.forEach { it.stopWatching() }
         observers.clear()
@@ -556,9 +558,10 @@ object CloudRecovery {
             stats.stage("gate")
             val gateSources = inventory(c)
             val gateSignature = signature(gateSources)
-            val baselineForGate = verifiedBaseline
-            val gateMutation = if (baselineForGate != null && gateSignature == baselineForGate.signature)
-                baselineForGate.mutation else mutations.get()
+            // Keep the real mutation count. A same-size rewrite that restores mtime keeps the
+            // stat signature, so the FileObserver/deliverMutation signal must still force a
+            // FULL pass. Acknowledged prune may therefore cost one extra safe pass when
+            // observers fire; that is preferred to dropping an unrelated write.
             val gate = RecoveryPassGate.decide(verifiedBaseline, RecoveryPassGate.Observation(
                 ready = ready, canMonitor = canMonitor(),
                 restorePending = File(c.noBackupFilesDir, "cloud_restore_pending").exists(),
@@ -566,7 +569,7 @@ object CloudRecovery {
                 revision = revision, localRevision = metadata.getLong("revision", 0L),
                 headManifestSha256 = head?.optString("manifest_sha256").orEmpty(),
                 localManifestSha256 = metadata.getString("checkpoint_sha256", "").orEmpty(),
-                mutation = gateMutation, signature = gateSignature,
+                mutation = mutations.get(), signature = gateSignature,
                 nowElapsed = elapsed()))
             stats.gateReason = gate
             if (gate == RecoveryPassGate.SKIP) {

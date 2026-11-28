@@ -50,8 +50,13 @@ object CloudArchive {
             true
         } catch (_: Exception) { false }
     }
+    /** Test seams for concurrent-rewrite cases. Cleared by [resetForTest]. */
+    @Volatile internal var testAfterEarlyHash: ((File) -> Unit)? = null
+    @Volatile internal var testDuringCopy: ((File) -> Unit)? = null
+    @Volatile internal var testDuringPrune: (() -> Unit)? = null
     fun preserveBeforeDiscard(file: File): Boolean {
         val base = root ?: return true // Android-free legacy test calls; Application always installs before writers.
+        var tmp: File? = null
         return try {
             val source = file.canonicalFile
             if (!source.exists()) return true
@@ -59,33 +64,70 @@ object CloudArchive {
             val relative = source.relativeTo(base).invariantSeparatorsPath
             require(CloudDataPolicy.portablePath(relative))
             if (relative.startsWith("$DIRECTORY/")) return false
-            val hash = sha256(source)
-            if (isAcknowledged(hash)) return true
+            val earlyHash = sha256(source)
+            testAfterEarlyHash?.invoke(source)
+            if (isAcknowledged(earlyHash)) {
+                // Early ack is only success if the source is still exactly those bytes.
+                if (sha256(source) == earlyHash) return true
+                return false
+            }
             val dir = File(base, DIRECTORY).apply { mkdirs() }
             require(dir.usableSpace > source.length() + 4L * 1024 * 1024) { "PENDING_ARCHIVE_DISK_FULL" }
-            val tmp = File.createTempFile("archive_", ".tmp", dir)
-            source.inputStream().use { input ->
-                FileOutputStream(tmp).use { out ->
+            tmp = File.createTempFile("archive_", ".tmp", dir)
+            val digest = MessageDigest.getInstance("SHA-256")
+            var copied = 0L
+            var hooked = false
+            FileOutputStream(tmp).use { out ->
+                source.inputStream().use { input ->
                     val b = ByteArray(32768)
-                    while (true) { val n = input.read(b); if (n < 0) break; out.write(b,0,n) }
+                    while (true) {
+                        val n = input.read(b)
+                        if (n < 0) break
+                        out.write(b, 0, n)
+                        digest.update(b, 0, n)
+                        copied += n
+                        if (!hooked) { hooked = true; testDuringCopy?.invoke(source) }
+                    }
                     out.fd.sync()
                 }
             }
-            val name = CloudVault.hash(relative.toByteArray()).take(16) + "_" + hash
+            val copiedHash = digest.digest().joinToString("") { "%02x".format(it) }
+            // Stability contract: hash-before, copied digest, and hash-after must agree.
+            // Size/mtime is never treated as proof. If a writer changed the source, fail and keep it.
+            if (earlyHash != copiedHash || sha256(source) != copiedHash) {
+                tmp!!.delete(); tmp = null
+                return false
+            }
+            val name = CloudVault.hash(relative.toByteArray()).take(16) + "_" + copiedHash
             val payload = File(dir, "$name.bin")
-            if (payload.exists()) tmp.delete() else require(tmp.renameTo(payload))
+            if (payload.exists()) {
+                if (sha256(payload) != copiedHash || payload.length() != copied) {
+                    tmp!!.delete(); tmp = null
+                    return false
+                }
+                tmp!!.delete(); tmp = null
+            } else {
+                require(tmp!!.renameTo(payload)); tmp = null
+            }
             val metadata = File(dir, "$name.json")
             if (!metadata.exists()) {
                 val m = File(dir, "$name.json.tmp")
-                FileOutputStream(m).use { it.write(JSONObject().put("source_path",relative).put("sha256",hash)
-                    .put("bytes",payload.length()).toString().toByteArray()); it.fd.sync() }
+                FileOutputStream(m).use { it.write(JSONObject().put("source_path",relative).put("sha256",copiedHash)
+                    .put("bytes",copied).toString().toByteArray()); it.fd.sync() }
                 require(m.renameTo(metadata))
+            } else {
+                val meta = JSONObject(metadata.readText())
+                if (meta.optString("sha256") != copiedHash || meta.optLong("bytes") != copied) return false
             }
             true
-        } catch (_: Exception) { false } // caller must retain the original on failure
+        } catch (_: Exception) {
+            tmp?.delete()
+            false // caller must retain the original on failure
+        }
     }
     /** Historical checkpoint index retains the immutable cloud references after this local eviction. */
     fun pruneAcknowledged(filesDir: File, entries: JSONObject) {
+        testDuringPrune?.invoke()
         val dir = File(filesDir, DIRECTORY)
         dir.listFiles()?.filter { it.isFile && !it.name.endsWith(".tmp") }?.forEach { file ->
             val path = "files/$DIRECTORY/${file.name}"
@@ -165,7 +207,10 @@ object CloudArchive {
         if (file.exists()) file.delete()
         require(tmp.renameTo(file))
     }
-    internal fun resetForTest() { synchronized(ackLock) { ackMemo = null; ackRoot = null; cleanupEnabled = false } }
+    internal fun resetForTest() {
+        synchronized(ackLock) { ackMemo = null; ackRoot = null; cleanupEnabled = false }
+        testAfterEarlyHash = null; testDuringCopy = null; testDuringPrune = null
+    }
     private fun sha256(file: File): String = MessageDigest.getInstance("SHA-256").also { md ->
         file.inputStream().use { input ->
             val b = ByteArray(32768)
