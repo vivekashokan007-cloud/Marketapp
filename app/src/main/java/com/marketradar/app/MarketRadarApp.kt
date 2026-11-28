@@ -25,7 +25,7 @@ class MarketRadarApp : Application() {
     override fun onCreate() {
         super.onCreate()
         com.tom_roush.pdfbox.android.PDFBoxResourceLoader.init(this)
-        CloudArchive.install(filesDir)
+        CloudArchive.install(filesDir, noBackupFilesDir)
         CloudRecovery.start(this)
         applicationScope.launch(Dispatchers.IO) {
             val day = java.time.LocalDate.now(java.time.ZoneId.of("Asia/Kolkata")).toString()

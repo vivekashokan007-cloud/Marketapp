@@ -164,6 +164,9 @@ object RecoveryDiagnostics {
         @Volatile var signals: String = ""
         @Volatile var budget: String = ""
         @Volatile var hashingStarted = false
+        /** Restore download or full hash began; used to persist the budget cooldown on failure too. */
+        @Volatile var expensiveWorkStarted = false
+        @Volatile var budgetPrereq: String = ""
         @Synchronized fun stage(next: String) {
             val now = clock()
             stages[stage] = (stages[stage] ?: 0L) + (now - stageStart)

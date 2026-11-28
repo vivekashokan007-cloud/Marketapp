@@ -18,9 +18,25 @@ class RecoveryBudgetTest {
         assertEquals(RecoveryBudget.MAX_GAP_MS, RecoveryBudget.gapMs(Long.MAX_VALUE / 100))
     }
 
-    @Test fun correctnessConditionsAreNeverDeferred() {
-        for (r in listOf("RESTORE_PENDING", "NOT_INITIALIZED", "NOT_READY", "NOT_MONITOR_READY", "WEB_CAPTURE_FAILED", "REVISION_CHANGED", "MANIFEST_CHANGED"))
-            assertEquals(r, RecoveryBudget.RUN, RecoveryBudget.decide(input(1_000_001L, reason = r, bg = true)))
+    @Test fun immediateSafetyRunsDuringCooldownButExpensiveRetriesBackOff() {
+        val sha = "a".repeat(64)
+        fun hist(token: String) = RecoveryBudget.History(1_000_000L, 250_000L, lastPrereq = token)
+        fun dec(reason: String?, prereq: String, hist: RecoveryBudget.History, bg: Boolean = true, now: Long = 1_000_001L) =
+            RecoveryBudget.decide(RecoveryBudget.Input(reason, hist, now, bg, "scheduled", prereq))
+        assertEquals(RecoveryBudget.RUN, dec("REVISION_CHANGED", "REVISION_CHANGED|4|$sha", hist("OK")))
+        assertEquals(RecoveryBudget.RUN, dec("MANIFEST_CHANGED", "MANIFEST_CHANGED|3|" + "b".repeat(64), hist("OK")))
+        for (r in listOf("RESTORE_PENDING", "NOT_INITIALIZED", "NOT_READY", "NOT_MONITOR_READY", "WEB_CAPTURE_FAILED"))
+            assertTrue(r, dec(r, "$r|3|$sha", hist("$r|3|$sha")).startsWith("DEFER_COOLDOWN_"))
+        val failed = hist("WEB_CAPTURE_FAILED|3|$sha")
+        // The same unresolved prerequisite does not hash every tick, but a change re-evaluates immediately.
+        assertEquals(RecoveryBudget.RUN, dec("WEB_CAPTURE_FAILED", "WEB_CAPTURE_FAILED|3|" + "b".repeat(64), failed))
+        assertEquals(RecoveryBudget.RUN, dec(null, "OK", failed))
+        // An upgrade with no recorded token stays on the existing cooldown.
+        val upgraded = RecoveryBudget.History(1_000_000L, 250_000L, lastPrereq = "")
+        assertTrue(dec("WEB_CAPTURE_FAILED", "WEB_CAPTURE_FAILED|3|$sha", upgraded).startsWith("DEFER_COOLDOWN_"))
+    }
+
+    @Test fun correctnessReasonClassification() {
         val ok = "a".repeat(64)
         fun reason(ready: Boolean = true, mon: Boolean = true, restore: Boolean = false, web: Boolean = false, init: Boolean = true,
                    rev: Long = 3, local: Long = 3, head: String = ok, localSha: String = ok) =
@@ -30,6 +46,10 @@ class RecoveryBudgetTest {
         assertEquals("NOT_READY", reason(ready = false)); assertEquals("NOT_MONITOR_READY", reason(mon = false))
         assertEquals("WEB_CAPTURE_FAILED", reason(web = true)); assertEquals("REVISION_CHANGED", reason(rev = 4))
         assertEquals("MANIFEST_CHANGED", reason(head = "b".repeat(64))); assertEquals("MANIFEST_CHANGED", reason(head = "", localSha = ""))
+        assertTrue(RecoveryBudget.isImmediateSafety("REVISION_CHANGED"))
+        assertTrue(RecoveryBudget.isImmediateSafety("MANIFEST_CHANGED"))
+        assertFalse(RecoveryBudget.isImmediateSafety("WEB_CAPTURE_FAILED"))
+        assertFalse(RecoveryBudget.isImmediateSafety(null))
     }
 
     @Test fun cooldownThenBackgroundRuleWithPersistedHistory() {
@@ -53,6 +73,8 @@ class RecoveryBudgetTest {
         assertEquals(RecoveryBudget.MAX_GAP_MS, gap)
         assertTrue("passes/h=$passesPerHour", passesPerHour < 3.4)
         assertTrue("GiB/h=$gibPerHour", gibPerHour < 97.0)
+        val duty = pass.toDouble() / (gap + pass)
+        assertTrue("duty=$duty exceeds the 10% target because MAX_GAP caps the delay", duty > 0.10 && duty < 0.16)
         println("R2_MEASURE scenario=phone_model gap_ms=$gap passes_per_hour=${"%.2f".format(passesPerHour)} gib_hashed_per_hour=${"%.1f".format(gibPerHour)} " +
             "legacy_gib_per_hour=${"%.1f".format(3_600_000.0 / 250_000 * 3 * inventory / (1024.0 * 1024 * 1024))} cpu_duty=${"%.3f".format(pass.toDouble() / (gap + pass))}")
     }
@@ -62,9 +84,12 @@ class RecoveryBudgetTest {
 
     @Test fun deferPathRunsAfterClaimAndGateAndCannotCommitPruneDeleteOrHash() {
         val body = src("CloudRecovery.kt").substringAfter("private fun runPassMeasured(").substringBefore("private fun fingerprintMap(")
-        val budget = body.indexOf("RecoveryBudget.decide(")
-        assertTrue(budget > body.indexOf("RecoveryPassGate.decide("))
-        assertTrue(body.indexOf("head = transport.rpc(\"mr_cloud_claim\", claim)") in 0 until budget)
+        val gate = body.indexOf("RecoveryPassGate.decide(")
+        val budget = body.indexOf("val budget = RecoveryBudget.decide(")
+        val restoreBudget = body.indexOf("val restoreBudget = RecoveryBudget.decide(")
+        assertTrue(restoreBudget in 0 until gate)
+        assertTrue(budget > gate)
+        assertTrue(body.indexOf("head = transport.rpc(\"mr_cloud_claim\", claim)") in 0 until restoreBudget)
         val defer = body.substringAfter("if (budget != RecoveryBudget.RUN) {").substringBefore("return\n")
         for (forbidden in listOf("publishManifest", "mr_cloud_commit", "pruneAcknowledged", "delete", "fingerprints(", "vault.",
                 "putLong(\"revision\"", "verifiedBaseline =", "VERIFIED_CHECKPOINT"))

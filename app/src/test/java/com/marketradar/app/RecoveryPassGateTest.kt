@@ -78,7 +78,7 @@ class RecoveryPassGateTest {
         val gate = body.indexOf("RecoveryPassGate.decide(")
         assertTrue(gate > 0)
         assertTrue(body.indexOf("head = transport.rpc(\"mr_cloud_claim\", claim)") in 0 until gate) // lease renewed every pass
-        assertTrue(body.indexOf("vault.stage(oldManifest, stage)") in 0 until gate)                // restore decided first
+        assertTrue(body.indexOf("vault.stage(sourceManifest, stage)") in 0 until gate)                // restore decided first
         assertTrue(body.indexOf("CloudMonitorResume.eligible(") in 0 until gate)
         assertTrue(body.indexOf("error(\"CLOUD_REVISION_CONFLICT\")") in 0 until gate)
         val skip = body.substringAfter("if (gate == RecoveryPassGate.SKIP) {").substringBefore("return\n")
@@ -94,6 +94,7 @@ class RecoveryPassGateTest {
         assertFalse(after.contains("before == fingerprints(inventory(c)) { transport.renewLease?.invoke() })\n                \"VERIFIED_CHECKPOINT\""))
         // A baseline exists only after a verified, mutation-free FULL pass; failures clear it.
         assertTrue(body.contains("verifiedBaseline = if (state == \"VERIFIED_CHECKPOINT\" && snapshotMutation == mutations.get())"))
+        assertTrue(body.contains("Baseline(snapshotMutation, expectedSignature, revision,"))
         assertTrue(after.indexOf("verifiedBaseline = null") < after.indexOf("val before = fingerprints(sources)"))
         assertTrue(body.substringAfterLast("} catch (e: Exception) {").trimStart().startsWith("verifiedBaseline = null"))
         assertTrue(body.indexOf("val baselineSignature = signature(sources)") < body.indexOf("val before = fingerprints(sources)"))

@@ -31,6 +31,14 @@ Evidence labels: PHONE-OBSERVED (phone export or screen), SERVER (read-only Supa
 - **Paired check:** the baseline failed 7 checks because the fixture was a stale retired-NF one. `b5b914f` moves it to a real BNF plan and adds an NF-refusal assertion. Result: 9/9.
 - **Identity:** local `ace23ca` is 2.6.113 / b544, paired with local MarketVivi `dead1dfd` (identity only; parent c5148011). Unpushed.
 
+## R3 additions (Codex reply R2, 28 Nov ~06:40 IST)
+
+- **Budget.** Only `REVISION_CHANGED` and `MANIFEST_CHANGED` bypass the cooldown. Persistent `WEB_CAPTURE_FAILED`, `NOT_READY`, `NOT_MONITOR_READY`, `RESTORE_PENDING` and `NOT_INITIALIZED` (after a first attempt) use the same persisted backoff. A change in the prerequisite token retries once immediately. Restore downloads are budgeted the same way, after the claim. Docs no longer claim a guaranteed 10% duty or a hard four WorkManager passes per hour.
+- **Post-prune baseline** stores the remaining `expectedSignature`. An interrupted acknowledged prune is resumed from the confirmed head before the gate, without a full scan. SYNTHETIC: `archive_prune` is now 0 FULL / 30 SKIP (was one extra FULL).
+- **Writers / retention.** `ClosedTradeLedger.boundedUnique` and `PaperCloseQuoteStore.writeAll` call `preserveJson` on every write; after prune, the same payload was being recreated (SERVER: the 615-byte A/B manifest flip continued overnight through revision 49 at 05:13 IST 28 Nov, and stepped up by 481 bytes at 02:12). The acknowledged-hash index (non-portable) stops rewriting already-checkpointed payloads. Published manifests keep pruned archive references, so a later FULL cannot drop them or A/B flip. `cleanupEnabled` stays false; no pending/Paper/model deletion.
+- **Storage attribution.** Read-only SQL can see head/checkpoint metadata and `storage.objects` sizes, but not manifest entry paths: no `http`/`pg_net`/`aws_s3` extension, no storage-download MCP tool, and object bodies are not in Postgres. Per-directory bytes still need the phone diagnostic export. Latest head: revision 49, manifest 4,668,990 B, committed 05:13:46 IST 28 Nov. Bucket now 27,393 objects / 1,279.6 MiB.
+- **Identity.** 2.6.113 / b544 kept: still unpushed and unused on GitHub (remote review branch is still `75d17f0`).
+
 ## Current findings (corrected)
 
 | Finding | Evidence | Review-branch change | Status / acceptance |

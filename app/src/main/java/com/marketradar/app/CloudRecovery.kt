@@ -355,8 +355,23 @@ object CloudRecovery {
             lastPass = stats.toJson(total)
             // Any pass that started hashing the inventory (success or failure) starts the cooldown,
             // so a failing/retrying pass is bounded exactly like a successful one. Non-portable prefs.
-            if (stats.hashingStarted) runCatching { meta(c).edit().putLong(BUDGET_END, wallClock())
-                .putLong(BUDGET_DURATION, total).apply() }
+            if (stats.hashingStarted || stats.expensiveWorkStarted) runCatching {
+                val m = meta(c)
+                val endReason = RecoveryBudget.correctnessReason(
+                    ready = ready, canMonitor = canMonitor(),
+                    restorePending = File(c.noBackupFilesDir, "cloud_restore_pending").exists(),
+                    webCaptureFailed = m.getBoolean("web_capture_failed", false),
+                    initialized = m.getBoolean("initialized", false),
+                    revision = m.getLong("revision", 0L), localRevision = m.getLong("revision", 0L),
+                    headManifestSha256 = m.getString("checkpoint_sha256", "").orEmpty(),
+                    localManifestSha256 = m.getString("checkpoint_sha256", "").orEmpty())
+                // Persist the *end-of-pass* token so a successful first backup records "OK"
+                // (not NOT_INITIALIZED). The next pass compares this to the post-claim remote
+                // revision/manifest: a still-failing flag keeps backoff, a remote change retries.
+                meta(c).edit().putLong(BUDGET_END, wallClock()).putLong(BUDGET_DURATION, total)
+                    .putString(BUDGET_PREREQ, RecoveryBudget.prereq(endReason, m.getLong("revision", 0L),
+                        m.getString("checkpoint_sha256", "").orEmpty())).apply()
+            }
             if ((stats.mode != "SKIP" && stats.mode != "DEFER") || skipLog.due(elapsed()))
                 runCatching { LogBuffer.add('I', "CloudRecovery", stats.logLine(total)) }
             if (storageWalk.due(elapsed())) requestStorageWalk(c)
@@ -364,9 +379,11 @@ object CloudRecovery {
     }
     private const val BUDGET_END = "budget_full_end_wall_ms"
     private const val BUDGET_DURATION = "budget_full_duration_ms"
+    private const val BUDGET_PREREQ = "budget_last_prereq"
     private fun budgetHistory(c: Context): RecoveryBudget.History? = meta(c).let { m ->
         val end = m.getLong(BUDGET_END, 0L)
-        if (end <= 0L) null else RecoveryBudget.History(end, m.getLong(BUDGET_DURATION, 0L))
+        if (end <= 0L) null else RecoveryBudget.History(end, m.getLong(BUDGET_DURATION, 0L),
+            m.getString(BUDGET_PREREQ, "").orEmpty())
     }
     /** Queue one bounded storage walk on the low-priority diagnostics thread. Never blocks the caller. */
     internal fun requestStorageWalk(c: Context): Boolean {
@@ -462,24 +479,42 @@ object CloudRecovery {
                     lastRenewal = now
                 }
             } }
-            if (!ready && oldManifest != null && (!metadata.getBoolean("initialized", false) || revision != localRevision ||
-                        File(c.noBackupFilesDir, "cloud_restore_pending").exists())) {
-                state = "RESTORING_VERIFIED_CLOUD_STATE"
-                stats.stage("restore")
-                val current = fingerprints(inventory(c))
-                val recovering = File(c.noBackupFilesDir, "cloud_restore_pending").exists()
-                if (!recovering && !metadata.getBoolean("initialized", false) && inventory(c).any { it.path.startsWith("files/") } &&
-                    current != manifestFingerprints(oldManifest)) error("LOCAL_AND_CLOUD_CHANGED_RECONCILIATION_REQUIRED")
-                if (!recovering && metadata.getBoolean("initialized", false) && revision != localRevision &&
-                    metadata.getString("fingerprint", "") != fingerprintMap(current) && current != manifestFingerprints(oldManifest)) {
-                    error("LOCAL_AND_CLOUD_CHANGED_RECONCILIATION_REQUIRED")
+            CloudArchive.bindAckRoot(c.noBackupFilesDir)
+            val restorePendingFile = File(c.noBackupFilesDir, "cloud_restore_pending").exists()
+            val initializedFlag = metadata.getBoolean("initialized", false)
+            val restoreNeeded = !ready && oldManifest != null && (!initializedFlag || revision != localRevision || restorePendingFile)
+            if (restoreNeeded) {
+                val sourceManifest = oldManifest!!
+                val restorePrereq = RecoveryBudget.prereq("RESTORE_PENDING", revision,
+                    head?.optString("manifest_sha256").orEmpty())
+                val restoreBudget = RecoveryBudget.decide(RecoveryBudget.Input(
+                    correctnessReason = "RESTORE_PENDING", history = budgetHistory(c), nowWallMs = wallClock(),
+                    background = background(), trigger = stats.trigger, prereq = restorePrereq))
+                stats.budget = restoreBudget
+                if (restoreBudget != RecoveryBudget.RUN) {
+                    stats.mode = "DEFER"
+                    state = "RESTORE_RETRY_BACKOFF"
+                    wakeups.pass("deferred")
+                } else {
+                    stats.expensiveWorkStarted = true
+                    stats.budgetPrereq = restorePrereq
+                    state = "RESTORING_VERIFIED_CLOUD_STATE"
+                    stats.stage("restore")
+                    val current = fingerprints(inventory(c))
+                    val recovering = File(c.noBackupFilesDir, "cloud_restore_pending").exists()
+                    if (!recovering && !initializedFlag && inventory(c).any { it.path.startsWith("files/") } &&
+                        current != manifestFingerprints(sourceManifest)) error("LOCAL_AND_CLOUD_CHANGED_RECONCILIATION_REQUIRED")
+                    if (!recovering && initializedFlag && revision != localRevision &&
+                        metadata.getString("fingerprint", "") != fingerprintMap(current) && current != manifestFingerprints(sourceManifest)) {
+                        error("LOCAL_AND_CLOUD_CHANGED_RECONCILIATION_REQUIRED")
+                    }
+                    val stage = File(c.noBackupFilesDir, "cloud_restore_stage")
+                    if (stage.exists()) stage.deleteRecursively()
+                    vault.stage(sourceManifest, stage)
+                    applyStage(c, stage, sourceManifest)
+                    require(metadata.edit().putLong("revision", revision).putBoolean("initialized", true)
+                        .putString("fingerprint", fingerprintMap(fingerprints(inventory(c)))).commit())
                 }
-                val stage = File(c.noBackupFilesDir, "cloud_restore_stage")
-                if (stage.exists()) stage.deleteRecursively()
-                vault.stage(oldManifest, stage)
-                applyStage(c, stage, oldManifest)
-                require(metadata.edit().putLong("revision", revision).putBoolean("initialized", true)
-                    .putString("fingerprint", fingerprintMap(fingerprints(inventory(c)))).commit())
             } else if (ready && revision != localRevision) error("CLOUD_REVISION_CONFLICT")
             // The existing install already has a verified checkpoint. After a
             // successful owner/device/revision claim, new local files may upload
@@ -506,12 +541,24 @@ object CloudRecovery {
                 if (canMonitor() && !hadMonitorLease && legacySideEffects)
                     MarketOpenScheduler.maybeStartIngestionNow(c, "verified_local_checkpoint")
             }
+            if (stats.mode == "DEFER" && state == "RESTORE_RETRY_BACKOFF") return
+            // Resume an interrupted acknowledged prune from the confirmed head. This runs after
+            // the claim (lease/ownership already checked) and never deletes a file that is not
+            // in that manifest with a matching hash. Unreferenced pending/Paper files stay.
+            if (oldManifest != null && metadata.getBoolean("initialized", false) &&
+                revision == metadata.getLong("revision", 0L) &&
+                !File(c.noBackupFilesDir, "cloud_restore_pending").exists()) {
+                CloudArchive.pruneAcknowledged(c.filesDir, oldManifest.optJSONObject("entries") ?: JSONObject())
+            }
             // Quiet-pass gate: evaluated only after the claim above has renewed the
             // lease and after restore/monitor-resume checks. SKIP never commits,
             // prunes, restores or deletes; anything uncertain runs the FULL pass.
             stats.stage("gate")
             val gateSources = inventory(c)
             val gateSignature = signature(gateSources)
+            val baselineForGate = verifiedBaseline
+            val gateMutation = if (baselineForGate != null && gateSignature == baselineForGate.signature)
+                baselineForGate.mutation else mutations.get()
             val gate = RecoveryPassGate.decide(verifiedBaseline, RecoveryPassGate.Observation(
                 ready = ready, canMonitor = canMonitor(),
                 restorePending = File(c.noBackupFilesDir, "cloud_restore_pending").exists(),
@@ -519,7 +566,7 @@ object CloudRecovery {
                 revision = revision, localRevision = metadata.getLong("revision", 0L),
                 headManifestSha256 = head?.optString("manifest_sha256").orEmpty(),
                 localManifestSha256 = metadata.getString("checkpoint_sha256", "").orEmpty(),
-                mutation = mutations.get(), signature = gateSignature,
+                mutation = gateMutation, signature = gateSignature,
                 nowElapsed = elapsed()))
             stats.gateReason = gate
             if (gate == RecoveryPassGate.SKIP) {
@@ -532,16 +579,21 @@ object CloudRecovery {
             }
             // Bounded recovery work while changes keep arriving (RecoveryBudget). Evaluated after the claim,
             // so a deferred pass has renewed the lease and re-checked ownership/revision like any other.
-            val budget = RecoveryBudget.decide(RecoveryBudget.Input(
-                correctnessReason = RecoveryBudget.correctnessReason(ready = ready, canMonitor = canMonitor(),
+            val correctness = RecoveryBudget.correctnessReason(ready = ready, canMonitor = canMonitor(),
                     restorePending = File(c.noBackupFilesDir, "cloud_restore_pending").exists(),
                     webCaptureFailed = metadata.getBoolean("web_capture_failed", false),
                     initialized = metadata.getBoolean("initialized", false),
                     revision = revision, localRevision = metadata.getLong("revision", 0L),
                     headManifestSha256 = head?.optString("manifest_sha256").orEmpty(),
-                    localManifestSha256 = metadata.getString("checkpoint_sha256", "").orEmpty()),
-                history = budgetHistory(c), nowWallMs = wallClock(), background = background(), trigger = stats.trigger))
+                    localManifestSha256 = metadata.getString("checkpoint_sha256", "").orEmpty())
+            val budgetPrereq = RecoveryBudget.prereq(correctness, revision,
+                head?.optString("manifest_sha256").orEmpty())
+            val budget = RecoveryBudget.decide(RecoveryBudget.Input(
+                correctnessReason = correctness,
+                history = budgetHistory(c), nowWallMs = wallClock(), background = background(),
+                trigger = stats.trigger, prereq = budgetPrereq))
             stats.budget = budget
+            stats.budgetPrereq = budgetPrereq
             if (budget != RecoveryBudget.RUN) {
                 stats.mode = "DEFER"
                 wakeups.pass("deferred")
@@ -564,6 +616,7 @@ object CloudRecovery {
             stats.portableBytes = sources.sumOf { it.file?.length() ?: it.bytes?.size?.toLong() ?: 0L }
             stats.stage("hash_before")
             stats.hashingStarted = true
+            stats.expensiveWorkStarted = true
             val before = fingerprints(sources) { transport.renewLease?.invoke() }
             val sizes = sources.associate { it.path to (it.file?.length() ?: it.bytes?.size?.toLong() ?: 0L) }
             stats.dirty = RecoveryDiagnostics.dirty(before, oldManifest?.let { manifestFingerprints(it) } ?: emptyMap(), { sizes[it] ?: 0L })
@@ -604,7 +657,12 @@ object CloudRecovery {
             stats.stage("hash_after")
             require(before == fingerprints(inventory(c)) { transport.renewLease?.invoke() }) { "CACHE_CHANGED_DURING_UPLOAD" }
             stats.stage("commit")
-            if (oldManifest == null || before != manifestFingerprints(oldManifest)) {
+            val retained = CloudArchive.retainedRemoteEntries(oldEntries, entries)
+            retained.keys().forEach { path -> entries.put(path, retained.getJSONObject(path)) }
+            val publishedFp = before.toSortedMap().also { fp ->
+                retained.keys().forEach { path -> fp[path] = retained.getJSONObject(path).getString("sha256") }
+            }
+            if (oldManifest == null || publishedFp != manifestFingerprints(oldManifest)) {
                 state = "UPLOADING_CHECKPOINT"
                 stats.commitAttempted = true
                 val hash = vault.publishManifest(entries, BuildConfig.VERSION_CODE)
@@ -614,6 +672,7 @@ object CloudRecovery {
                 require(check.getString("manifest_sha256") == hash && check.getLong("revision") == revision + 1) { "HEAD_READBACK_MISMATCH" }
                 revision = check.getLong("revision")
                 stats.commitConfirmed = true
+                CloudArchive.recordAcknowledgedEntries(entries)
             }
             val checkTime = head!!.optString("committed_at")
             val verifiedBytes = entries.keys().asSequence().sumOf { entries.getJSONObject(it).getLong("size") }
@@ -625,6 +684,7 @@ object CloudRecovery {
             leaseUntil = maxOf(leaseUntil, head.getLong("_lease_deadline_elapsed"))
             ready = true
             stats.stage("prune")
+            CloudArchive.recordAcknowledgedEntries(entries)
             CloudArchive.pruneAcknowledged(c.filesDir, entries)
             val expectedCache = before.filterNot { (path, _) ->
                 path.startsWith("files/${CloudArchive.DIRECTORY}/") && !File(c.filesDir, path.removePrefix("files/")).exists()
@@ -644,7 +704,7 @@ object CloudRecovery {
                 "VERIFIED_CHECKPOINT" else "LOCAL_CHANGES_PENDING_UPLOAD"
             if (webCaptured && snapshotMutation != mutations.get()) state = "LOCAL_CHANGES_PENDING_UPLOAD"
             verifiedBaseline = if (state == "VERIFIED_CHECKPOINT" && snapshotMutation == mutations.get())
-                RecoveryPassGate.Baseline(snapshotMutation, baselineSignature, revision,
+                RecoveryPassGate.Baseline(snapshotMutation, expectedSignature, revision,
                     metadata.getString("checkpoint_sha256", "").orEmpty(), elapsed()) else null
             if (webCaptured && canMonitor() && !legacyStarted && legacySideEffects) {
                 legacyStarted = true

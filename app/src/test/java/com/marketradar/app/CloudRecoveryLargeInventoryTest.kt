@@ -89,6 +89,7 @@ class CloudRecoveryLargeInventoryTest {
         CloudRecovery.background = { bg }
         CloudRecovery.legacySideEffects = false
         CloudRecovery.fileObservers = false // see CloudRecovery.fileObservers; detection then relies on signatures only
+        CloudArchive.install(c.filesDir, c.noBackupFilesDir)
         resetProcess()
         c.filesDir.listFiles()?.forEach { it.deleteRecursively() }
         c.noBackupFilesDir.listFiles()?.forEach { it.deleteRecursively() }
@@ -116,6 +117,8 @@ class CloudRecoveryLargeInventoryTest {
         }
         CloudRecovery.legacySideEffects = true
         CloudRecovery.fileObservers = true
+        CloudArchive.install(null)
+        CloudArchive.resetForTest()
         resetProcess()
     }
 
@@ -254,10 +257,59 @@ class CloudRecoveryLargeInventoryTest {
         assertFalse(File(dir, "a_1.bin").exists())
         val manifest = JSONObject(String(cloud.objects.getValue(cloud.manifest!!)))
         assertTrue(manifest.getJSONObject("entries").has("files/${CloudArchive.DIRECTORY}/a_1.bin")) // remote reference kept
-        // Exactly one more FULL commits the post-prune inventory (the observed A/B manifest flip), then it is quiet.
+        val commitsAfterPrune = cloud.commits.get()
+        // The post-prune baseline is the remaining signature: an unchanged inventory does not scan again,
+        // and a later FULL (none here) would republish the same archive references, not an A/B flip.
         val after = (1..30).map { tick() }
         report("archive_prune", after)
-        assertTrue(after.count { it.mode == "FULL" } <= 1)
+        assertEquals(0, after.count { it.mode == "FULL" })
+        assertTrue(after.all { it.mode == "SKIP" && it.hashed == 0L })
+        assertEquals(commitsAfterPrune, cloud.commits.get())
+        assertTrue(JSONObject(String(cloud.objects.getValue(cloud.manifest!!))).getJSONObject("entries")
+            .has("files/${CloudArchive.DIRECTORY}/a_1.bin"))
+        assertPendingWorkIntact()
+    }
+
+    @Test fun interruptedPruneResumesWithoutAFullScanAndKeepsRemoteReferences() {
+        initialBackup()
+        val dir = File(c.filesDir, CloudArchive.DIRECTORY).apply { mkdirs() }
+        File(dir, "a_1.bin").writeText("archived-history")
+        File(dir, "a_1.json").writeText("{\"source_path\":\"x\"}")
+        (1..10).forEach { tick() }
+        assertFalse(File(dir, "a_1.bin").exists())
+        // Simulate a crash after only one of the two acknowledged files was removed.
+        File(dir, "a_1.bin").writeText("archived-history")
+        val commits0 = cloud.commits.get()
+        val p = tick()
+        assertEquals(0L, p.hashed)
+        assertFalse(File(dir, "a_1.bin").exists())
+        assertEquals(commits0, cloud.commits.get())
+        val later = (1..10).map { tick() }
+        report("interrupted_prune_resume", listOf(p) + later)
+        assertTrue(later.all { it.mode == "SKIP" && it.hashed == 0L })
+        assertTrue(JSONObject(String(cloud.objects.getValue(cloud.manifest!!))).getJSONObject("entries")
+            .has("files/${CloudArchive.DIRECTORY}/a_1.bin"))
+        assertPendingWorkIntact()
+    }
+
+    @Test fun persistentWebCaptureFailureDoesNotRescanEveryTickAndRecoversWhenTheFlagClears() {
+        initialBackup()
+        c.getSharedPreferences("cloud_vault_v1", Context.MODE_PRIVATE).edit().putBoolean("web_capture_failed", true).commit()
+        val first = tick()
+        assertEquals("FULL", first.mode) // one immediate attempt after the prerequisite appears
+        val rest = (1..9).map { tick() }
+        report("persistent_web_capture_failed", listOf(first) + rest)
+        assertTrue(rest.all { it.mode == "DEFER" && it.hashed == 0L && it.budget.startsWith("DEFER_COOLDOWN_") })
+        assertPendingWorkIntact()
+        // After the cooldown a single bounded retry is allowed, then backoff resumes.
+        val retryWindow = (1..10).map { tick() }
+        assertEquals(1, retryWindow.count { it.mode == "FULL" })
+        assertEquals("FULL", retryWindow.first().mode)
+        assertTrue(retryWindow.drop(1).all { it.mode == "DEFER" && it.hashed == 0L })
+        c.getSharedPreferences("cloud_vault_v1", Context.MODE_PRIVATE).edit().putBoolean("web_capture_failed", false).commit()
+        val recovered = tick(mutate = true)
+        assertEquals("FULL", recovered.mode)
+        assertTrue(recovered.confirmed)
         assertPendingWorkIntact()
     }
 
