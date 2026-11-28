@@ -1,0 +1,12 @@
+{
+  "schema": "marketradar.candidate_build_authorization.v1",
+  "native_sha": "e6b165a64d2f616969697822a4e25b5bf13faa9e",
+  "pwa_sha": "dead1dfdbad4d341ab366e4b9cc5de46dd29d12a",
+  "version_code": "544",
+  "version_name": "2.6.113",
+  "cert_sha256": "fb6042a2eb61045368e8d7b95db6f6d49b04d4b8da2e51b865ca77803a44b478",
+  "artifact_only": true,
+  "approved_by": "Vivek (owner)",
+  "approval_reference": "28 November 2026, 14:58 IST: owner chat approval: \"Yes, push and queue the b544 build\".",
+  "codex_final_check_reference": "CODEX_ACCEPT_R4_20261128.md (sha256 afe24d3a5e26179527bc65bb7a63494410ed136cc6bf8bb56436613ff183bc5e): Codex review accepts Marketapp native e6b165a64d2f616969697822a4e25b5bf13faa9e and MarketVivi dead1dfdbad4d341ab366e4b9cc5de46dd29d12a for the signed diagnostic candidate, version 2.6.113 / b544."
+}
